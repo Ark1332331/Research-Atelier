@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# runtime data: keep out of deploy repo (protect server live data, avoid pull-overwrite)
+/data/
