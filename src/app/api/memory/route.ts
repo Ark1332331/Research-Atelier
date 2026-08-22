@@ -13,6 +13,7 @@ const KINDS: Record<string, { file: string; append?: boolean }> = {
   environment: { file: "environment.md" },
   handoff: { file: "handoffs.md", append: true },
   screening: { file: "notes/screening.md", append: true },
+  ops: { file: "ops.md" },
 };
 
 export async function GET(request: Request) {

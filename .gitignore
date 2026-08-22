@@ -42,3 +42,8 @@ next-env.d.ts
 
 # runtime data: keep out of deploy repo (protect server live data, avoid pull-overwrite)
 /data/
+
+# electron desktop shell
+/release/
+electron/runtime-config.json
+.build-cache/

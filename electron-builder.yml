@@ -1,0 +1,29 @@
+# Research Atelier 桌面壳打包配置（electron-builder）
+# 思路：完整打包 Next 项目（.next 构建产物 + public + scripts + data 种子 + node_modules 生产依赖），
+#       Electron 主进程用 ELECTRON_RUN_AS_NODE 拉起 next start，不依赖系统 Node。
+#       asar:false —— Next server 是独立 node 子进程，读不了 asar 里的文件，必须真实落盘。
+appId: com.ark.research-atelier
+productName: Research Atelier
+directories:
+  output: release
+files:
+  - electron/**
+  - .next/**
+  - public/**
+  - scripts/**
+  - data/**
+  - next.config.ts
+  - package.json
+  - .env.local
+  - "!**/*.map"
+asar: false
+npmRebuild: false
+linux:
+  desktopName: Research Atelier
+  target:
+    - AppImage
+    - deb
+  category: Office
+  maintainer: ark
+  synopsis: Research Atelier · 本地论文工作台（论文库 / 复现检查点 / 代码导读）
+  description: 个人论文学习一体化桌面应用：论文库、复现检查点、代码导读、术语卡与精读。数据保存在用户目录。

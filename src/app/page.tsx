@@ -1,141 +1,189 @@
 "use client";
 
-import { useState } from "react";
-import Dashboard from "@/components/dashboard";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import PaperLibrary from "@/components/paper-library";
 import Terms from "@/components/terms";
-import Network from "@/components/network";
 import Repro from "@/components/repro";
-import Journal from "@/components/journal";
 import ChatPanel from "@/components/chat-panel";
 import PageHead from "@/components/page-head";
-import { papers, researchPhases } from "@/lib/data-atelier";
+import CodeReading from "@/components/code-reading";
+import { papers as papersRaw, researchPhases } from "@/lib/data-atelier";
+import type { Term } from "@/app/api/terms/route";
 
-type Page = "overview" | "screen" | "explain" | "terms" | "network" | "repro" | "journal";
+type Page = "overview" | "screen" | "explain" | "terms" | "repro" | "code";
 
-/** 左侧视图清单：总览 + 01–06（Linear 式 workspace 导航） */
-const VIEWS: { id: Page; label: string; num: string | null }[] = [
-  { id: "overview", label: "总览", num: null },
-  { id: "screen", label: "论文筛选", num: "01" },
-  { id: "explain", label: "精读讲解", num: "02" },
-  { id: "terms", label: "术语卡", num: "03" },
-  { id: "network", label: "知识网络", num: "04" },
-  { id: "repro", label: "实验复现", num: "05" },
-  { id: "journal", label: "研究日志", num: "06" },
+type Paper = Omit<(typeof papersRaw)[number], "connections"> & { connections: string[] };
+const papers = papersRaw as Paper[];
+
+/** 左栏视图（图标为线性 path，同 stroke 风格） */
+const VIEWS: { id: Page; label: string; num: string | null; icon: string }[] = [
+  { id: "overview", label: "论文库", num: null, icon: "M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z" },
+  { id: "screen", label: "论文筛选", num: "01", icon: "M2 3.5h12M4.5 8h7M6.5 12.5h3" },
+  { id: "explain", label: "精读讲解", num: "02", icon: "M4 2.5c2.7-.6 5.3 0 5.3 0v11s-2.4-.8-5.3 0zM12 2.5c-2.7-.6-2.7 0-2.7 0v11s2.4-.8 5.3 0" },
+  { id: "terms", label: "术语卡", num: "03", icon: "M2.5 3h8v8h-8zM13.5 5.5v8h-8" },
+  { id: "code", label: "代码导读", num: "04", icon: "M5 4.5 2 8l3 3.5M11 4.5 14 8l-3 3.5" },
+  { id: "repro", label: "实验复现", num: "05", icon: "M6 2.5v4.5L2.8 13.5h10.4L10 7V2.5M4.8 2.5h6.4M4.5 10h7" },
 ];
 
-/** 真实的"今天"日期戳 */
+function RailIcon({ d, size = 15 }: { d: string; size?: number }) {
+  return (
+    <svg className="rail-icon" width={size} height={size} viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={d} />
+    </svg>
+  );
+}
+
 function todayStamp() {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function studyDays() {
+  const start = new Date(papers[0].firstEncounter);
+  const diff = Math.max(1, Math.round((Date.now() - start.getTime()) / 86400000));
+  return `${diff} 天`;
+}
+
 export default function App() {
+  const router = useRouter();
   const [page, setPage] = useState<Page>("overview");
-  const current = papers[0];
+  const [terms, setTerms] = useState<Term[]>([]);
+  const [q, setQ] = useState("");
+  const [searchFocus, setSearchFocus] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/terms")
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setTerms(d.terms ?? []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const go = (p: Page) => { setPage(p); setQ(""); setSearchFocus(false); };
+
+  // 精读讲解：直接进全屏阅读页（/read/<slug>，取库中第一篇导入的论文；内置 NSR 为兜底）
+  const openReader = () => {
+    fetch("/api/paper")
+      .then((r) => r.json())
+      .then((d) => { router.push(`/read/${d.papers?.[0]?.slug ?? "nsr-mt454tqk"}`); })
+      .catch(() => { router.push("/read/nsr-mt454tqk"); });
+  };
+
+  const results = (() => {
+    const query = q.trim().toLowerCase();
+    if (!query) return [];
+    const pageHits = VIEWS.filter((v) => v.id !== "overview" && v.label.toLowerCase().includes(query))
+      .map((v) => ({ key: `p-${v.id}`, kind: "页面", label: v.label, act: () => (v.id === "explain" ? openReader() : go(v.id)) }));
+    const paperHits = papers.filter((p) => p.title.toLowerCase().includes(query) || p.id.includes(query))
+      .map((p) => ({ key: `paper-${p.id}`, kind: "论文", label: p.title.slice(0, 42), act: () => router.push("/read/nsr-mt454tqk") }));
+    const termHits = terms.filter((t) => t.name.toLowerCase().includes(query))
+      .map((t) => ({ key: `t-${t.id}`, kind: "术语", label: t.name, act: () => go("terms") }));
+    return [...pageHits, ...paperHits, ...termHits].slice(0, 8);
+  })();
+
   const activePhase = researchPhases.find((p) => p.active);
 
   return (
     <div className="shell">
-      {/* 顶部状态条：品牌 + 今日状态 + 当前阶段 + AI 状态 + 最近活动 */}
       <header className="topbar">
         <div className="topbar-inner">
-          <div className="topbar-brand">
-            <span className="topbar-word">Research Atelier<span className="dot">.</span></span>
-            <span className="topbar-sub">个人研究操作系统</span>
+          <span className="topbar-word">Research Atelier<span className="dot">.</span></span>
+          <div className="gsearch">
+            <input
+              className="gsearch-input"
+              placeholder="搜索 论文 / 术语 / 页面…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onFocus={() => setSearchFocus(true)}
+              onBlur={() => setTimeout(() => setSearchFocus(false), 150)}
+              aria-label="全局搜索"
+            />
+            <span className="gsearch-hint">⌘K</span>
+            {searchFocus && results.length > 0 && (
+              <div className="gsearch-pop">
+                {results.map((r) => (
+                  <button key={r.key} className="gsearch-item" onMouseDown={(e) => e.preventDefault()} onClick={r.act}>
+                    <span>{r.label}</span>
+                    <span className="gi-kind">{r.kind}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <span className="chip chip--red">{current.status}</span>
-          {activePhase && <span className="chip chip--sage">阶段 {activePhase.phase}</span>}
-          <span className="chip chip--green">AI 伴侣在线</span>
           <div className="topbar-meta">
-            <span className="mono-label">最近活动 08/21 · R6 实证</span>
             <span className="mono-label">{todayStamp()}</span>
-            <span className="mono-label">v0.4</span>
+            <span className="avatar-dot" aria-hidden="true">我</span>
           </div>
         </div>
       </header>
 
       <div className="app-body">
-        {/* 左侧固定导航（Linear/IDE 选中态） */}
         <nav className="rail" aria-label="工作区导航">
           <div className="rail-head">
-            <p className="rail-head-title">工作台</p>
-            <span className="mono-label">今日 · {todayStamp()}</span>
+            <p className="rail-title">我的研究<span className="dot">.</span></p>
+            <p className="rail-sub">PRIVATE LAB · {todayStamp()}</p>
           </div>
           <div className="rail-nav">
             {VIEWS.map((v) => (
               <button
                 key={v.id}
                 className={`rail-item${page === v.id ? " is-active" : ""}`}
-                onClick={() => setPage(v.id)}
+                onClick={() => (v.id === "explain" ? openReader() : go(v.id))}
                 aria-current={page === v.id ? "page" : undefined}
               >
-                <span className="ri-num">{v.num ?? "⌂"}</span>
+                <RailIcon d={v.icon} />
                 <span>{v.label}</span>
                 {v.id === "overview" && <span className="ri-tag">今天</span>}
               </button>
             ))}
           </div>
           <div className="rail-foot">
-            <span className="rail-status">研究伴侣 · 在线</span>
-            <span className="rail-meta">
-              档案持续更新中<br />
-              数据均在 data/ 目录 · 随 git
-            </span>
+            <div className="rail-stat">
+              <span className="rs-num">{studyDays()}</span>
+              <span className="rs-label">持续研究</span>
+            </div>
+            <div className="rail-stat">
+              <span className="rs-num">{terms.length || "·"}</span>
+              <span className="rs-label">术语卡</span>
+            </div>
+            <span className="rail-status-line">AI 伴侣 · 观察中</span>
           </div>
         </nav>
 
-        {/* 工作区 */}
         <main className="workspace">
-          {page === "overview" && <Dashboard onNavigate={(p) => setPage(p as Page)} />}
+          {page === "overview" && <PaperLibrary onNavigate={(p) => (p === "explain" ? openReader() : go(p as Page))} />}
+
+          {page === "code" && <CodeReading />}
 
           {page === "screen" && (
             <>
               <PageHead
                 num="01" name="论文筛选"
                 title="论文筛选"
-                desc="判断一篇论文是否值得读、读多深：入口澄清 → 收集 5–10 篇 → 六维评分 → 停在筛选笔记。"
+                desc="判断一篇论文是否值得读、读多深：入口澄清 → 收集 5–10 篇 → 六维评分 → 停在筛选笔记。筛完你确认，才进入导读。"
                 meta="单篇 10–20 分钟 · 产出 → data/notes/screening.md"
               />
               <ChatPanel
                 toolKey="p0"
                 hint="第一条消息直接给领域 + 目标 + 子问题 + 时间预算，例如：“我想了解 world model 最近为什么火；预算 60 分钟”。"
-                intro={[
-                  "判断一篇论文是否值得读、读多深：入口澄清 → 收集 5–10 篇 → 六维评分 → 停在筛选笔记。",
-                  "拿到新论文/新领域、读论文途中冒出相关方向时。",
-                  "输入领域和目标，它会先做入口澄清（目标/子问题/预算），再收集筛选；完成点“保存为筛选笔记”。",
-                  "筛选笔记（data/notes/screening.md），每条带来源可核实。",
-                ]}
                 saveLabel="保存为筛选笔记" saveKind="screening"
               />
             </>
           )}
 
-          {page === "explain" && (
-            <>
-              <PageHead
-                num="02" name="精读讲解"
-                title="精读讲解"
-                desc="把方法段从功能比喻降到操作支架：先答你的问题 → 最小操作支架 → 最小数据轨迹 → 验收复述。"
-                meta="8 步固定流程 · 产出 → 你的理解"
-              />
-              <ChatPanel
-                toolKey="p3"
-                hint="贴一段论文的方法/实现文字（或你的问题），它会按 8 步讲解流程带你读懂。"
-                intro={[
-                  "把方法段从功能比喻降到操作支架：先答你的问题 → 最小操作支架 → 最小数据轨迹 → 框架机制 → 训练闭环 → 配置证据链 → 挂回论文 → 验收复述。",
-                  "读到方法/实现段卡住、神经网络操作看不懂时。",
-                  "贴段落或提问题；它按固定 8 步带读，最后让你复述“输入→计算→输出”验收。",
-                  "你的理解（复述通过 = 掌握）。",
-                ]}
-              />
-            </>
-          )}
-
           {page === "terms" && <Terms />}
-          {page === "network" && <Network onNavigate={(p) => setPage(p as Page)} />}
           {page === "repro" && <Repro />}
-          {page === "journal" && <Journal />}
+
+          <footer style={{ marginTop: "3rem", paddingTop: "1rem", borderTop: "1px solid var(--border)",
+            display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap",
+            fontFamily: "var(--font-dm-mono)", fontSize: "0.56rem", letterSpacing: "0.08em", color: "var(--muted-foreground)" }}>
+            <span>RESEARCH ATELIER · {activePhase?.phase ?? "—"} {activePhase?.label ?? ""}</span>
+            <span>AI 是研究伴侣 · 提示词可见可查</span>
+          </footer>
         </main>
       </div>
     </div>

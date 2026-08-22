@@ -6,9 +6,9 @@ export const papers = [
   {
     id: "01",
     title: "Neural Scene Representation for Locomotion on Structured Terrain",
-    authors: "作者待核对",
-    year: "待核对",
-    venue: "待核对",
+    authors: "David Hoeller, Nikita Rudin, Christopher Choy, Animashree Anandkumar, Marco Hutter",
+    year: "2022",
+    venue: "IEEE RA-L（预印本）",
     status: "深度精读",
     statusColor: "#8B2635",
     tags: ["Scene Completion", "4D Sparse U-Net", "MinkowskiEngine", "Locomotion"],

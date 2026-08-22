@@ -2,17 +2,23 @@
   "name": "workflow-app",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "desktop:dev": "concurrently -k -n next,electron -c blue,green \"next dev -p 3110\" \"RA_DEV_URL=http://127.0.0.1:3110 electron .\"",
+    "desktop:dir": "node scripts/gen-runtime-config.mjs && next build && electron-builder --dir",
+    "desktop": "node scripts/gen-runtime-config.mjs && next build && electron-builder"
   },
   "dependencies": {
     "next": "16.3.2",
+    "pdfjs-dist": "^4.10.38",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",
+    "react-pdf": "^10.5.0",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
@@ -21,6 +27,9 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^10.0.5",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.3.2",
     "tailwindcss": "^4",

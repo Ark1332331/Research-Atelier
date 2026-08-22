@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { Term } from "@/app/api/terms/route";
 import PageHead from "@/components/page-head";
+import { KnowledgeGraph } from "@/components/dashboard";
 
 const ROLE_OPTIONS = [
   "感知/传感器", "状态估计/对齐", "场景表示/建图", "补全/学习机制",
@@ -11,8 +12,8 @@ const ROLE_OPTIONS = [
 const STATUS_OPTIONS = ["未接触", "有直觉", "能解释", "能对应论文", "能实现"];
 const REUSE_OPTIONS = ["通用", "论文特有", "论文内特殊含义"];
 export const STATUS_COLOR: Record<string, string> = {
-  "未接触": "var(--muted-foreground)", "有直觉": "var(--accent)", "能解释": "var(--sage-ink)",
-  "能对应论文": "var(--ok)", "能实现": "var(--ok)",
+  "未接触": "var(--muted-foreground)", "有直觉": "var(--amber)", "能解释": "var(--foreground)",
+  "能对应论文": "var(--foreground)", "能实现": "var(--foreground)",
 };
 
 /** ISO → MM/DD 短日期（术语卡"更新于"痕迹） */
@@ -23,15 +24,12 @@ function fmtDate(iso: string) {
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
 }
 
-const EMPTY = { name: "", role: "领域背景", reuse: "通用", note: "", source: "", links: "" };
 
 export default function Terms() {
   const [terms, setTerms] = useState<Term[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Term>>({});
-  const [newTerm, setNewTerm] = useState(EMPTY);
-  const [tip, setTip] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -55,16 +53,6 @@ export default function Terms() {
       return true;
     }
     return false;
-  }
-
-  async function saveNew() {
-    if (!newTerm.name.trim()) return;
-    const ok = await post({ term: newTerm });
-    if (ok) {
-      setNewTerm(EMPTY);
-      setTip("✓ 已建档 · 首次出现即建档，历史出处随每次出现累积");
-      setTimeout(() => setTip(""), 3000);
-    }
   }
 
   function startEdit(t: Term) {
@@ -92,63 +80,33 @@ export default function Terms() {
       <PageHead
         num="04" name="术语卡"
         title="跨论文词汇表"
-        desc="每张卡记录你对一个术语的理解演化（8 字段），跨论文累积；首次出现即建档，已见术语带标记。"
-        meta={terms.length > 0 ? `${terms.length} 张卡 · 最近更新 ${fmtDate(latestUpdate)}` : "词汇表还是空的 — 从第一张卡开始"}
+        desc="术语由研究伴侣在读论文时自动建档（首次出现即建档）；这里查看与校准——状态升级由 AI 当场验收后帮你改。"
+        meta={terms.length > 0 ? `${terms.length} 张卡 · 最近更新 ${fmtDate(latestUpdate)}` : "词汇表还是空的 — 读论文时会自动生成"}
       />
 
-      {/* 建档台：带标签的记录表 */}
-      <div className="ledger">
-        <div className="ledger-head">
-          <span className="ledger-title">新术语建档</span>
-          <span className="mono-label">data/glossary.json · 纯文件可随时打开看</span>
-        </div>
-        <div className="ledger-grid">
-          <label className="field-label">
-            <span className="mono-label">名称（英文主名 / 中文旁注）</span>
-            <input className="field" value={newTerm.name}
-              onChange={(e) => setNewTerm({ ...newTerm, name: e.target.value })}
-              placeholder="如：voxel grid / 体素网格" />
-          </label>
-          <label className="field-label">
-            <span className="mono-label">来源（论文短名 + 节）</span>
-            <input className="field" value={newTerm.source}
-              onChange={(e) => setNewTerm({ ...newTerm, source: e.target.value })}
-              placeholder="如：NSR / Method" />
-          </label>
-          <label className="field-label">
-            <span className="mono-label">角色归类</span>
-            <select className="field" value={newTerm.role}
-              onChange={(e) => setNewTerm({ ...newTerm, role: e.target.value })}>
-              {ROLE_OPTIONS.map((r) => <option key={r}>{r}</option>)}
-            </select>
-          </label>
-          <label className="field-label">
-            <span className="mono-label">复用标记</span>
-            <select className="field" value={newTerm.reuse}
-              onChange={(e) => setNewTerm({ ...newTerm, reuse: e.target.value })}>
-              {REUSE_OPTIONS.map((r) => <option key={r}>{r}</option>)}
-            </select>
-          </label>
-          <label className="field-label ledger-grid-full">
-            <span className="mono-label">当前先理解为（一句话直觉解释）</span>
-            <textarea className="field" rows={2} value={newTerm.note}
-              onChange={(e) => setNewTerm({ ...newTerm, note: e.target.value })}
-              placeholder="内部可写：已有直觉 + 最小例子；跨论文时这里累积为 archive" />
-          </label>
-          <label className="field-label ledger-grid-full">
-            <span className="mono-label">关联术语（分号分隔，只连必须一起理解的）</span>
-            <input className="field" value={newTerm.links}
-              onChange={(e) => setNewTerm({ ...newTerm, links: e.target.value })}
-              placeholder="如：point cloud；occupancy" />
-          </label>
-        </div>
-        <div className="composer-row">
-          <span className="composer-hint">首次出现即建档</span>
-          <div className="composer-actions">
-            {tip && <span className="chat-saved">{tip}</span>}
-            <button className="btn btn--primary" onClick={() => void saveNew()} disabled={!newTerm.name.trim()}>
-              建档
-            </button>
+      {/* 知识网络（并入术语卡 · 关系图） */}
+      <div className="mod" style={{ marginBottom: "2rem" }}>
+        <header className="mod-head" style={{ cursor: "default" }}>
+          <span className="mod-num">03</span>
+          <h2 className="mod-title">知识网络</h2>
+          <span className="mod-count">{terms.length} 术语 · 点击节点跳到下方词条</span>
+        </header>
+        <div className="mod-body">
+          <div className="net-scroll">
+            <KnowledgeGraph
+              terms={terms}
+              height={300}
+              onNavigate={(id) => {
+                if (id === "terms") {
+                  document.getElementById(`term-row-0`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }
+              }}
+            />
+          </div>
+          <div className="net-legend">
+            <span><i style={{ background: "var(--ok)" }} />已掌握</span>
+            <span><i style={{ background: "var(--amber)" }} />进行中</span>
+            <span><i style={{ background: "var(--muted-foreground)" }} />未接触</span>
           </div>
         </div>
       </div>
@@ -172,7 +130,7 @@ export default function Terms() {
           </p>
         ) : (
           terms.map((t, i) => (
-            <article key={t.id} className="term-item">
+            <article key={t.id} id={`term-row-${i}`} className="term-item">
               <span className="term-no">{String(i + 1).padStart(2, "0")}</span>
               <div>
                 <h3 className="term-name">{t.name}</h3>
