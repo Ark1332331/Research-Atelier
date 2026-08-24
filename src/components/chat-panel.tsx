@@ -22,6 +22,7 @@ export interface ChatPanelProps {
   profile?: { background?: string; gaps?: string[]; preferences?: string[]; mastered?: string[] } | null; // 代码能力画像（仅 code 工具）
   onCodeSessionEnd?: (info: CodeSessionEnd) => void;        // 本次代码导读结束时回调（写画像）
   seed?: string;            // 预填输入（从 PDF 段落「就这一段提问」进来）
+  historyKey?: string;      // 启用会话历史（按其隔离，如 "p0"）。传了才显示历史侧栏
 }
 
 interface Msg {
@@ -29,6 +30,8 @@ interface Msg {
   content: string;
   time: string;
 }
+
+interface SessionSummary { id: string; title: string; createdAt: string; updatedAt: string; count: number }
 
 /** 指导者规则：附在带上下文的工具对话里，让工具"活"起来 */
 const GUIDE_RULES =
@@ -41,15 +44,47 @@ function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved, contextKind, systemExtra, attachedCode, profile, onCodeSessionEnd, seed }: ChatPanelProps) {
+/** 会话更新时间友好展示：今天显示 时:分，否则 月-日 */
+function fmtTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  return `${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved, contextKind, systemExtra, attachedCode, profile, onCodeSessionEnd, seed, historyKey }: ChatPanelProps) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const [saved, setSaved] = useState("");
   const [ctxNote, setCtxNote] = useState("");
+  // 会话历史：sessions=列表摘要；sessionId=当前会话 id（null=尚未落库）；showHistory=是否展开历史栏
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const sessionIdRef = useRef<string | null>(null);
+  const historyErr = useRef(false);
   // 代码导读：本次会话是否已触发“写回画像”的回调（每个工具会话只写一次）
   const endLogged = useRef(false);
+
+  // 首次进入时拉取该工具的历史会话列表
+  useEffect(() => {
+    if (!historyKey) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/session-history?tool=${encodeURIComponent(historyKey)}`);
+        const d = await res.json();
+        if (!cancelled && Array.isArray(d?.sessions)) setSessions(d.sessions);
+      } catch { historyErr.current = true; }
+    })();
+    return () => { cancelled = true; };
+  }, [historyKey]);
 
   useEffect(() => {
     if (seed) {
@@ -108,7 +143,9 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content;
       const errText = data?.error ? `错误：${data.error}` + (data?.hint ? `\n\n${data.hint}` : "") : null;
-      setMsgs([...next, { role: "assistant", content: content ?? (errText ?? "无响应"), time: nowTime() }]);
+      const finalMsgs: Msg[] = [...next, { role: "assistant", content: content ?? (errText ?? "无响应"), time: nowTime() }];
+      setMsgs(finalMsgs);
+      void persistSession(finalMsgs); // 自动写入会话历史
       // 代码导读：读完后写回一次画像（会的不重讲、卡点提前解释）
       if (toolKey === "code" && onCodeSessionEnd && content && !endLogged.current) {
         endLogged.current = true;
@@ -121,10 +158,65 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
         });
       }
     } catch (e) {
-      setMsgs([...next, { role: "assistant", content: `请求失败：${e instanceof Error ? e.message : String(e)}`, time: nowTime() }]);
+      const finalMsgs: Msg[] = [...next, { role: "assistant", content: `请求失败：${e instanceof Error ? e.message : String(e)}`, time: nowTime() }];
+      setMsgs(finalMsgs);
+      void persistSession(finalMsgs); // 失败也留档，方便回看
     } finally {
       setLoading(false);
     }
+  }
+
+  /* ---------- 会话历史 ---------- */
+  async function persistSession(finalMsgs: Msg[]) {
+    if (!historyKey || finalMsgs.length === 0) return;
+    try {
+      const res = await fetch("/api/session-history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: historyKey, action: "upsert", id: sessionIdRef.current ?? undefined, msgs: finalMsgs }),
+      });
+      const d = await res.json();
+      if (d?.id) {
+        sessionIdRef.current = d.id;
+        setSessionId(d.id);
+      }
+      if (Array.isArray(d?.sessions)) setSessions(d.sessions);
+    } catch { /* 历史保存失败不影响主对话 */ }
+  }
+
+  async function openSession(id: string) {
+    if (!historyKey) return;
+    try {
+      const res = await fetch(`/api/session-history?tool=${encodeURIComponent(historyKey)}&id=${encodeURIComponent(id)}`);
+      const d = await res.json();
+      if (d?.session) {
+        sessionIdRef.current = d.session.id;
+        setSessionId(d.session.id);
+        setMsgs(Array.isArray(d.session.msgs) ? d.session.msgs : []);
+        setShowHistory(false);
+      }
+    } catch { /* */ }
+  }
+
+  function newSession() {
+    sessionIdRef.current = null;
+    setSessionId(null);
+    setMsgs([]);
+    setShowHistory(false);
+  }
+
+  async function deleteSession(id: string) {
+    if (!historyKey) return;
+    try {
+      const res = await fetch("/api/session-history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: historyKey, action: "delete", id }),
+      });
+      const d = await res.json();
+      if (Array.isArray(d?.sessions)) setSessions(d.sessions);
+      if (sessionIdRef.current === id) newSession();
+    } catch { /* */ }
   }
 
   async function saveResult() {
@@ -149,9 +241,38 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
         <button className="btn btn--ghost btn--quiet" onClick={() => setShowPrompt((v) => !v)}>
           {showPrompt ? "收起提示词" : "查看底层提示词"}
         </button>
+        {historyKey && (
+          <button className="btn btn--ghost btn--quiet" onClick={() => setShowHistory((v) => !v)}>
+            {showHistory ? "收起历史" : `历史记录${sessions.length ? `（${sessions.length}）` : ""}`}
+          </button>
+        )}
         {saved && <span className="chat-saved">{saved}</span>}
         {ctxNote && <span className="chat-ctx-note">{ctxNote}</span>}
       </div>
+
+      {historyKey && showHistory && (
+        <div className="history-panel">
+          <div className="history-panel-head">
+            <span>历史会话 · 点开可回看/继续</span>
+            <button className="btn btn--primary btn--sm" onClick={newSession}>新建对话</button>
+          </div>
+          {sessions.length === 0 ? (
+            <p className="history-empty">还没有历史记录——从第一条对话开始，消息会自动保存到这里。</p>
+          ) : (
+            <ul className="history-list">
+              {sessions.map((s) => (
+                <li key={s.id} className={`history-item${sessionId === s.id ? " is-current" : ""}`}>
+                  <button className="history-item-main" onClick={() => void openSession(s.id)}>
+                    <span className="history-title">{s.title}</span>
+                    <span className="history-meta">{s.count} 条 · {fmtTime(s.updatedAt)}</span>
+                  </button>
+                  <button className="history-del" onClick={() => void deleteSession(s.id)} aria-label="删除这个会话">×</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {showPrompt && (
         <div className="prompt-block">
