@@ -1292,6 +1292,35 @@ input, textarea, select {
   white-space: pre-wrap;
   margin: 0;
 }
+.prompt-block-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.prompt-badge {
+  font-family: var(--font-dm-mono);
+  font-size: 0.58rem;
+  color: var(--accent, #b8860b);
+  border: 1px solid var(--accent, #b8860b);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  white-space: nowrap;
+}
+.prompt-textarea {
+  width: 100%;
+  font-family: var(--font-dm-mono);
+  font-size: 0.66rem;
+  line-height: 1.7;
+  margin: 0.4rem 0 0.6rem;
+}
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
 
 .chat-toolbar {
   display: flex;

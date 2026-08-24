@@ -70,6 +70,10 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
   const [showHistory, setShowHistory] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const historyErr = useRef(false);
+  // 提示词编辑：activePrompt=当前生效（默认或自定义）；promptDraft=编辑框草稿；promptMeta=默认/自定义元信息
+  const [promptDraft, setPromptDraft] = useState("");
+  const [promptMeta, setPromptMeta] = useState<{ default: string; custom: string | null; updatedAt: string | null }>({ default: "", custom: null, updatedAt: null });
+  const [activePrompt, setActivePrompt] = useState("");
   // 代码导读：本次会话是否已触发“写回画像”的回调（每个工具会话只写一次）
   const endLogged = useRef(false);
 
@@ -106,7 +110,7 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
     setLoading(true);
     try {
       // 自动附加上下文（复现状态 / 环境卡 / 论文正文 + 指导者规则）
-      let system = tool.prompt;
+      let system = activePrompt || tool.prompt;
       const notes: string[] = [];
       if (contextKind) {
         const res = await fetch(`/api/context?kind=${contextKind}`);
@@ -236,11 +240,60 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
     }
   }
 
+  /* ---------- 提示词编辑（前端可自定义每个工具的底层提示词） ---------- */
+  async function loadPrompt() {
+    try {
+      const res = await fetch(`/api/prompts?tool=${encodeURIComponent(toolKey)}`);
+      const d = await res.json();
+      const def = d?.default ?? tool.prompt;
+      const custom = d?.custom;
+      setPromptMeta({ default: def, custom, updatedAt: d?.updatedAt ?? null });
+      setPromptDraft(custom ?? def);
+      setActivePrompt(custom ?? def);
+    } catch {
+      setPromptDraft(tool.prompt);
+      setActivePrompt(tool.prompt);
+      setPromptMeta({ default: tool.prompt, custom: null, updatedAt: null });
+    }
+    setShowPrompt((v) => !v);
+  }
+
+  async function savePrompt() {
+    const res = await fetch("/api/prompts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool: toolKey, prompt: promptDraft }),
+    });
+    const d = await res.json();
+    if (d?.ok) {
+      setActivePrompt(promptDraft);
+      setPromptMeta((m) => ({ ...m, custom: promptDraft, updatedAt: d.updatedAt ?? m.updatedAt }));
+      setSaved("✓ 提示词已保存");
+      setTimeout(() => setSaved(""), 3000);
+    }
+  }
+
+  async function resetPrompt() {
+    const res = await fetch("/api/prompts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool: toolKey, action: "reset" }),
+    });
+    const d = await res.json();
+    if (d?.ok) {
+      setPromptDraft(promptMeta.default);
+      setActivePrompt(promptMeta.default);
+      setPromptMeta((m) => ({ ...m, custom: null, updatedAt: null }));
+      setSaved("✓ 已恢复默认提示词");
+      setTimeout(() => setSaved(""), 3000);
+    }
+  }
+
   return (
     <section>
       <div className="chat-toolbar">
-        <button className="btn btn--ghost btn--quiet" onClick={() => setShowPrompt((v) => !v)}>
-          {showPrompt ? "收起提示词" : "查看底层提示词"}
+        <button className="btn btn--ghost btn--quiet" onClick={() => void loadPrompt()}>
+          {showPrompt ? "收起提示词" : promptMeta.custom ? "提示词（已自定义）" : "查看底层提示词"}
         </button>
         {historyKey && (
           <button className="btn btn--ghost btn--quiet" onClick={() => setShowHistory((v) => !v)}>
@@ -277,8 +330,22 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
 
       {showPrompt && (
         <div className="prompt-block">
-          <p className="prompt-block-title">底层系统提示词（可见可查）</p>
-          <pre>{tool.prompt}</pre>
+          <div className="prompt-block-title">
+            <span>底层系统提示词（可编辑 · 保存后 AI 按此执行）</span>
+            {promptMeta.custom && <span className="prompt-badge">已自定义</span>}
+          </div>
+          <textarea
+            className="field prompt-textarea"
+            rows={12}
+            value={promptDraft}
+            onChange={(e) => setPromptDraft(e.target.value)}
+            aria-label="编辑系统提示词"
+          />
+          <div className="prompt-actions">
+            <button className="btn btn--primary btn--sm" onClick={() => void savePrompt()} disabled={!promptDraft.trim()}>保存提示词</button>
+            <button className="btn btn--ghost btn--quiet" onClick={() => void resetPrompt()} disabled={!promptMeta.custom}>恢复默认</button>
+            {promptMeta.custom && <span className="prompt-badge">当前用的是自定义版本</span>}
+          </div>
         </div>
       )}
 
