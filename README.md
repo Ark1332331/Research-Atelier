@@ -7,7 +7,7 @@
 | 视图 | 作用 |
 |---|---|
 | **论文库** | 分组/文件夹管理论文，挑一篇设为「当前在读」，驱动后续导读与复现 |
-| **论文筛选** | 与 AI 对话式筛选：入口澄清 → 收集候选 → 六维评分 → 筛完停在筛选笔记（`data/notes/screening.md`） |
+| **论文筛选** | 与 AI 对话式筛选：入口澄清 → 收集候选 → 六维评分 → 筛完停在筛选笔记（`data/notes/screening.md`）。AI 会**联网检索**（OpenAlex）并给出候选论文的 DOI/出版社入口与开放获取 PDF；开放获取的可在 App 里一键**下载并导入论文库** |
 | **精读讲解** | PDF 阅读器 + 逐段翻译 + 全文翻译（上传 PDF 自动生成 `translation.md`） |
 | **术语卡** | 阅读中沉淀的术语：角色/掌握状态/复用范围，自动进入全局搜索 |
 | **代码导读** | 读本机代码 + 跨文件调用链（Python 用 `scripts/py_chain.py` 做 AST 解析），并把「用户会卡的点/学会了什么」写回代码能力画像（`data/code-profile.json`），越用越懂你 |
@@ -132,6 +132,7 @@ workflow-app/
   - **桌面 App**：在 `.env.local` 里加 `HTTPS_PROXY=http://127.0.0.1:<端口>`（如 mihomo/Clash 的 `7890`），应用已启用 `NODE_USE_ENV_PROXY` 会自动走该代理。
   - **开发模式**：运行前 `export HTTPS_PROXY=http://127.0.0.1:7890` 再 `npm run dev`。
   - 失败时界面会附带具体原因（DNS/连接/超时）与上述提示。
+- **论文检索与下载**：论文筛选会联网检索（OpenAlex，需能访问 `api.openalex.org`）。开放获取的论文可在 App 里一键下载并导入论文库；**非开放获取**的（需学校/出版社订阅）只会给出 `publisher_url`，无法在 App 自动下载——若你有学校图书馆账号，用校园网/学校 [VPN](https://guide.nju.edu.cn/faq/3e/d2/c44793a540370/page.htm) 打开该链接下载 PDF，再导入 App（「论文库」支持上传 PDF）。
 - **字体**：界面字体走 Google Fonts（`globals.css` 的 `@import`），离线时回退系统字体，不影响功能。
 - **文件系统**：项目如放在 NTFS 分区（ntfs3 驱动）上，偶发目录索引损坏会导致 `next build` 挂起、目录遍历卡死（内核层，`kill -9` 无效）。遇到构建无输出先查 `.next/` 是否可正常 `ls`；建议将项目放在 ext4 等原生 Linux 分区。桌面壳的代码导读遍历已跳过常见构建缓存目录（`.build-cache`/`.cache`/`release` 等）。
 - **pdfjs 与 SSR**：PDF 阅读器用 `next/dynamic({ssr:false})` 客户端加载，pdfjs-dist 在服务端仅用于文本层提取（`serverExternalPackages`），Electron 打包不破坏该链路。
