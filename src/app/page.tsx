@@ -172,6 +172,7 @@ export default function App() {
                 hint="第一条消息直接给领域 + 目标 + 子问题 + 时间预算，例如：“我想了解 world model 最近为什么火；预算 60 分钟”。"
                 saveLabel="保存为筛选笔记" saveKind="screening"
                 historyKey="p0"
+                enableToolcall
               />
             </>
           )}

@@ -23,6 +23,7 @@ export interface ChatPanelProps {
   onCodeSessionEnd?: (info: CodeSessionEnd) => void;        // 本次代码导读结束时回调（写画像）
   seed?: string;            // 预填输入（从 PDF 段落「就这一段提问」进来）
   historyKey?: string;      // 启用会话历史（按其隔离，如 "p0"）。传了才显示历史侧栏
+  enableToolcall?: boolean; // 启用联网工具调用（论文筛选用：搜 arXiv / 下载导入）
 }
 
 interface Msg {
@@ -56,7 +57,7 @@ function fmtTime(iso: string): string {
   return `${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved, contextKind, systemExtra, attachedCode, profile, onCodeSessionEnd, seed, historyKey }: ChatPanelProps) {
+export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved, contextKind, systemExtra, attachedCode, profile, onCodeSessionEnd, seed, historyKey, enableToolcall }: ChatPanelProps) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -138,7 +139,7 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "system", content: system }, ...next] }),
+        body: JSON.stringify({ messages: [{ role: "system", content: system }, ...next], ...(enableToolcall ? { enableToolcall: true } : {}) }),
       });
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content;
