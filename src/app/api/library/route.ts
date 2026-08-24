@@ -9,11 +9,13 @@
  *     { action:"addPaper", paper:{title,...}, group }→ 新增论文（手动加入 / 从导入列表选中）
  *     { action:"updatePaper", id, patch }            → 改任意字段（title/status/tags/group/…）
  *     { action:"setCurrent", id|null }               → 设为「当前在读」（同一时刻只有一篇）
- *     { action:"deletePaper", id }                   → 删除论文（只删库内记录，不删导入的 PDF 文件）
+ *     { action:"deletePaper", id }                   → 删除论文（若为导入论文，同时删除其 data/papers/<slug>，阅读页也不再显示）
  * 存储：本地 data/library.json；生产（Vercel）自动切 KV（见 src/lib/store.ts）
  * 依据：node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md
  */
-import { readStore, writeStore } from "@/lib/store";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { DATA_DIR, readStore, writeStore } from "@/lib/store";
 
 const FILE = "library.json";
 
@@ -146,9 +148,15 @@ export async function POST(request: Request) {
 
     case "deletePaper": {
       const id = body.id as string;
+      const target = lib.papers.find((x) => x.id === id);
       lib.papers = lib.papers.filter((x) => x.id !== id);
       // 若删的是当前在读，则清空当前标记
       if (!lib.papers.some((p) => p.current)) lib.papers.forEach((p) => { p.current = false; });
+      // 若该论文是导入的（有 slug），一并删除 data/papers/<slug> 目录，
+      // 否则「精读讲解」仍会通过 /api/paper 遍历到它（用户已反馈：库里删了阅读页还在）。
+      if (target?.slug) {
+        await fs.rm(path.join(DATA_DIR, "papers", target.slug), { recursive: true, force: true }).catch(() => {});
+      }
       break;
     }
 
