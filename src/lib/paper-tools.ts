@@ -15,6 +15,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { DATA_DIR, readStore, writeStore } from "@/lib/store";
+import { translateDocument } from "@/lib/translate";
 
 const execFileAsync = promisify(execFile);
 const NODE_BIN = process.env.RA_NODE_BIN ?? "node";
@@ -134,18 +135,29 @@ export async function downloadPaper(opts: {
   const script = path.join(process.cwd(), "scripts", "extract-pdf.mjs");
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
   if (process.env.RA_NODE_BIN) childEnv.ELECTRON_RUN_AS_NODE = "1";
+  let pageTexts: string[] = [];
   try {
     const { stdout } = await execFileAsync(NODE_BIN, [script, path.join(dir, "original.pdf")], {
       cwd: process.cwd(), env: childEnv, maxBuffer: 64 * 1024 * 1024, timeout: 120000,
     });
     const start = stdout.indexOf("{");
     const parsed = start >= 0 ? JSON.parse(stdout.slice(start)) : null;
-    const texts: string[] = Array.isArray(parsed?.texts) ? parsed.texts : [];
-    for (let i = 0; i < texts.length; i++) {
-      await fs.writeFile(path.join(dir, `page_${String(i + 1).padStart(2, "0")}.txt`), texts[i], "utf-8");
+    pageTexts = Array.isArray(parsed?.texts) ? parsed.texts : [];
+    for (let i = 0; i < pageTexts.length; i++) {
+      await fs.writeFile(path.join(dir, `page_${String(i + 1).padStart(2, "0")}.txt`), pageTexts[i], "utf-8");
     }
-    pages = texts.length;
+    pages = pageTexts.length;
   } catch { /* 文本层提取失败：仍允许导入 */ }
+
+  // 生成整篇中文翻译（复用共享 translateDocument；失败不影响导入）
+  if (pages > 0) {
+    try {
+      const translation = await translateDocument(pageTexts);
+      if (translation && !translation.startsWith("（未配置") && !translation.includes("（翻译失败")) {
+        await fs.writeFile(path.join(dir, "translation.md"), translation, "utf-8");
+      }
+    } catch { /* 翻译失败不影响导入；精读页会提示未生成 */ }
+  }
 
   const meta: PaperMeta = {
     slug, title: title || slug, source: "imported", pages, importedAt: new Date().toISOString(),
