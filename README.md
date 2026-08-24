@@ -128,6 +128,10 @@ workflow-app/
 
 ## 注意事项
 
+- **DeepSeek 网络接入**：对话与翻译由服务端调用 `api.deepseek.com`。若出现「错误：fetch failed」，通常是**直连 DeepSeek 不通或网络需走代理**（Node fetch 默认忽略系统代理）。解决：
+  - **桌面 App**：在 `.env.local` 里加 `HTTPS_PROXY=http://127.0.0.1:<端口>`（如 mihomo/Clash 的 `7890`），应用已启用 `NODE_USE_ENV_PROXY` 会自动走该代理。
+  - **开发模式**：运行前 `export HTTPS_PROXY=http://127.0.0.1:7890` 再 `npm run dev`。
+  - 失败时界面会附带具体原因（DNS/连接/超时）与上述提示。
 - **字体**：界面字体走 Google Fonts（`globals.css` 的 `@import`），离线时回退系统字体，不影响功能。
 - **文件系统**：项目如放在 NTFS 分区（ntfs3 驱动）上，偶发目录索引损坏会导致 `next build` 挂起、目录遍历卡死（内核层，`kill -9` 无效）。遇到构建无输出先查 `.next/` 是否可正常 `ls`；建议将项目放在 ext4 等原生 Linux 分区。桌面壳的代码导读遍历已跳过常见构建缓存目录（`.build-cache`/`.cache`/`release` 等）。
 - **pdfjs 与 SSR**：PDF 阅读器用 `next/dynamic({ssr:false})` 客户端加载，pdfjs-dist 在服务端仅用于文本层提取（`serverExternalPackages`），Electron 打包不破坏该链路。

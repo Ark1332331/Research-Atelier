@@ -19,7 +19,6 @@ files:
 asar: false
 npmRebuild: false
 linux:
-  desktopName: Research Atelier
   target:
     - AppImage
     - deb

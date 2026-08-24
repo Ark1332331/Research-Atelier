@@ -107,7 +107,8 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
       });
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content;
-      setMsgs([...next, { role: "assistant", content: content ?? (data?.error ? `错误：${data.error}` : "无响应"), time: nowTime() }]);
+      const errText = data?.error ? `错误：${data.error}` + (data?.hint ? `\n\n${data.hint}` : "") : null;
+      setMsgs([...next, { role: "assistant", content: content ?? (errText ?? "无响应"), time: nowTime() }]);
       // 代码导读：读完后写回一次画像（会的不重讲、卡点提前解释）
       if (toolKey === "code" && onCodeSessionEnd && content && !endLogged.current) {
         endLogged.current = true;

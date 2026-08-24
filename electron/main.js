@@ -210,6 +210,10 @@ async function startNextServer(port) {
     RA_DATA_DIR: dataDir,
     RA_NODE_BIN: process.execPath, // 子进程 node（extract-pdf.mjs）也用 Electron 二进制
     ELECTRON_RUN_AS_NODE: "1",     // 主进程自己：Electron 二进制当 node 用
+    // 让服务端 Node fetch 支持代理：默认 ignore 系统代理。若 .env.local 配了
+    // HTTPS_PROXY（例如 mihomo 的 http://127.0.0.1:7890），服务端调 DeepSeek 就会走代理，
+    // 解决「直连 DeepSeek 不通 / 需代理」导致的 fetch failed。没配代理则仍直连，不受影响。
+    NODE_USE_ENV_PROXY: "1",
   };
   Object.assign(env, loadDotEnv(path.join(projectDir, ".env.local")));
 

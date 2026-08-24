@@ -104,23 +104,33 @@ async function translateDocument(pages: string[]): Promise<string> {
   const full = pages.map((t, i) => `【第 ${i + 1} 页】\n${t}`).join("\n\n");
   const chunks = chunkDocument(full);
 
-  // 并行请求全部块：总耗时 ≈ 单块耗时（块间无依赖，译文按块序拼接）
+  // 并行请求全部块：总耗时 ≈ 单块耗时（块间无依赖，译文按块序拼接）。
+  // DeepSeek 直连在部分网络下不稳定，对每个块做 2 次重试，避免一次抖动导致整段失败。
   const out = await Promise.all(chunks.map(async (chunk, i) => {
-    const res = await fetch("https://api.deepseek.com/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: "deepseek-chat",
-        messages: [
-          { role: "system", content: TRANSLATE_SYSTEM },
-          { role: "user", content: i === 0 ? chunk : `${CONTINUE_NOTE}\n\n${chunk}` },
-        ],
-        stream: false,
-        max_tokens: 8000,
-      }),
-    });
-    const data = await res.json();
-    return data?.choices?.[0]?.message?.content ?? "（翻译失败）";
+    let data: { choices?: { message?: { content?: string } }[]; error?: { message?: string } } | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
+      try {
+        const res = await fetch("https://api.deepseek.com/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages: [
+              { role: "system", content: TRANSLATE_SYSTEM },
+              { role: "user", content: i === 0 ? chunk : `${CONTINUE_NOTE}\n\n${chunk}` },
+            ],
+            stream: false,
+            max_tokens: 8000,
+          }),
+          signal: AbortSignal.timeout(120000),
+        });
+        data = await res.json();
+        if (res.ok) break;
+        if (res.status < 500 && res.status !== 429) break; // 业务错误，重试无意义
+      } catch { /* 网络层错误，重试 */ }
+    }
+    return data?.choices?.[0]?.message?.content ?? "（翻译失败：网络不稳定，请稍后重试导入）";
   }));
   return out.join("\n\n");
 }
