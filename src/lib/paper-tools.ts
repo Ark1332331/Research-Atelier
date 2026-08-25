@@ -52,16 +52,29 @@ function rebuildAbstract(inv?: Record<string, number[]>): string {
   return pos.map((x) => x[1]).join(" ").slice(0, 600);
 }
 
-/** 用 OpenAlex 检索论文 */
+/** 用 OpenAlex 检索论文（带重试：网络波动/429 限流时指数退避重试） */
 export async function searchPapers(query: string, max = 6): Promise<PaperHit[]> {
   const q = (query || "").trim();
   const url =
     `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=${Math.min(max, 10)}&mailto=research@atelier.local` +
     `&select=id,doi,display_name,publication_year,open_access,primary_location,authorships,abstract_inverted_index`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(25000), headers: { "User-Agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`检索失败（HTTP ${res.status}）`);
-  const d = await res.json();
-  return ((d?.results as any[]) ?? []).map((p) => {
+  let d: { results?: unknown[] } = {};
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 800 * 2 ** (attempt - 2)));
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(25000), headers: { "User-Agent": USER_AGENT } });
+      if (res.ok) { d = await res.json(); lastErr = null; break; }
+      lastErr = new Error(`检索失败（HTTP ${res.status}）`);
+      if (res.status < 500 && res.status !== 429) break; // 业务错误，重试无意义
+    } catch (err) {
+      lastErr = err; // 网络层错误 → 重试
+    }
+  }
+  if (lastErr || !d?.results) {
+    throw lastErr instanceof Error ? lastErr : new Error("检索失败：网络到 api.openalex.org 不稳定");
+  }
+  return ((d.results as any[]) ?? []).map((p) => {
     const authors = ((p.authorships as any[]) ?? []).slice(0, 4).map((a) => a?.author?.display_name).filter(Boolean).join(", ");
     const oaPdf = p?.open_access?.oa_url || p?.primary_location?.pdf_url || undefined;
     const isOa = Boolean(p?.open_access?.is_oa || oaPdf);
