@@ -18,7 +18,7 @@
 "use strict";
 
 const { app, BrowserWindow, dialog, shell } = require("electron");
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const fsp = require("node:fs/promises");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -104,6 +104,20 @@ function loadDotEnv(file) {
     }
   } catch { /* 无 .env.local 也允许 */ }
   return out;
+}
+
+/** 读取系统代理（Linux GNOME，gsettings；读不到返回空串）。用于让服务端走用户已开的代理。 */
+function detectSystemProxy() {
+  try {
+    const mode = execFileSync("gsettings", ["get", "org.gnome.system.proxy", "mode"], { encoding: "utf-8" }).trim().replace(/['"]/g, "");
+    if (mode !== "manual") return "";
+    const host = execFileSync("gsettings", ["get", "org.gnome.system.proxy.http", "host"], { encoding: "utf-8" }).trim().replace(/['"]/g, "");
+    const port = execFileSync("gsettings", ["get", "org.gnome.system.proxy.http", "port"], { encoding: "utf-8" }).trim();
+    if (!host || !port) return "";
+    return `http://${host}:${port}`;
+  } catch {
+    return "";
+  }
 }
 
 function freePort() {
@@ -216,6 +230,12 @@ async function startNextServer(port) {
     NODE_USE_ENV_PROXY: "1",
   };
   Object.assign(env, loadDotEnv(path.join(projectDir, ".env.local")));
+  // App 服务端默认不读系统代理，导致用户"开了代理"仍连不上外部 API。
+  // 若未显式配代理，这里自动读取系统代理（Linux GNOME）设给服务端，让检索/对话走代理。
+  if (!env.HTTPS_PROXY && !env.HTTP_PROXY) {
+    const sysProxy = detectSystemProxy();
+    if (sysProxy) { env.HTTPS_PROXY = sysProxy; env.HTTP_PROXY = sysProxy; }
+  }
 
   const child = spawn(
     process.execPath,
