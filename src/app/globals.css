@@ -3097,6 +3097,24 @@ input, textarea, select {
   color: var(--accent-ink);
   border-color: var(--accent);
 }
+.rail-del-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--panel-dark-muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.rail-del-btn:hover {
+  background: rgba(180, 84, 74, 0.18);
+  color: #ffd5cd;
+  border-color: rgba(180, 84, 74, 0.5);
+}
 
 /* 全屏阅读器 · 左栏「能力画像」卡 */
 .reader-profile {

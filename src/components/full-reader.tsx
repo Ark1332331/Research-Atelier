@@ -263,6 +263,23 @@ export default function FullReader({ slug }: { slug: string }) {
   }, []);
 
   const title = papers.find((p) => p.slug === slug)?.title ?? slug;
+
+  // 从阅读页删除某篇导入论文（删 data/papers/<slug> + 清理论文库记录），刷新列表；删的是当前篇则跳走
+  async function deleteThisPaper(slugToDel: string) {
+    const t = papers.find((p) => p.slug === slugToDel)?.title ?? slugToDel;
+    if (!confirm(`确定删除《${t}》？会同时删除它的 PDF、原文与中文翻译。`)) return;
+    const res = await fetch("/api/paper", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", slug: slugToDel }),
+    });
+    if (!res.ok) { alert("删除失败"); return; }
+    const rest = papers.filter((p) => p.slug !== slugToDel);
+    setPapers(rest);
+    if (slugToDel === slug) {
+      window.location.href = rest.length ? `/read/${rest[0].slug}` : "/";
+    }
+  }
   const numPages = papers.find((p) => p.slug === slug)?.pages ?? doc?.numPages ?? 0;
 
   // 能力画像数据：这篇论文（NSR）相关的术语 + 各状态计数
@@ -296,6 +313,8 @@ export default function FullReader({ slug }: { slug: string }) {
                 title="看这篇的中文翻译（上传时全文翻译）">
                 中
               </button>
+              <button className="rail-del-btn" onClick={() => void deleteThisPaper(p.slug)}
+                title="删除这篇（含 PDF/原文/译文）">×</button>
             </div>
           ))}
           {papers.length === 0 && <p className="mono-label" style={{ padding: "0.8rem 0.9rem", color: "var(--panel-dark-muted)" }}>还没有导入论文</p>}

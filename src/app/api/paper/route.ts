@@ -13,7 +13,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { DATA_DIR } from "@/lib/store";
+import { DATA_DIR, readStore, writeStore } from "@/lib/store";
 import { translateDocument } from "@/lib/translate";
 
 const execFileAsync = promisify(execFile);
@@ -23,6 +23,19 @@ const execFileAsync = promisify(execFile);
 const NODE_BIN = process.env.RA_NODE_BIN ?? "node";
 
 const PAPERS_DIR = path.join(DATA_DIR, "papers");
+
+/** 从论文库 data/library.json 中移除指定 slug 的论文记录（若存在） */
+async function removeFromLibraryBySlug(slug: string): Promise<void> {
+  const raw = await readStore("library.json");
+  if (!raw) return;
+  try {
+    const lib = JSON.parse(raw);
+    if (Array.isArray(lib?.papers)) {
+      lib.papers = lib.papers.filter((p: { slug?: string }) => p?.slug !== slug);
+      await writeStore("library.json", JSON.stringify(lib, null, 2));
+    }
+  } catch { /* 忽略 */ }
+}
 
 interface PaperMeta {
   slug: string;
@@ -54,6 +67,19 @@ async function extractText(pdfFullPath: string): Promise<string[]> {
 
 
 export async function POST(request: Request) {
+  // 支持 JSON { action:"delete", slug }：从精读页删除一篇导入论文（删 data/papers/<slug> + 清理论文库记录）
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    let body: { action?: string; slug?: string };
+    try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
+    if (body?.action === "delete" && body.slug) {
+      await fs.rm(path.join(PAPERS_DIR, body.slug), { recursive: true, force: true }).catch(() => {});
+      await removeFromLibraryBySlug(body.slug);
+      return Response.json({ ok: true });
+    }
+    return Response.json({ error: "未知 action" }, { status: 400 });
+  }
+
   let form: FormData;
   try {
     form = await request.formData();
