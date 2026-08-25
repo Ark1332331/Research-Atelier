@@ -75,7 +75,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         slug: r.slug,
         title: r.title,
         pages: r.pages,
-        note: "论文 PDF 已下载并导入本地论文库（data/papers）；用户可在「论文库」看到它，也可去「精读讲解」阅读。",
+        note: "论文 PDF 已下载并导入本地论文库（data/papers）。整篇中文翻译正在后台生成（约 1–2 分钟），之后可在「精读讲解」看到；若等太久没看到译文，可稍后重新翻译。",
       };
     } catch (e) {
       return { imported: false, error: e instanceof Error ? e.message : String(e) };
@@ -84,10 +84,11 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   return { error: `未知工具：${name}` };
 }
 
-/** 单次 DeepSeek 调用（带重试网络抖动；5xx/429 重试，4xx 业务错误直接返回） */
+/** 单次 DeepSeek 调用（带重试网络抖动；5xx/429 重试，4xx 业务错误直接返回）。
+    超时/重试控制得很短，避免用户在界面「思考中…」等太久而无响应。 */
 async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef[]): Promise<Response> {
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
       const res = await fetch(DEEPSEEK_URL, {
@@ -99,7 +100,7 @@ async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef
           stream: false,
           ...(tools ? { tools, tool_choice: "auto" } : {}),
         }),
-        signal: AbortSignal.timeout(120000),
+        signal: AbortSignal.timeout(60000),
       });
       const data = await res.json();
       if (res.ok) return Response.json(data);
@@ -145,7 +146,7 @@ export async function POST(request: Request) {
 
   const useTools = Boolean(body.enableToolcall);
   // function calling 循环：AI 要求调用工具 → 后端执行 → 回填 → 再让 AI 继续，最多 4 轮
-  const MAX_TOOL_ROUNDS = 4;
+  const MAX_TOOL_ROUNDS = 3;
   let convo: ChatMsg[] = messages;
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     const res = await deepseekChat(apiKey, convo, useTools ? TOOLS : undefined);

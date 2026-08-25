@@ -149,14 +149,17 @@ export async function downloadPaper(opts: {
     pages = pageTexts.length;
   } catch { /* 文本层提取失败：仍允许导入 */ }
 
-  // 生成整篇中文翻译（复用共享 translateDocument；失败不影响导入）
+  // 整篇中文翻译耗时较长（要多次调 DeepSeek）。放到后台进行、不阻塞下载导入的返回，
+  // 以免筛选对话卡几分钟。导入完成后稍等，即可在精读页看到译文（translation.md）。
   if (pages > 0) {
-    try {
-      const translation = await translateDocument(pageTexts);
-      if (translation && !translation.startsWith("（未配置") && !translation.includes("（翻译失败")) {
-        await fs.writeFile(path.join(dir, "translation.md"), translation, "utf-8");
-      }
-    } catch { /* 翻译失败不影响导入；精读页会提示未生成 */ }
+    void (async () => {
+      try {
+        const translation = await translateDocument(pageTexts);
+        if (translation && !translation.startsWith("（未配置") && !translation.includes("（翻译失败")) {
+          await fs.writeFile(path.join(dir, "translation.md"), translation, "utf-8");
+        }
+      } catch { /* 后台翻译失败不影响导入；精读页会提示未生成 */ }
+    })();
   }
 
   const meta: PaperMeta = {

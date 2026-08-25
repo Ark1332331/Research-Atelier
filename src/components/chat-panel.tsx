@@ -372,7 +372,7 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
           </div>
         ))}
         {loading && (
-          <p className="thinking"><span className="thinking-dot" aria-hidden="true" />思考中…</p>
+          <p className="thinking"><span className="thinking-dot" aria-hidden="true" />思考中…（联网检索 / 生成回复有时较慢，若超过 2 分钟仍无响应可重发）</p>
         )}
       </div>
 
