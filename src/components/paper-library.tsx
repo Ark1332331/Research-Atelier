@@ -40,6 +40,9 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
   const [importing, setImporting] = useState(false);
   const [importTip, setImportTip] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  // 补抽已导入论文的术语
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillTip, setBackfillTip] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -119,6 +122,21 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
       setImportTip(`导入失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setImporting(false);
+    }
+  };
+
+  const backfillTerms = async () => {
+    setBackfilling(true);
+    setBackfillTip("");
+    try {
+      const res = await fetch("/api/paper-terms/backfill", { method: "POST" });
+      const d = await res.json();
+      if (!res.ok) { setBackfillTip(`补抽失败：${d?.error ?? ""}`); return; }
+      setBackfillTip(`已开始为 ${d?.scanned ?? 0} 篇已导入论文补抽术语（后台进行，稍后到「术语卡」查看）`);
+    } catch (e) {
+      setBackfillTip(`补抽失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBackfilling(false);
     }
   };
 
@@ -258,6 +276,12 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
               <input ref={fileRef} type="file" accept=".pdf" hidden
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportFile(f); e.target.value = ""; }} />
               {importTip && <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>{importTip}</span>}
+            </div>
+            <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap", marginTop: "0.9rem" }}>
+              <button className="btn btn--ghost btn--quiet" disabled={backfilling} onClick={() => void backfillTerms()}>
+                {backfilling ? "补抽中…" : "为已导入论文补抽术语"}
+              </button>
+              {backfillTip && <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>{backfillTip}</span>}
             </div>
           </div>
         </div>

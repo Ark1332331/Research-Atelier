@@ -3,7 +3,9 @@
  * 与导入解耦——放到后台异步执行（不阻塞导入）；已存在的术语跳过；数量不限（需要的才抽）。
  * 数据层复用 src/lib/store.ts（本地 data/glossary.json；生产（Vercel）自动切 KV）。
  */
-import { readStore, writeStore } from "@/lib/store";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { DATA_DIR, readStore, writeStore } from "@/lib/store";
 
 const ROLE_OPTIONS = [
   "感知/传感器", "状态估计/对齐", "场景表示/建图", "补全/学习机制",
@@ -100,4 +102,42 @@ export function extractTermsInBackground(pages: string[], sourceTitle: string): 
       if (terms.length) await saveTermsToGlossary(terms, sourceTitle);
     } catch { /* 术语抽取失败不影响导入 */ }
   })();
+}
+
+/** 读取某论文目录下的每页原文（page_01.txt...） */
+async function readPageTexts(dir: string): Promise<string[]> {
+  try {
+    const files = (await fs.readdir(dir)).filter((f) => /^page_\d+\.txt$/.test(f)).sort();
+    const out: string[] = [];
+    for (const f of files) out.push(await fs.readFile(path.join(dir, f), "utf-8"));
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 为所有已导入论文补抽术语（后台逐篇），返回将要补抽的篇数 */
+export async function backfillTermsForAllPapers(): Promise<{ scanned: number }> {
+  const papersDir = path.join(DATA_DIR, "papers");
+  const dirs = await fs.readdir(papersDir).catch(() => [] as string[]);
+  let scanned = 0;
+  for (const d of dirs) {
+    const dir = path.join(papersDir, d);
+    try {
+      if (!(await fs.stat(dir)).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    let title = d;
+    try {
+      const meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf-8"));
+      if (meta?.title) title = meta.title;
+    } catch { /* 无 meta 用目录名 */ }
+    const pages = await readPageTexts(dir);
+    if (pages.length) {
+      extractTermsInBackground(pages, title);
+      scanned++;
+    }
+  }
+  return { scanned };
 }
