@@ -142,8 +142,10 @@ export function matchTerms(items: TextItem[], terms: Term[]): TermBox[] {
       seen.add(`${sub.eng}|${Math.round(it.baseline)}`);
       const idx = it.text.toLowerCase().indexOf(sub.eng.toLowerCase());
       if (idx >= 0) {
-        const xOff = textW(it.text.slice(0, idx), it.fs); // 用字符宽加权定位，而非平均宽
-        const w = Math.max(textW(sub.eng, it.fs), 2);
+        const wholeW = textW(it.text, it.fs);
+        const scale = wholeW > 0 ? Math.min(it.w / wholeW, 3) : 1; // 用 item 的实际行宽校准估算字符宽（字体差异）
+        const xOff = textW(it.text.slice(0, idx), it.fs) * scale;
+        const w = Math.max(textW(sub.eng, it.fs) * scale, 2);
         boxes.push({ x: it.x + xOff, y: it.y, w, h: it.h, term: sub.t });
       }
     }
