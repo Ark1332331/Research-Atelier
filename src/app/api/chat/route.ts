@@ -100,7 +100,7 @@ async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef
           stream: false,
           ...(tools ? { tools, tool_choice: "auto" } : {}),
         }),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(120000),
       });
       const data = await res.json();
       if (res.ok) return Response.json(data);
@@ -119,7 +119,7 @@ async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef
   const detail = err instanceof Error ? err.message + (cause ? `（${cause.code || cause.message}）` : "") : "网络错误";
   const proxyHint = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
     ? "检测到代理配置，但仍连接失败，请检查代理地址/端口是否可用。"
-    : "已自动重试 3 次仍失败，通常是网络到 api.deepseek.com 不稳定。若你的网络需要代理，请在 .env.local 里加 `HTTPS_PROXY=http://127.0.0.1:<端口>` 并重启应用。";
+    : "已自动重试 2 次仍失败，通常是网络到 api.deepseek.com 不稳定。若你的网络需要代理，请在 .env.local 里加 `HTTPS_PROXY=http://127.0.0.1:<端口>`（HTTP_PROXY 也填同一端口）并彻底重启应用。";
   return Response.json({ error: detail, hint: proxyHint }, { status: 502 });
 }
 

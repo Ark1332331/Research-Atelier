@@ -18,6 +18,7 @@ export interface Term {
   note: string;        // 当前先理解为
   source: string;      // 来源（论文短名+节）
   links: string;       // 关联术语
+  papers?: { slug: string; title: string }[]; // 这个术语在哪些论文里出现过（跨论文累积，便于联系起来）
   updatedAt: string;
 }
 

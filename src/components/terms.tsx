@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import type { Term } from "@/app/api/terms/route";
 import PageHead from "@/components/page-head";
 import { KnowledgeGraph } from "@/components/dashboard";
@@ -153,7 +154,19 @@ export default function Terms() {
               <div className="term-cell">
                 {t.updatedAt ? fmtDate(t.updatedAt) : "—"}
                 <br />
-                <span style={{ opacity: 0.6 }}>出处 {t.source ? t.source.slice(0, 10) : "—"}</span>
+                {Array.isArray(t.papers) && t.papers.length > 0 ? (
+                  <span className="term-papers" style={{ opacity: 0.9 }}>
+                    见于 {t.papers.length} 篇：
+                    {t.papers.map((p, idx) => (
+                      <span key={p.slug}>
+                        {idx > 0 && "、"}
+                        <Link href={`/read/${p.slug}`} style={{ textDecoration: "underline", cursor: "pointer" }}>{p.title.slice(0, 16)}</Link>
+                      </span>
+                    ))}
+                  </span>
+                ) : (
+                  <span style={{ opacity: 0.6 }}>出处 {t.source ? t.source.slice(0, 18) : "—"}</span>
+                )}
               </div>
               <div className="term-actions">
                 <button className="btn btn--ghost btn--quiet" onClick={() => startEdit(t)}>编辑</button>

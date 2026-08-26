@@ -171,7 +171,7 @@ export async function POST(request: Request) {
   })();
 
   // 术语抽查：导入后后台从全文抽核心术语，记入术语卡（数量不限，需要的才抽；已存在的跳过）
-  extractTermsInBackground(pages, meta.title);
+  extractTermsInBackground(pages, { slug, title: meta.title });
 
   return Response.json({ ok: true, meta });
 }

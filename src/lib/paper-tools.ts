@@ -182,7 +182,7 @@ export async function downloadPaper(opts: {
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
   await addToLibrary(meta);
   // 术语抽查：导入后后台抽取术语记入术语卡（数量不限，需要的才抽；已存在的跳过）
-  extractTermsInBackground(pageTexts, meta.title);
+  extractTermsInBackground(pageTexts, { slug, title: meta.title });
 
   return { slug, title: meta.title, pages, url, imported: true };
 }

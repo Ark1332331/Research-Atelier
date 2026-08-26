@@ -62,20 +62,30 @@ function parseJsonArray(s: string): unknown {
   try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { return null; }
 }
 
-/** 把抽取到的术语 upsert 进术语卡 glossary.json（已存在的 name 跳过） */
-async function saveTermsToGlossary(terms: ExtractedTerm[], sourceTitle: string): Promise<void> {
+/** 把抽取到的术语 upsert 进术语卡 glossary.json。已存在的同名术语：不重复建卡，但追加「出现在这篇论文」；新术语则新建并记录来源论文。 */
+async function saveTermsToGlossary(terms: ExtractedTerm[], paper: { slug: string; title: string }): Promise<void> {
   const raw = await readStore("glossary.json");
   let arr: Record<string, unknown>[] = [];
   try {
     const d = raw ? JSON.parse(raw) : [];
     if (Array.isArray(d)) arr = d;
   } catch { /* 忽略坏数据 */ }
-  const existing = new Set(arr.map((t) => String((t as { name?: string })?.name ?? "")));
   const now = new Date().toISOString();
-  let added = 0;
+  let changed = false;
   for (const t of terms) {
     const name = (t.name ?? "").trim();
-    if (!name || existing.has(name)) continue;
+    if (!name) continue;
+    const found = arr.find((x) => String((x as { name?: string })?.name ?? "") === name);
+    if (found) {
+      // 已存在：若这篇论文还没记录，追加进去（同一术语跨多篇论文，便于联系起来）
+      const papers = Array.isArray((found as { papers?: unknown }).papers) ? (found as { papers: { slug: string; title: string }[] }).papers : [];
+      if (!papers.some((p) => p.slug === paper.slug)) {
+        papers.push(paper);
+        (found as { papers: unknown }).papers = papers;
+        changed = true;
+      }
+      continue;
+    }
     arr.push({
       id: `t${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
       name,
@@ -83,23 +93,23 @@ async function saveTermsToGlossary(terms: ExtractedTerm[], sourceTitle: string):
       status: "未接触",
       reuse: REUSE_OPTIONS.includes(t.reuse ?? "") ? t.reuse : "通用",
       note: t.note ?? "",
-      source: sourceTitle,
+      source: paper.title,
       links: "",
+      papers: [paper],
       updatedAt: now,
     });
-    existing.add(name);
-    added++;
+    changed = true;
   }
-  if (added > 0) await writeStore("glossary.json", JSON.stringify(arr, null, 2));
+  if (changed) await writeStore("glossary.json", JSON.stringify(arr, null, 2));
 }
 
-/** 导入论文后调用：后台从页文本抽术语并记入术语卡（失败不影响导入） */
-export function extractTermsInBackground(pages: string[], sourceTitle: string): void {
+/** 导入论文后调用：后台从页文本抽术语并记入术语卡（失败不影响导入）。paper 传 {slug,title}。 */
+export function extractTermsInBackground(pages: string[], paper: { slug: string; title: string }): void {
   if (!pages || pages.length === 0) return;
   void (async () => {
     try {
       const terms = await extractTerms(pages.join("\n\n"));
-      if (terms.length) await saveTermsToGlossary(terms, sourceTitle);
+      if (terms.length) await saveTermsToGlossary(terms, paper);
     } catch { /* 术语抽取失败不影响导入 */ }
   })();
 }
@@ -135,7 +145,7 @@ export async function backfillTermsForAllPapers(): Promise<{ scanned: number }> 
     } catch { /* 无 meta 用目录名 */ }
     const pages = await readPageTexts(dir);
     if (pages.length) {
-      extractTermsInBackground(pages, title);
+      extractTermsInBackground(pages, { slug: d, title });
       scanned++;
     }
   }
