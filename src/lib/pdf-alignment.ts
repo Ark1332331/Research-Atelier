@@ -107,6 +107,20 @@ export function detectParagraphs(items: TextItem[], pageW: number): ParaDot[] {
   return dots;
 }
 
+// 变宽字体的字符宽估算（英文）：窄 i/l/标点、宽 m/w、大写略宽、空格窄——用于子串术语的横向精确定位
+function charW(ch: string, fs: number): number {
+  if (/[ilI1.,'"|!()\[\]{};:·]/.test(ch)) return 0.28 * fs;
+  if (/[mwMW]/.test(ch)) return 0.85 * fs;
+  if (/[A-Z]/.test(ch)) return 0.72 * fs;
+  if (/\s/.test(ch)) return 0.3 * fs;
+  return 0.52 * fs;
+}
+function textW(text: string, fs: number): number {
+  let s = 0;
+  for (const c of text) s += charW(c, fs);
+  return s;
+}
+
 // 匹配术语：整 run 精确命中或用框，短 run 内子串按字符比例定位
 export function matchTerms(items: TextItem[], terms: Term[]): TermBox[] {
   const termList = terms
@@ -127,8 +141,11 @@ export function matchTerms(items: TextItem[], terms: Term[]): TermBox[] {
     if (sub && !seen.has(`${sub.eng}|${Math.round(it.baseline)}`)) {
       seen.add(`${sub.eng}|${Math.round(it.baseline)}`);
       const idx = it.text.toLowerCase().indexOf(sub.eng.toLowerCase());
-      const fw = it.w / it.text.length;
-      boxes.push({ x: it.x + idx * fw, y: it.y, w: Math.max(sub.eng.length * fw, 4), h: it.h, term: sub.t });
+      if (idx >= 0) {
+        const xOff = textW(it.text.slice(0, idx), it.fs); // 用字符宽加权定位，而非平均宽
+        const w = Math.max(textW(sub.eng, it.fs), 2);
+        boxes.push({ x: it.x + xOff, y: it.y, w, h: it.h, term: sub.t });
+      }
     }
   }
   return boxes;
