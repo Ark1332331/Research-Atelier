@@ -21,14 +21,15 @@ export interface Term {
   updatedAt: string;
 }
 
-export const ROLE_OPTIONS = [
+// 仅本 route 内部参考（不导出——Next 不允许 route 文件导出非 handler 成员）
+const ROLE_OPTIONS = [
   "感知/传感器", "状态估计/对齐", "场景表示/建图", "补全/学习机制",
   "控制/决策", "训练机制", "评估指标", "工程/部署", "领域背景",
 ];
 
-export const STATUS_OPTIONS = ["未接触", "有直觉", "能解释", "能对应论文", "能实现"];
+const STATUS_OPTIONS = ["未接触", "有直觉", "能解释", "能对应论文", "能实现"];
 
-export const REUSE_OPTIONS = ["通用", "论文特有", "论文内特殊含义"];
+const REUSE_OPTIONS = ["通用", "论文特有", "论文内特殊含义"];
 
 async function readTerms(): Promise<Term[]> {
   try {

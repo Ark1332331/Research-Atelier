@@ -16,6 +16,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { DATA_DIR, readStore, writeStore } from "@/lib/store";
 import { translateDocument } from "@/lib/translate";
+import { extractTermsInBackground } from "@/lib/terms-extract";
 
 const execFileAsync = promisify(execFile);
 const NODE_BIN = process.env.RA_NODE_BIN ?? "node";
@@ -180,6 +181,8 @@ export async function downloadPaper(opts: {
   };
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
   await addToLibrary(meta);
+  // 术语抽查：导入后后台抽取术语记入术语卡（数量不限，需要的才抽；已存在的跳过）
+  extractTermsInBackground(pageTexts, meta.title);
 
   return { slug, title: meta.title, pages, url, imported: true };
 }

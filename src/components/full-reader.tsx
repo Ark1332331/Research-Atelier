@@ -416,6 +416,7 @@ export default function FullReader({ slug }: { slug: string }) {
               toolKey="p3"
               hint="我是你的导读讲解。可以问：这一段在解决什么问题？这个术语怎么理解？方法部分怎么串起来？也可以直接说「讲一下第 3 页」。"
               systemExtra={paperText}
+              historyKey={`read-${slug}`}
             />
           </div>
           <div className="reader-chat-resize" aria-hidden="true"

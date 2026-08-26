@@ -15,6 +15,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { DATA_DIR, readStore, writeStore } from "@/lib/store";
 import { translateDocument } from "@/lib/translate";
+import { extractTermsInBackground } from "@/lib/terms-extract";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,6 +48,34 @@ interface PaperMeta {
 function slugify(name: string): string {
   const base = name.replace(/\.pdf$/i, "").replace(/[^\w\u4e00-\u9fa5-]+/g, "-").slice(0, 60);
   return `${base}-${Date.now().toString(36)}`;
+}
+
+/** 把导入的论文写进论文库 data/library.json（去重：同 slug 不重复加）。
+ *  与 src/lib/paper-tools.ts 的 addToLibrary 保持一致——手动上传（本路由）
+ *  和联网下载（downloadPaper）都必须落到 library.json，否则「论文库」视图看不到。 */
+async function addToLibraryBySlug(meta: PaperMeta): Promise<void> {
+  const raw = await readStore("library.json");
+  let lib: { groups: unknown[]; papers: any[] };
+  try {
+    lib = raw ? JSON.parse(raw) : { groups: [], papers: [] };
+    if (!Array.isArray(lib.papers)) lib.papers = [];
+    if (!Array.isArray(lib.groups)) lib.groups = [];
+  } catch {
+    lib = { groups: [], papers: [] };
+  }
+  if (lib.papers.some((p: { slug?: string }) => p?.slug === meta.slug)) return; // 已导入过
+  lib.papers.push({
+    id: `p-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
+    title: meta.title,
+    source: "imported",
+    slug: meta.slug,
+    status: "未读",
+    group: null,
+    current: false,
+    firstEncounter: new Date().toISOString().slice(0, 10),
+    lastEngaged: "",
+  });
+  await writeStore("library.json", JSON.stringify(lib, null, 2));
 }
 
 async function extractText(pdfFullPath: string): Promise<string[]> {
@@ -115,12 +144,10 @@ export async function POST(request: Request) {
     );
   }
 
-  // 存每页原文 + 整篇按段落组织的中文翻译（translation.md）
+  // 存每页原文（整篇中文翻译放到后台异步生成，避免上传导入卡在翻译上）
   for (let i = 0; i < pages.length; i++) {
     await fs.writeFile(path.join(dir, `page_${String(i + 1).padStart(2, "0")}.txt`), pages[i], "utf-8");
   }
-  const translation = await translateDocument(pages);
-  await fs.writeFile(path.join(dir, "translation.md"), translation, "utf-8");
 
   const meta: PaperMeta = {
     slug,
@@ -129,6 +156,22 @@ export async function POST(request: Request) {
     importedAt: new Date().toISOString(),
   };
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
+
+  // 写进论文库 library.json，让「论文库」视图能看到这篇（否则只存在于 data/papers，精读页能看、库里看不到）
+  await addToLibraryBySlug(meta);
+
+  // 整篇中文翻译后台生成（分钟级，不等它；导入立即完成，稍后精读页即可见 translation.md）
+  void (async () => {
+    try {
+      const translation = await translateDocument(pages);
+      if (translation && !translation.startsWith("（未配置") && !translation.includes("（翻译失败")) {
+        await fs.writeFile(path.join(dir, "translation.md"), translation, "utf-8");
+      }
+    } catch { /* 忽略 */ }
+  })();
+
+  // 术语抽查：导入后后台从全文抽核心术语，记入术语卡（数量不限，需要的才抽；已存在的跳过）
+  extractTermsInBackground(pages, meta.title);
 
   return Response.json({ ok: true, meta });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { LibraryGroup, LibraryPaper } from "@/app/api/library/route";
 import PageHead from "@/components/page-head";
@@ -36,6 +36,10 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
   const [newGroup, setNewGroup] = useState("");
   const [addForm, setAddForm] = useState({ title: "", authors: "", venue: "", year: "", status: "未读" });
   const [addGroup, setAddGroup] = useState<string>("");
+  // 从本地 PDF 导入（上传 → 提取原文 + 后台翻译 → 进论文库）
+  const [importing, setImporting] = useState(false);
+  const [importTip, setImportTip] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +94,31 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
       setAddForm({ title: "", authors: "", venue: "", year: "", status: "未读" });
       setAddGroup("");
       setShowAdd(false);
+    }
+  };
+
+  // 从本地 PDF 导入论文库（/api/paper POST multipart；翻译后台生成）
+  const onImportFile = async (f: File) => {
+    setImporting(true);
+    setImportTip("");
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const res = await fetch("/api/paper", { method: "POST", body: fd });
+      const d = await res.json();
+      if (res.ok) {
+        setImportTip(`✓ 已导入《${d?.meta?.title ?? f.name}》，中文翻译正在后台生成，稍后可在「精读讲解」阅读`);
+        const r = await fetch("/api/library", { cache: "no-store" });
+        const data = await r.json();
+        setGroups(data.groups ?? []);
+        setPapers(data.papers ?? []);
+      } else {
+        setImportTip(`导入失败：${d?.error ?? "未知错误"}`);
+      }
+    } catch (e) {
+      setImportTip(`导入失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -218,6 +247,17 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
             <div style={{ display: "flex", gap: "0.6rem", marginTop: "1rem" }}>
               <button className="btn btn--primary" onClick={() => void addPaper()}>添加到库</button>
               <button className="btn btn--ghost" onClick={() => setShowAdd(false)}>取消</button>
+            </div>
+            <div className="field-label" style={{ marginTop: "0.9rem", marginBottom: "0.3rem" }}>
+              <span className="mono-label">或从本地 PDF 导入（上传后自动提取原文 + 后台翻译，进论文库）</span>
+            </div>
+            <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
+              <button className="btn btn--ghost" disabled={importing} onClick={() => fileRef.current?.click()}>
+                {importing ? "导入中…" : "选择 PDF 文件导入"}
+              </button>
+              <input ref={fileRef} type="file" accept=".pdf" hidden
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void onImportFile(f); e.target.value = ""; }} />
+              {importTip && <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>{importTip}</span>}
             </div>
           </div>
         </div>
