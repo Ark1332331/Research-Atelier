@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { normalizeSearchPlan, normalizeIntent, deriveNextStep } from "./plan.ts";
-import type { ResearchSession, SearchPlanStage, SearchPlan, SearchIntent, DatabaseAction } from "./types.ts";
+import type { ResearchSession, SearchPlanStage, SearchPlan, SearchIntent, DatabaseAction, DiscoveryEvent, DiscoveryEventKind } from "./types.ts";
 
 export const SESSION_SCHEMA_VERSION = 1;
 
@@ -26,6 +26,7 @@ export function createSession(question: string): ResearchSession {
     readingPaths: [],
     openQuestions: [],
     nextStepHistory: [],
+    events: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -54,6 +55,7 @@ export function normalizeSession(raw: unknown): ResearchSession {
     readingPaths: Array.isArray(o.readingPaths) ? o.readingPaths : [],
     openQuestions: Array.isArray(o.openQuestions) ? o.openQuestions.map(String) : [],
     nextStepHistory: Array.isArray(o.nextStepHistory) ? o.nextStepHistory : [],
+    events: Array.isArray(o.events) ? (o.events as DiscoveryEvent[]) : [],
     createdAt: typeof o.createdAt === "string" ? o.createdAt : "",
     updatedAt: typeof o.updatedAt === "string" ? o.updatedAt : "",
   };
@@ -92,6 +94,17 @@ export function withPlan(s: ResearchSession, intent: SearchIntent, plan: SearchP
     databaseActions: [...s.databaseActions, { database: primaryId, action: "query-generated", at: now }],
     updatedAt: now,
   };
+}
+
+/** v1.5：append-only 发现过程事件日志（最多保留 200 条） */
+export function recordEvent(
+  s: ResearchSession,
+  kind: DiscoveryEventKind,
+  detail: Record<string, unknown> = {},
+): ResearchSession {
+  const ev: DiscoveryEvent = { at: new Date().toISOString(), kind, detail };
+  const events = [...(s.events ?? []), ev].slice(-200);
+  return { ...s, events, updatedAt: new Date().toISOString() };
 }
 
 /** v1.2：导入完成 → screening，记录导入统计与原始文本（刷新可恢复） */

@@ -175,6 +175,11 @@ export default function Discovery() {
                   <button className="btn btn--ghost" disabled={busy} onClick={() => void act("returned-import")}>
                     我搜完了，开始导入论文
                   </button>
+                  {plan?.ladder && plan.ladder.activeTier < plan.ladder.tiers.length - 1 && (
+                    <button className="btn btn--ghost" disabled={busy} onClick={() => void act("advance-tier")}>
+                      进入下一层 · {plan.ladder.tiers[plan.ladder.activeTier + 1]?.label ?? ""}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -332,10 +337,54 @@ export default function Discovery() {
               )}
             </>
           )}
+
+          {/* v1.5：发现过程时间线（append-only 事件日志） */}
+          {(session?.events ?? []).length > 0 && (
+            <details style={{ fontSize: "0.82rem" }}>
+              <summary className="mono-label" style={{ cursor: "pointer", color: "var(--muted-foreground)" }}>
+                发现过程（{(session.events ?? []).length} 步）
+              </summary>
+              <ol style={{ margin: "0.5rem 0 0 1.1rem", display: "flex", flexDirection: "column", gap: "0.3rem" }}>
+                {(session.events ?? []).map((ev: any, i: number) => (
+                  <li key={i}>
+                    <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>{evLabel(ev.kind)}{evDetail(ev)}</span>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
         </>
       )}
     </div>
   );
+}
+
+function evLabel(kind: string): string {
+  const m: Record<string, string> = {
+    "plan-generated": "生成检索计划",
+    "tier-advanced": "进入下一层",
+    "external-opened": "打开外部数据库",
+    "returned-import": "搜完回来",
+    "batch-imported": "导入候选",
+    calibration: "术语校准",
+    "triage-computed": "AI 筛选",
+    "seeds-selected": "选择种子",
+  };
+  return m[kind] ?? kind;
+}
+
+function evDetail(ev: any): string {
+  const d = ev?.detail ?? {};
+  switch (ev?.kind) {
+    case "plan-generated": return "（第 " + (d.tier ?? 1) + "/" + (d.totalTiers ?? 1) + " 层 · " + (d.tierLabel ?? "") + "）";
+    case "tier-advanced": return "（第 " + d.from + " → 第 " + d.to + " 层 · " + (d.toLabel ?? "") + "）";
+    case "external-opened": return "（" + (d.database ?? "") + "）";
+    case "batch-imported": return "（" + (d.rawItems ?? 0) + " 条 → 候选 " + (d.unique ?? 0) + " 篇）";
+    case "calibration": return "（confirmed: " + ((d.confirmed ?? []).length) + " · suggested: " + ((d.suggested ?? []).length) + " · weakOrRare: " + ((d.weakOrRare ?? []).length) + "）";
+    case "triage-computed": return "（" + (d.count ?? 0) + " 篇）";
+    case "seeds-selected": return "（" + ((d.ids ?? []).length) + " 篇）";
+    default: return "";
+  }
 }
 
 function ConceptMapView({ map }: { map: any }) {

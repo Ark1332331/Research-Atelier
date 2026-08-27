@@ -730,6 +730,17 @@ v1.4（2026-08-27）Phase A.5：Academic Term Mapper + Query Ladder（Phase C �
   第一轮 query 为 HRI AND human intention/action recognition（canonical），不再生成
   "robotic fencing" "human motion recognition"；第三层才加入 fencing（test-term-mapper 25 项）
 - 测试：term-mapper 25 + 全量 68/42/20/28/14/30/23/59 + live 15/24 全绿；tsc 干净
+
+v1.5（2026-08-27）发现过程记录（Discovery Event Log）：
+- ResearchSession 新增 append-only events（DiscoveryEvent[]，最多 200 条，刷新不丢）：
+  plan-generated（含阶梯层）/ tier-advanced / external-opened（含库与 query）/
+  returned-import / batch-imported（统计）/ calibration（confirmed/suggested/weakOrRare）/
+  triage-computed / seeds-selected
+- 新增 action advance-tier：Query Ladder 单按钮「进入下一层」（非面板），
+  intent 按新层确定性重建、plan 更新、tier-advanced 入日志；最后一层 400
+- UI：「发现过程（N 步）」折叠时间线，按序展示全部事件与关键细节
+- 测试：test-discovery-events 17 项（8 类事件、顺序、advance-tier 1→2→3→400、刷新不丢）；
+  全量 68/42/25/20/28/14/17/30/23/59 + live 15/24 全绿；tsc 干净
 ~~~
 
 

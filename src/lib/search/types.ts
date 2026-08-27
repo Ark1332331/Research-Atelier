@@ -378,6 +378,7 @@ export interface ResearchSession {
   readingPaths: ReadingPath[];
   openQuestions: string[];
   nextStepHistory: NextStep[];  // derived 建议的 history（备查，不作为当前真相）
+  events: DiscoveryEvent[];      // v1.5：发现过程事件日志（append-only，刷新不丢）
   createdAt: string;
   updatedAt: string;
 }
@@ -460,5 +461,24 @@ export interface TermCalibration {
   termsWeakOrRare: { term: string; count: number; note: string }[];
   basedOn: number;             // 参与统计的候选数
   computedAt: string;
+}
+
+
+
+/* ================ v1.5：发现过程记录（Discovery Event Log） ================ */
+export type DiscoveryEventKind =
+  | "plan-generated"    // { tier, tierLabel, totalTiers, primaryDb }
+  | "tier-advanced"     // { from, to }
+  | "external-opened"   // { database, query }
+  | "returned-import"
+  | "batch-imported"    // { rawItems, recognized, unknown, merged, unique }
+  | "calibration"       // { confirmed, suggested, weakOrRare }
+  | "triage-computed"   // { count }
+  | "seeds-selected";   // { ids }
+
+export interface DiscoveryEvent {
+  at: string;
+  kind: DiscoveryEventKind;
+  detail: Record<string, unknown>;
 }
 
