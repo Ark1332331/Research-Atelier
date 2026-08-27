@@ -1,17 +1,16 @@
 /**
- * Paper ↔ Code Mapping 接口（Step 5）
+ * Paper ↔ Code Mapping 接口（Step 5，grounding hardening）
  * POST /api/reproduction/mappings
- *   { slug, action: "propose", rootId? } → { mappings }（DeepSeek 提议，校验 codeRef 在 snapshot 内，status=proposed）
+ *   { slug, action: "propose", rootId? } → { mappings }（DeepSeek 只选 paperFactIds+codeAnchorIds，refs 系统恢复，status=proposed）
  *   { slug, action: "list" }             → { mappings }
- *   { slug, action: "save", mappings }   → { mappings }（merge 保存）
+ *   { slug, action: "save", mappings }   → { mappings }（按稳定 identity merge；**confirmed 不被覆盖/降级**）
  *   { slug, action: "confirm", id }      → { mappings }（确认 → status=confirmed）
  *   { slug, action: "reject", id }       → { mappings }（驳回 → 移除）
- * 说明：AI 只提议，用户确认后才 confirmed（UX Contract：用户只处理 exception）。
  */
 import path from "node:path";
 import { readStore } from "@/lib/store";
 import { getReproduction, upsertReproduction } from "@/lib/reproduction";
-import { proposeMappings, normalizeMappings, confirmMapping, rejectMapping } from "@/lib/mapping";
+import { proposeMappings, mergeMappings, normalizeMapping, confirmMapping, rejectMapping } from "@/lib/mapping";
 import { buildRepositorySnapshot } from "@/lib/code-reader";
 
 interface RootConfig { id: string; name: string; root: string }
@@ -43,19 +42,17 @@ export async function POST(request: Request) {
     const cfg = body.rootId ? roots.find((r) => r.id === body.rootId) : roots[0];
     if (!cfg) return Response.json({ error: "未登记 repo root" }, { status: 403 });
     const snap = await buildRepositorySnapshot(cfg.root);
-    const mappings = await proposeMappings({ facts: rec.facts ?? [], snapshot: snap });
+    const mappings = await proposeMappings({ facts: rec.facts ?? [], snapshot: snap, root: cfg.root });
     return Response.json({ root: cfg.id, mappings });
   }
 
   if (action === "save") {
     if (!Array.isArray(body.mappings)) return Response.json({ error: "mappings 必须是数组" }, { status: 400 });
-    const normalized = normalizeMappings(body.mappings as never[]);
-    // merge：按 id 更新，新增追加
-    const byId = new Map(rec.mappings?.map((m) => [m.id, m]) ?? []);
-    for (const m of normalized) byId.set(m.id, m);
-    rec.mappings = [...byId.values()];
+    // 普通 save 不携带状态意图：incoming 一律归一化为 proposed；已 confirmed 的 identity 在 merge 时保留 confirmed
+    const incoming = (body.mappings as never[]).map((m: any) => normalizeMapping({ ...m, status: undefined })).filter((m): m is NonNullable<typeof m> => Boolean(m));
+    rec.mappings = mergeMappings(rec.mappings ?? [], incoming);
     await upsertReproduction(rec);
-    return Response.json({ mappings: rec.mappings, saved: normalized.length });
+    return Response.json({ mappings: rec.mappings, saved: incoming.length });
   }
 
   if (action === "confirm") {

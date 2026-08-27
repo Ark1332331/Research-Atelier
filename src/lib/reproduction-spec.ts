@@ -55,7 +55,7 @@ export interface Fact {
 /** Paper↔Code Mapping（§5）：AI 提议 → 用户确认 */
 export type MappingRelation = "implements" | "configures" | "preprocesses" | "trains" | "evaluates";
 export interface PaperRef { section?: string; page?: number; quote?: string }
-export interface CodeRef { file: string; lineStart?: number; lineEnd?: number; symbol?: string; commit?: string }
+export interface CodeRef { file: string; lineStart?: number; lineEnd?: number; symbol?: string; commit?: string; dirty?: boolean }
 export interface Mapping {
   id: string;
   concept: string;
@@ -66,6 +66,9 @@ export interface Mapping {
   status: "proposed" | "confirmed";
   confidence: FactConfidence;
   evidenceIds: string[];
+  /** 稳定 identity 锚点（Step 5 grounding）：LLM 只选这些 id，refs 由 anchor/fact 确定性恢复 */
+  paperFactIds: string[];
+  codeAnchorIds: string[];
 }
 
 /** Decision Ledger（§6.2） */
@@ -293,6 +296,8 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           status: (m.status === "confirmed" ? "confirmed" : "proposed") as "proposed" | "confirmed",
           confidence: (["high", "medium", "low"] as const).includes(m.confidence) ? m.confidence : "medium",
           evidenceIds: Array.isArray(m.evidenceIds) ? m.evidenceIds.map(String) : [],
+          paperFactIds: Array.isArray(m.paperFactIds) ? m.paperFactIds.map(String) : [],
+          codeAnchorIds: Array.isArray(m.codeAnchorIds) ? m.codeAnchorIds.map(String) : [],
         } : null).filter(notNull)
       : [],
     decisions: Array.isArray(r.decisions)
