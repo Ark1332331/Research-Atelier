@@ -76,6 +76,9 @@ export async function handleImport(body: Record<string, unknown>): Promise<Respo
   const stats = { rawItems: items.length, recognized: recognized.length, unknown: unparsed.length, merged, unique: papers.length };
   const updated = withImport(session, stats, raw);
   updated.candidates = papers;
+  // v1.3：candidates/evidence 变化后，旧 triage/seeds 一律清空（防止旧筛选伪装成当前结果）
+  updated.triage = [];
+  updated.seedPapers = [];
   await saveSession(updated);
   return Response.json({
     session: updated,
@@ -93,7 +96,7 @@ export async function handleTriage(body: Record<string, unknown>): Promise<Respo
   if (!session) return Response.json({ error: "会话不存在" }, { status: 404 });
   if (!session.candidates?.length) return Response.json({ error: "还没有候选，先导入论文" }, { status: 400 });
   try {
-    const triage = await runTriage(session.candidates);
+    const triage = await runTriage(session.candidates, session.question);
     session.triage = triage;
     await saveSession(session);
     return Response.json({ session, triage });

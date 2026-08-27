@@ -12,6 +12,8 @@ const blob = [
   "https://arxiv.org/abs/2301.04104",
   "10.1038/s41586-023-06778-y",
   "",
+  "https://arxiv.org/abs/2310.00001",
+  "",
   "GR-1: Towards Lifelong Robot Learning",
   "",
   "Learning World Models with Latent Dynamics",
@@ -48,13 +50,14 @@ const blob = [
 ].join("\n");
 
 const items = parseCandidateBlob(blob);
-console.log("== 混贴拆分 ==");
+console.log("== 混贴拆分（v1.3：同 record 合成一条） ==");
 ok(items.length >= 10, "总条数 >= 10（实际 " + items.length + "）");
 const types = items.reduce((m, i) => { m[i.detectedType] = (m[i.detectedType] ?? 0) + 1; return m; }, {});
 console.log("  类型分布:", JSON.stringify(types));
-ok((types.title ?? 0) >= 2, "标题条 >= 2（DreamerV3 标题挂在 arxiv/doi 条目上）");
+ok((types.title ?? 0) >= 2, "标题条 >= 2");
 ok((types.doi ?? 0) >= 3, "DOI 条 >= 3");
-ok((types.arxiv ?? 0) >= 1, "arXiv 条 >= 1（URL 也识别）");
+ok((types.arxiv ?? 0) >= 1, "arXiv 条 >= 1（独立 arXiv-only 块）");
+ok((types.url ?? 0) >= 1, "URL 条 >= 1（独立非 arXiv URL）");
 ok((types.bibtex ?? 0) === 1, "BibTeX 条 == 1");
 ok((types.ris ?? 0) === 1, "RIS 条 == 1");
 ok((types["wos-export"] ?? 0) === 1, "WoS export 条 == 1");
@@ -67,9 +70,16 @@ ok(ris?.title?.includes("Autonomous Machine Intelligence") && ris?.doi === "10.4
 const wos = items.find((i) => i.detectedType === "wos-export");
 ok(wos?.title === "World Models" && wos?.doi === "10.48550/arXiv.1803.10122", "WoS 提取 TI/DI");
 const arxiv = items.find((i) => i.detectedType === "arxiv");
-ok(arxiv?.arxivId === "2301.04104", "arXiv URL → arxivId");
+ok(arxiv?.arxivId === "2310.00001", "arXiv-only 块 → arxivId（URL 归合成条）");
 const unknown = items.filter((i) => i.detectedType === "unknown");
 ok(unknown.length >= 1 && unknown[0].parseWarnings.length >= 0, "unknown 条带原始文本");
+
+console.log("== v1.3：title+arXiv+DOI 同 record 合成一条 ==");
+const composite = items.filter((i) => i.doi === "10.1038/s41586-023-06778-y");
+ok(composite.length === 1, "一条 title+arXiv+DOI 只产一条候选（实际 " + composite.length + "）");
+ok(composite[0]?.arxivId === "2301.04104" && composite[0]?.title?.includes("DreamerV3"), "合成条携带 arxivId + title");
+const arxivOnly = items.filter((i) => i.detectedType === "arxiv");
+ok(arxivOnly.length === 1 && arxivOnly[0].arxivId === "2310.00001", "独立 arXiv-only 块 → arxiv 条目");
 
 console.log("== 空/坏输入 ==");
 ok(parseCandidateBlob("").length === 0, "空输入 → 0 条");

@@ -7,7 +7,7 @@
  *  - 单篇失败只记 warnings，不影响整批导入。
  */
 import type { CanonicalPaper, EnrichmentProvenance } from "./types.ts";
-import { normalizeDoi, normalizedTitle } from "./types.ts";
+import { normalizeDoi, normalizeArxivId, normalizedTitle } from "./types.ts";
 
 const CROSSREF = "https://api.crossref.org/works/";
 const OPENALEX = "https://api.openalex.org/works";
@@ -16,7 +16,7 @@ const UA = "ResearchAtelier/0.1 (mailto:research@atelier.local)";
 export interface EnrichmentResult {
   patch: Partial<{
     title: string; authors: string[]; year: number; venue: string;
-    abstract: string; doi: string; oaPdfUrl: string; publisherUrl: string;
+    abstract: string; doi: string; arxivId: string; oaPdfUrl: string; publisherUrl: string;
   }>;
   evidence: EnrichmentProvenance;   // 每字段来源列表 + citations 分源值
   warnings: string[];
@@ -35,11 +35,18 @@ export function rebuildAbstract(inv?: Record<string, number[]>): string {
   return pos.map((x) => x[1]).join(" ").slice(0, 1200);
 }
 
-/** 纯函数：候选已有字段优先，缺失才补；citation 分源合并（不跨源加总） */
+/** 纯函数：候选已有字段优先，缺失才补；citation 分源合并（不跨源加总）；
+ *  v1.3：enrichment 新获 DOI/arXiv → 并入 aliases（身份复核，避免 title:id 与 doi:id 并存） */
 export function applyEnrichment(c: CanonicalPaper, r: EnrichmentResult): CanonicalPaper {
   const p = r.patch;
+  const aliases = [...(c.aliases ?? [])];
+  const pd = p.doi ? normalizeDoi(p.doi) : undefined;
+  if (pd) { const a = "doi:" + pd; if (a !== c.canonicalId && !aliases.includes(a)) aliases.push(a); }
+  const pa = p.arxivId ? normalizeArxivId(p.arxivId) : undefined;
+  if (pa) { const a = "arxiv:" + pa; if (a !== c.canonicalId && !aliases.includes(a)) aliases.push(a); }
   return {
     ...c,
+    ...(aliases.length ? { aliases } : {}),
     title: c.title && c.title !== "(未识别标题)" ? c.title : (p.title ?? c.title),
     ...(!c.authors?.length && p.authors?.length ? { authors: p.authors } : {}),
     ...(c.year === undefined && p.year !== undefined ? { year: p.year } : {}),
@@ -107,6 +114,7 @@ export async function enrichCandidate(c: CanonicalPaper): Promise<{ paper: Canon
         if (typeof hit.cited_by_count === "number") evidence.citations.openAlex = hit.cited_by_count;
         if (hit.open_access?.oa_url) { patch.oaPdfUrl = String(hit.open_access.oa_url); evidence.oa.push("openalex"); }
         if (hit.ids?.doi && !doi) { const nd = normalizeDoi(hit.ids.doi); if (nd) { patch.doi = nd; evidence.doi.push("openalex"); } }
+        if (hit.ids?.arxiv && !c.arxivId) { const na = normalizeArxivId(hit.ids.arxiv); if (na) patch.arxivId = na; }
       } else {
         warnings.push(doi ? "OpenAlex 未核实（DOI 无结果）" : "OpenAlex 未核实（无严格标题匹配）");
       }

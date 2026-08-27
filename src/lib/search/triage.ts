@@ -1,8 +1,11 @@
 /**
- * Evidence-aware Triage（B5/B6，v1.2）：
+ * Evidence-aware Triage（B5/B6 + v1.3 hardening）：
  *  - evidenceLevelFor：按候选实际拥有的证据判定（abstract / metadata），B-lite 无 fulltext
  *  - enforceTriageEvidenceBoundary：evidenceLevel !== fulltext 时 keySections/skipSections 代码强制为空
  *  - normalizeTriage：只绑定真实 Candidate ID；LLM 声称的 evidenceLevel 不得超过候选实际证据
+ *  - roleEvidence 必须与真实 metadata/abstract provenance 对齐：
+ *    fulltext 一律剔除；citation-graph 仅当候选真有分源引用数；abstract 仅当候选有摘要且来源匹配；
+ *    metadata 仅当来源在 enrichment provenance 或 import 中（v1.3）
  *  - 输出不做总分排行榜（B6），只给角色/深度/为什么
  */
 import type { CanonicalPaper, EvidenceLevel, PaperTriage, EvidenceRef } from "./types.ts";
@@ -27,6 +30,30 @@ const VERDICTS = ["读", "扫读", "跳过", "待定"];
 function str(v: unknown): string { return typeof v === "string" ? v.trim() : ""; }
 function strArr(v: unknown): string[] { return Array.isArray(v) ? v.map(str).filter(Boolean).slice(0, 8) : []; }
 
+/** v1.3：roleEvidence 必须与真实 provenance 对齐；虚构/越权证据剔除 */
+function roleEvidenceOk(e: EvidenceRef, c: CanonicalPaper): boolean {
+  const kind = str(e?.kind);
+  const src = str(e?.source);
+  if (kind === "fulltext") return false;                              // B-lite 无全文
+  if (kind === "citation-graph") {
+    return Object.keys(c.metrics?.citations ?? {}).includes(src);      // 只有真有分源引用数
+  }
+  if (kind === "abstract") {
+    if (!c.abstract) return false;
+    const sources = c.enrichment?.abstract ?? [];
+    return sources.includes(src) || (sources.length === 0 && src === "openalex");
+  }
+  if (kind === "metadata") {
+    const sources = new Set([
+      ...(c.enrichment?.title ?? []), ...(c.enrichment?.authors ?? []),
+      ...(c.enrichment?.year ?? []), ...(c.enrichment?.venue ?? []),
+      ...(c.enrichment?.doi ?? []), ...(c.enrichment?.oa ?? []),
+    ]);
+    return sources.has(src) || src === "import" || src === "user-import";
+  }
+  return false;
+}
+
 /** 归一化 triage：绑定真实候选、clamp evidenceLevel、强制边界。幂等。 */
 export function normalizeTriage(raw: unknown, candidates: CanonicalPaper[]): PaperTriage[] {
   if (!Array.isArray(raw)) return [];
@@ -46,7 +73,9 @@ export function normalizeTriage(raw: unknown, candidates: CanonicalPaper[]): Pap
       role: (ROLES.includes(str(o.role)) ? str(o.role) : "peripheral") as PaperTriage["role"],
       roleReason: str(o.roleReason),
       roleConfidence: (CONFS.includes(str(o.roleConfidence)) ? str(o.roleConfidence) : "low") as PaperTriage["roleConfidence"],
-      roleEvidence: (Array.isArray(o.roleEvidence) ? o.roleEvidence : []).filter((e) => e && typeof e === "object").slice(0, 5) as EvidenceRef[],
+      roleEvidence: (Array.isArray(o.roleEvidence) ? o.roleEvidence : [])
+        .filter((e): e is EvidenceRef => e && typeof e === "object" && roleEvidenceOk(e as EvidenceRef, cand))
+        .slice(0, 5),
       worthReading: str(o.worthReading),
       relationToQuestion: (RELS.includes(str(o.relationToQuestion)) ? str(o.relationToQuestion) : "unknown") as PaperTriage["relationToQuestion"],
       depth: (DEPTHS.includes(str(o.depth)) ? str(o.depth) : "skim") as PaperTriage["depth"],
@@ -82,7 +111,11 @@ const SYSTEM_PROMPT = "你是 Research Atelier 的论文筛选器。基于给定
   "keySections/skipSections 一律填空数组（没有全文）；不要给任何分数或总分排名；" +
   "role 是相对当前研究问题的判断，不是论文元数据。";
 
-export function buildTriageUserPrompt(candidates: CanonicalPaper[]): string {
+/** v1.3：prompt 必须显式携带研究问题（relationToQuestion/role 依赖它） */
+export function buildTriageUserPrompt(candidates: CanonicalPaper[], question: string): string {
+  const q = String(question ?? "").trim();
+  const header = "用户的研究问题：" + (q || "（未提供）") + "\n" +
+    "所有 role / relationToQuestion / worthReading 都相对这个研究问题判断。\n\n";
   const lines = candidates.map((c, i) => {
     const ev = evidenceLevelFor(c);
     return (i + 1) + ". canonicalId=" + c.canonicalId + " | title=" + c.title +
@@ -91,11 +124,11 @@ export function buildTriageUserPrompt(candidates: CanonicalPaper[]): string {
       " | evidence=" + ev +
       (ev === "abstract" ? " | abstract=" + (c.abstract ?? "").slice(0, 800) : " | 无摘要");
   });
-  return "研究问题相关候选：\n" + lines.join("\n");
+  return header + "候选列表：\n" + lines.join("\n");
 }
 
-/** LLM triage；RA_TRIAGE_MOCK 提供确定性路径（测试/无 key 环境） */
-export async function runTriage(candidates: CanonicalPaper[]): Promise<PaperTriage[]> {
+/** LLM triage；RA_TRIAGE_MOCK 提供确定性路径（测试/无 key 环境）；question 显式传入 */
+export async function runTriage(candidates: CanonicalPaper[], question: string): Promise<PaperTriage[]> {
   const mock = process.env.RA_TRIAGE_MOCK;
   if (mock) {
     let parsed: unknown = null;
@@ -111,7 +144,7 @@ export async function runTriage(candidates: CanonicalPaper[]): Promise<PaperTria
       model: "deepseek-chat",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: buildTriageUserPrompt(candidates) },
+        { role: "user", content: buildTriageUserPrompt(candidates, question) },
       ],
       stream: false,
       temperature: 0.2,

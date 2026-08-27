@@ -44,7 +44,7 @@ console.log("== 2. 混贴导入（B1/B2/B3/B4） ==");
 const imp = await jfetch("/api/literature/import", { method: "POST", body: JSON.stringify({ sessionId: sid, raw: blob }) });
 ok(imp.status === 200, "import HTTP 200");
 const st = imp.body?.stats;
-ok(st && st.rawItems >= 5, "rawItems >= 5（实际 " + (st && st.rawItems) + "）");
+ok(st && st.rawItems >= 4, "rawItems >= 4（title+arXiv+DOI 合成一条后实际 " + (st && st.rawItems) + "）");
 ok(st && st.unknown >= 1, "unknown >= 1（????? 不静默丢失）");
 ok(st && st.unique >= 1, "去重后 unique >= 1");
 ok(imp.body?.session?.stage === "screening", "导入后 → screening");

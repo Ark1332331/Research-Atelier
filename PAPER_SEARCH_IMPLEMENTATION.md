@@ -698,6 +698,20 @@ v1.2（2026-08-27）Phase B-lite 实现（MVP 1 = A + B-lite 落成）：
 - UI：导入框 → 统计（导入N/识别N/合并N/候选N）→ 候选列表（未核实标红）→ AI 筛选 →
   建议先读 / 建立背景 / 可以暂缓 三组 → 选种子
 - 测试：importer 16 + enrich/triage 18 + B-lite e2e（live :3000）24 项全过；回归 68+42+30+23+59+15 全绿；tsc 干净
+
+v1.3（2026-08-27）B-lite identity/grounding hardening：
+- Triage 显式接收 session.question + SearchIntent；buildTriageUserPrompt 首行输出研究问题，
+  role/relationToQuestion 相对该问题判断（单测：同一候选在不同问题下 prompt 各自包含对应问题）
+- Candidate identity lifecycle：URL-only → url: 规范化身份（不再全部落 title:untitled）；
+  canonicalFromImport 注册 title:/doi:/arxiv: 别名；enrichment 新获 DOI/arXiv 并入 aliases；
+  dedupe 按 canonicalId+别名索引复核（title:id 与 doi:id 不并存；单测：title-only enrich 出 DOI
+  后按 DOI 再导入不新增）
+- importer：同 record 的 title+DOI+arXiv+URL 合成一条 ImportedPaperCandidate（detectedType 取最强
+  标识，其余作为字段）；只有「无 title 且多个标识」才各拆一条
+- candidates/evidence 变化后旧 triage/seeds 一律清空（防旧筛选伪装成当前结果；handler 级测试覆盖）
+- roleEvidence 与真实 provenance 对齐：fulltext 一律剔除；citation-graph 仅当有分源引用数；
+  abstract 仅当有摘要且来源匹配 enrichment；metadata 仅当来源在 provenance 或 import 中（虚构剔除）
+- 测试：importer 20 + enrich/triage 28 + hardening（handler 级）14 + B-lite e2e 24 + 回归 68+42+30+23+59+15 全绿；tsc 干净
 ~~~
 
 

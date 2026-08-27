@@ -4,7 +4,7 @@
  * 运行：node scripts/test-enrich-triage.mjs
  */
 import { applyEnrichment, emptyEvidence, rebuildAbstract } from "../src/lib/search/enrich.ts";
-import { evidenceLevelFor, enforceTriageEvidenceBoundary, normalizeTriage } from "../src/lib/search/triage.ts";
+import { evidenceLevelFor, enforceTriageEvidenceBoundary, normalizeTriage, buildTriageUserPrompt } from "../src/lib/search/triage.ts";
 import { dedupeCandidates } from "../src/lib/search/inbox.ts";
 
 let pass = 0, fail = 0;
@@ -56,17 +56,65 @@ const t1 = triage[1];
 ok(t1.evidenceLevel === "metadata" && t1.depth === "targeted", "有摘要但声明 metadata → 保留 metadata（允许降级）");
 ok(!("score" in t0) && !("rank" in t0), "无总分/排名字段");
 
-console.log("== inbox dedupe（B3：复用 canonicalIdFor，保守不激进） ==");
+console.log("== v1.3 identity：别名复核合并（不保留重复身份） ==");
 const items = [
   { importId: "i1", raw: "r1", detectedType: "title", title: "Mastering Diverse Domains through World Models" },
   { importId: "i2", raw: "r2", detectedType: "arxiv", arxivId: "2301.04104", title: "Mastering Diverse Domains through World Models" },
   { importId: "i3", raw: "r3", detectedType: "title", title: "Mastering Diverse Domains through World Models" },
 ];
 const { candidates: d1, merged } = dedupeCandidates(items);
-ok(merged === 1, "同 title 重复合并 1 条（i1/i3 同 title key）");
-ok(d1.length === 2, "arXiv 版与 title 版不同 key → 两条都保留（保守）");
-const notes = dedupeCandidates([{ importId: "i4", raw: "r4", detectedType: "doi", doi: "10.1000/xyz", title: "Mastering Diverse Domains through World Models" }], d1);
-ok(notes.versionNotes.length >= 1, "标题相同但标识不同 → 标注可能为不同版本");
+ok(d1.length === 1, "title/arxiv/title 同标题 → 别名复核合并为 1 条（避免 title:id 与 arxiv:id 并存）");
+ok(merged === 2, "合并计数 2");
+ok((d1[0].aliases ?? []).includes("arxiv:2301.04104"), "幸存者别名并入 arxiv 身份");
+
+console.log("== v1.3 identity：URL-only 身份（两个不同 URL 不互相 dedupe） ==");
+const u1 = dedupeCandidates([{ importId: "u1", raw: "r", detectedType: "url", url: "https://a.com/paper1" }]);
+const u2 = dedupeCandidates([{ importId: "u2", raw: "r", detectedType: "url", url: "https://b.com/paper2" }], u1.candidates);
+ok(u1.candidates[0].canonicalId === "url:a.com/paper1" && u1.candidates[0].title !== "untitled", "URL-only → url: 身份（非 title:untitled）");
+ok(u2.candidates.length === 2 && u2.merged === 0, "两个不同 URL → 不互相 dedupe");
+const u3 = dedupeCandidates([{ importId: "u3", raw: "r", detectedType: "url", url: "https://a.com/paper1" }], u1.candidates);
+ok(u3.merged === 1 && u3.candidates.length === 1, "相同 URL → 合并");
+
+console.log("== v1.3 identity：enrichment 获 DOI 后按 DOI 再次导入不新增 ==");
+const cTitle = { importId: "t1", raw: "r", detectedType: "title", title: "World Models" };
+const c1 = dedupeCandidates([cTitle]).candidates[0];
+ok(c1.canonicalId === "title:world models", "title-only → title: 身份");
+const enriched1 = applyEnrichment(c1, {
+  patch: { doi: "10.48550/arXiv.1803.10122", title: "World Models" },
+  evidence: { title: ["openalex"], authors: [], year: [], venue: [], abstract: [], doi: ["openalex"], oa: [], citations: { openAlex: 998 } },
+  warnings: [],
+});
+ok((enriched1.aliases ?? []).includes("doi:10.48550/arXiv.1803.10122"), "enrichment 获 DOI → 别名并入");
+const reImport = dedupeCandidates([{ importId: "t2", raw: "r", detectedType: "doi", doi: "10.48550/arXiv.1803.10122", title: "World Models" }], [enriched1]);
+ok(reImport.merged === 1 && reImport.candidates.length === 1, "title-only 后按 DOI 再次导入 → 合并，不新增（title:id 与 doi:id 不并存）");
+
+console.log("== v1.3 triage：roleEvidence 与真实 provenance 对齐（虚构剔除） ==");
+const fakeEv = normalizeTriage([
+  { paperId: cand.canonicalId, role: "core", depth: "deep", evidenceLevel: "metadata", verdict: "读", relationToQuestion: "high", roleReason: "r", worthReading: "w",
+    roleEvidence: [
+      { kind: "fulltext", source: "paper" },
+      { kind: "citation-graph", source: "s2" },
+      { kind: "abstract", source: "openalex" },
+      { kind: "metadata", source: "import" },
+    ], d: {} },
+], [cand]);
+ok(fakeEv[0].roleEvidence.length === 1 && fakeEv[0].roleEvidence[0].kind === "metadata" && fakeEv[0].roleEvidence[0].source === "import", "虚构 fulltext/citation-graph/abstract 证据被剔除，仅保留 metadata:import");
+const absCand = { ...cand, abstract: "some abstract", metrics: { citations: { openAlex: 5 } }, enrichment: { title: [], authors: [], year: [], venue: [], abstract: ["openalex"], doi: [], oa: [], citations: { openAlex: 5 } } };
+const absEv = normalizeTriage([
+  { paperId: cand.canonicalId, role: "core", depth: "deep", evidenceLevel: "abstract", verdict: "读", relationToQuestion: "high", roleReason: "r", worthReading: "w",
+    roleEvidence: [
+      { kind: "abstract", source: "openalex" },
+      { kind: "abstract", source: "crossref" },
+      { kind: "citation-graph", source: "openAlex" },
+    ], d: {} },
+], [absCand]);
+ok(absEv[0].roleEvidence.length === 2, "abstract:openalex + citation-graph:openAlex（有真实引用数）保留，abstract:crossref 剔除");
+
+console.log("== v1.3 triage：prompt 显式包含研究问题 ==");
+const p1 = buildTriageUserPrompt([cand], "机器人中的 world model");
+const p2 = buildTriageUserPrompt([cand], "embodied agents");
+ok(p1.includes("机器人中的 world model") && !p1.includes("embodied agents"), "prompt1 含问题1");
+ok(p2.includes("embodied agents") && !p2.includes("机器人中的 world model"), "prompt2 含问题2");
 
 console.log("\n结果：" + pass + " 通过 / " + fail + " 失败");
 process.exit(fail ? 1 : 0);

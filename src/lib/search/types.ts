@@ -101,6 +101,7 @@ export interface CanonicalPaper {
   hits: ProviderPaper[];
   enrichment?: EnrichmentProvenance;  // v1.2：metadata provenance（分来源）
   importInfo?: { importId: string; detectedType: DetectedType; raw: string };  // v1.2：导入来源证据
+  aliases?: string[];  // v1.3：身份别名（title:/doi:/arxiv:），enrichment 获新标识后并入，供 dedupe 复核
 }
 
 /** 工具返回给 LLM 的形态（字段名与现有 prompt 的 oa_pdf_url / publisher_url 兼容 download_paper） */
@@ -239,6 +240,15 @@ export function normalizeArxivId(id?: string | null): string | undefined {
   v = v.replace(/\.pdf$/i, "");
   v = v.replace(/[^0-9A-Za-z._-]/g, "");
   return v || undefined;
+}
+
+/** URL 规范化（身份键用）：去协议/www/尾部斜杠/query/fragment */
+export function normalizeUrl(u?: string | null): string | undefined {
+  if (!u) return undefined;
+  let s = String(u).trim();
+  s = s.replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/+$/, "");
+  s = s.replace(/[#?].*$/, "");
+  return s || undefined;
 }
 
 /** 标题归一化：小写、去标点/空白、去版本后缀（如 "v2"） */

@@ -216,27 +216,40 @@ export function parseCandidateBlob(raw: string): ImportedPaperCandidate[] {
     }
   }
 
-  // 剩余：按空行分块；块内逐 token 识别 DOI/arXiv/URL（一个块可拆出多个标识条目）；
-  // 首个非标识行作为 title；块内无标识且无字母 → unknown（不静默丢失）
+  // 剩余：按空行分块。v1.3：同一条 record 内的 title + DOI + arXiv + URL 合成**一条**候选
+  // （detectedType 取最强标识：doi > arxiv > url；其余标识作为字段一并携带）。
+  // 只有「无 title 且多个标识」的块才按标识各拆一条（如连续贴多个 DOI）。
   const blocks = String(rest).split(/\n[\s\n]*\n/).map((b) => b.trim()).filter(Boolean);
   for (const block of blocks) {
     const doiTokens = [...block.matchAll(DOI_RE)].map((m) => cleanToken(m[0]));
     const arxivTokens = [...block.matchAll(ARXIV_RE)].map((m) => cleanToken(m[1]));
-    const urlTokens = [...block.matchAll(URL_RE)].map((m) => cleanToken(m[0])).filter((u) => !/arxiv\.org\//i.test(u)); // arXiv URL 归 arxiv，不重复出 url
+    const urlTokens = [...block.matchAll(URL_RE)].map((m) => cleanToken(m[0])).filter((u) => !/arxiv\.org\//i.test(u)); // arXiv URL 归 arxiv
     const total = doiTokens.length + arxivTokens.length + urlTokens.length;
-    if (total > 0) {
-      const firstTitle = linesOf(block).find((l) => !isIdentifierLine(l));
-      const title = firstTitle && firstTitle.length < 200 ? firstTitle : undefined;
-      for (const t of doiTokens) items.push(item("doi", t, { doi: t, ...(title ? { title } : {}) }));
-      for (const t of arxivTokens) items.push(item("arxiv", t, { arxivId: t, ...(title ? { title } : {}) }));
-      for (const t of urlTokens) items.push(item("url", t, { url: t, ...(title ? { title } : {}) }));
-    } else {
+    if (total === 0) {
       const joined = linesOf(block).join(" ");
       if (/[A-Za-z\u4e00-\u9fa5]/.test(joined)) {
         items.push(item("title", joined, { title: cap(joined, 200) }));
       } else {
         items.push(item("unknown", block, {}, ["无法识别为论文（无标题/DOI/URL）"]));
       }
+      continue;
+    }
+    const titleLine = linesOf(block).find((l) => !isIdentifierLine(l));
+    const title = titleLine && titleLine.length < 200 ? titleLine : undefined;
+    if (title || total === 1) {
+      // 合成一条：detectedType = doi > arxiv > url；全部标识字段携带
+      const type: DetectedType = doiTokens.length ? "doi" : (arxivTokens.length ? "arxiv" : "url");
+      const fields: Partial<ImportedPaperCandidate> = { title };
+      if (doiTokens[0]) fields.doi = doiTokens[0];
+      if (arxivTokens[0]) fields.arxivId = arxivTokens[0];
+      if (urlTokens[0]) fields.url = urlTokens[0];
+      const raw = title || doiTokens[0] || arxivTokens[0] || urlTokens[0] || block;
+      items.push(item(type, raw, fields));
+    } else {
+      // 无 title 且多个标识 → 各拆一条（每条约自己的字段）
+      for (const t of doiTokens) items.push(item("doi", t, { doi: t }));
+      for (const t of arxivTokens) items.push(item("arxiv", t, { arxivId: t }));
+      for (const t of urlTokens) items.push(item("url", t, { url: t }));
     }
   }
 
