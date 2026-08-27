@@ -1,20 +1,19 @@
 /**
- * 代码读取接口：代码导读的取件层
+ * 代码读取接口：代码导读的取件层（Step 3 起走共享层 code-reader.ts）
  * GET  /api/code-read?root=<配置里的根别名>                  → { available, roots, currentRoot, files:[{name,path,lines}] }
  * GET  /api/code-read?root=<别名>&file=<相对路径>             → { name, content, lines, ... }
  * GET  /api/code-read?root=<别名>&file=<p>&chain=1            → 同上，且 Python 文件附带跨文件调用链
  * 说明：
  *   - 根目录列表来自 data/code-roots.json（服务器端声明允许读的目录，防任意盘漫游）；默认项目根。
- *   - file 相对 root，经 resolve 后必须仍在 root 内，且只允许声明扩展名——防路径穿越。
- *   - chain 仅对 Python 生效（调 scripts/py_chain.py 基于 AST 精确解析）；TS/React 返回空，跨文件靠代码导读对话向 AI 问。
+ *   - 允许规则（扩展名/basename/模式）与跳过规则（大小/secret/目录）由 code-reader.ts 统一提供。
+ *   - chain 仅对 Python 生效（调 scripts/py_chain.py 基于 AST 精确解析）；TS/React 返回空。
  * 依据：node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { readStore } from "@/lib/store";
-
-const ALLOWED_EXT = new Set([".py", ".ts", ".tsx", ".js", ".jsx", ".mjs"]);
+import { isAllowedFile, checkReadable, scanTree } from "@/lib/code-reader";
 
 interface RootConfig { id: string; name: string; root: string }
 
@@ -23,14 +22,8 @@ async function readRoots(): Promise<RootConfig[]> {
   if (raw) {
     try { const d = JSON.parse(raw); return Array.isArray(d.roots) ? d.roots : []; } catch { /* */ }
   }
-  // 桌面壳（Electron）打包后 cwd 指向安装目录，默认根由环境变量 RA_DEFAULT_CODE_ROOT 提供
-  //（Electron 主进程按可执行文件实际位置/运行时配置重算）；dev 不设该变量则回退 process.cwd()/..（现状）
   const projectRoot = process.env.RA_DEFAULT_CODE_ROOT ?? path.resolve(process.cwd(), "..");
   return [{ id: "project", name: "项目根（allinone）", root: projectRoot }];
-}
-
-function isAllowedExt(f: string): boolean {
-  return ALLOWED_EXT.has(path.extname(f).toLowerCase());
 }
 
 function safeResolve(root: string, rel: string): string | null {
@@ -42,38 +35,15 @@ function safeResolve(root: string, rel: string): string | null {
 }
 
 async function listDir(root: string): Promise<{ name: string; path: string; lines: number }[]> {
-  const out: { name: string; path: string; lines: number }[] = [];
-  async function walk(dir: string, base: string) {
-    let entries: string[];
-    try { entries = await fs.readdir(dir); } catch { return; }
-    for (const e of entries) {
-      const full = path.join(dir, e);
-      let st;
-      try { st = await fs.stat(full); } catch { continue; }
-      if (st.isDirectory()) {
-        if (["node_modules", ".git", ".next", "__pycache__", "dist", ".vercel", ".build-cache", ".cache", "release", "out"].includes(e)) continue;
-        await walk(full, path.join(base, e));
-      } else if (st.isFile() && isAllowedExt(e)) {
-        let lines = 0;
-        try { lines = (await fs.readFile(full, "utf-8")).split("\n").length; } catch { /* */ }
-        out.push({ name: e, path: path.join(base, e).replace(/\\/g, "/"), lines });
-      }
-    }
-  }
-  await walk(root, "");
-  out.sort((a, b) => a.path.localeCompare(b.path));
-  return out;
+  const { files } = await scanTree(root);
+  return files.map((f) => ({ name: path.basename(f.path), path: f.path, lines: f.lines }));
 }
 
 function pythonChain(absFullPath: string): Record<string, unknown> {
-  // 把分析范围缩到目标文件所在目录：跨文件调用链只在同项目内有意义，
-  // 用整个项目根（allinone）会遍历成千上万个文件而超时；reproduction/ 下 52 个文件 ~70ms。
   const dir = path.dirname(absFullPath);
   const base = path.basename(absFullPath);
   const script = path.join(process.cwd(), "scripts", "py_chain.py");
   try {
-    // 同步执行：在 Next/Turbopack 路由环境里 async execFile 的管道可能不关闭导致挂起；
-    // 这是单用户本地工具，阻塞 ~百毫秒可接受，且带超时兜底。
     const stdout = execFileSync("python3", [script, dir, base], {
       cwd: process.cwd(), maxBuffer: 8 * 1024 * 1024, timeout: 8000, encoding: "utf-8",
     });
@@ -107,8 +77,12 @@ export async function GET(request: Request) {
   }
 
   const full = safeResolve(root, rel);
-  if (!full || !isAllowedExt(full)) {
+  if (!full || !isAllowedFile(path.basename(full))) {
     return Response.json({ error: "非法路径或扩展名" }, { status: 400 });
+  }
+  const ck = await checkReadable(full, rel);
+  if (!ck.read) {
+    return Response.json({ error: `文件被安全规则跳过（${ck.reason}）` }, { status: 403 });
   }
   let content: string;
   try {
