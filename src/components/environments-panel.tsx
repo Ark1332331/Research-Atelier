@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 interface Env { name: string; python: string; torch: string; pkgCount: number; purpose: string; stage: string }
 interface Pkg { name: string; version: string; build: string }
 
-/** 环境卡（复现工作台右侧内嵌）：列出所有 conda 环境 + 版本 + 用途编辑 + 点开看包 */
+/** 这个环境"独特/关键"的特征包：核心版本 + 明显指示用途的库（不列 conda 共有基础包） */
+const KEY_RE = /^(python|torch|torchvision|torchaudio|pytorch|cudatoolkit|cuda|nvidia-|numpy|numba|scipy|minkowski|isaac|omni|pxr|stable-worldmodel|gymnasium|mujoco|rsl_rl|rsl-rl|rl_games|robosuite|unitree|legged)/i;
+
 export default function EnvironmentsPanel() {
   const [envs, setEnvs] = useState<Env[]>([]);
   const [open, setOpen] = useState<string | null>(null);
@@ -13,6 +15,7 @@ export default function EnvironmentsPanel() {
   const [purpose, setPurpose] = useState("");
   const [stage, setStage] = useState("");
   const [loadPkgs, setLoadPkgs] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   async function load() {
     try {
@@ -26,6 +29,7 @@ export default function EnvironmentsPanel() {
   async function openEnv(name: string) {
     setOpen(name);
     setPkgs([]);
+    setShowAll(false);
     setLoadPkgs(true);
     try {
       const r = await fetch(`/api/environments?name=${encodeURIComponent(name)}`);
@@ -47,6 +51,9 @@ export default function EnvironmentsPanel() {
       void load();
     } catch { /* */ }
   }
+
+  const keyPkgs = useMemo(() => pkgs.filter((p) => KEY_RE.test(p.name)).slice(0, 40), [pkgs]);
+  const shown = showAll ? pkgs : keyPkgs;
 
   return (
     <div className="env-panel">
@@ -71,10 +78,14 @@ export default function EnvironmentsPanel() {
                   <button className="btn btn--ghost btn--quiet" onClick={() => void save()}>保存用途</button>
                 </div>
                 <div className="env-pkgs">
-                  <span className="mono-label">包（{pkgs.length}）</span>
+                  <span className="mono-label">
+                    {showAll ? `全部包 ${pkgs.length}` : `特征包 ${keyPkgs.length}`}
+                    {showAll && keyPkgs.length ? <button className="btn btn--ghost btn--quiet" style={{ marginLeft: "0.4rem" }} onClick={() => setShowAll(false)}>只看特征</button> : null}
+                    {!showAll && pkgs.length > keyPkgs.length ? <button className="btn btn--ghost btn--quiet" style={{ marginLeft: "0.4rem" }} onClick={() => setShowAll(true)}>展开全部 {pkgs.length}</button> : null}
+                  </span>
                   {loadPkgs && <span className="mono-label">采样中…</span>}
                   <ul>
-                    {pkgs.slice(0, 120).map((p, i) => (
+                    {shown.slice(0, showAll ? 400 : 40).map((p, i) => (
                       <li key={i}><span className="pkg-name">{p.name}</span><span className="pkg-ver">{p.version}</span></li>
                     ))}
                   </ul>
