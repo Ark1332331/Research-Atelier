@@ -1,6 +1,6 @@
 # Research Atelier → 论文检索管线（Paper Search Pipeline）实现方案
 
-> 状态：**方案 v0.2 —— 待确认，未开始实现**。用户确认后按 §10 开发顺序进入 Step 1。
+> 状态：**方案 v0.2 已封板（2026-08-27，含三处语义修正：SearchRun coverage / 未接线显示「尚未接入」/ Scholar 导入=手动补充）—— 用户已确认，Step 1 实现中**。开发顺序见 §10。
 > 本方案只动「论文筛选（P0）」的检索侧；复现模块（REPRO_SPEC_IMPLEMENTATION.md，已确认）与精读/术语卡/论文库保持不动。
 > v0.1 → v0.2：**用户硬约束修订**（2026-08-27）——Web of Science 与 Google Scholar 必须是一等检索来源，
 > 不得放在 v3 或只做外链；总体管线不推翻，Provider 层与开发顺序重排。修订记录见 §13。
@@ -213,6 +213,49 @@ interface PaperHitV2 {
 }
 ```
 
+**SearchRun 覆盖语义（v0.2 封板补丁 §0/§12）——coverage 是 SearchRun 的一等字段：**
+
+~~~ts
+/** 来源覆盖状态：api=本轮真实 API 检索；imported=本轮来自用户导入；
+    missing=provider 已接线但本轮无 API 也无导入；not-wired=当前构建尚未实现（v1 显示「尚未接入」） */
+type CoverageStatus = "api" | "imported" | "missing" | "not-wired";
+
+interface SourceCoverage {
+  googleScholar: CoverageStatus;
+  webOfScience: CoverageStatus;
+  openAlex: CoverageStatus;
+  semanticScholar: CoverageStatus;
+  arxiv: CoverageStatus;
+}
+
+interface SearchRun {
+  id: string;
+  intent: SearchIntent;
+  queries: ProviderQuery[];
+  coverage: SourceCoverage;   // 硬约束：反映本轮真实覆盖，不许虚报
+  candidateCount: number;     // 去重前
+  afterDedupe: number; afterFilter: number; afterRerank: number;
+  warnings: string[];
+  createdAt: string;
+}
+~~~
+
+**覆盖规则（封板补丁）：**
+
+~~~text
+完整筛选完成 = googleScholar ∈ {api, imported} AND webOfScience ∈ {api, imported}
+（OpenAlex/S2/arXiv 为公共来源，不参与「完整」判定）
+
+任一硬来源为 missing 时，页面必须标注：
+  「本次结果为部分检索：尚未包含 Google Scholar、Web of Science。」
+  不得照常宣称「论文筛选完成」。
+
+not-wired 与 missing 显示不同：
+  not-wired → 「○ 尚未接入」（根本没搜）
+  missing   → 「⚠ 未覆盖」（本轮应搜但没搜到数据）
+  两者都 ≠ 0 命中（0 = 搜过但无结果，是第三种语义）
+~~~
+
 ### 4.2 Query Planner（新文件 src/lib/search/planner.ts）
 
 - **职责**：把用户一句话（或 P0 澄清后的目标+子问题）编译成 SearchIntent + ≥4 条 ProviderQuery。只产出查询，**不产出论文**，不自己编来源。
@@ -290,10 +333,11 @@ executeTool("search_papers") → runSearchPipeline(query, intent?)
   返回：{ report, hits: PaperHitV2[] }
 report = {
   intent: SearchIntent,                    // 让用户看到系统理解了什么
+  coverage: SourceCoverage,                // 封板补丁：本轮真实覆盖（api/imported/missing/not-wired）
   queries: [{ mode, provider, access, raw, hits }] // 每路召回数（含 accessProvider）
   candidateCount / afterDedupe / afterFilter / afterRerank,
   sources: [{ source, access, status, hits }],   // 各来源状态与命中数（v0.2 硬约束可见）
-  warnings: string[]                       // 如「Google Scholar 未配置 SerpApi，已用导入 fallback」
+  warnings: string[]                       // 如「Google Scholar 未配置 SerpApi 且本轮无导入——本结果为部分检索」
 }
 ```
 
@@ -311,7 +355,17 @@ MAX_TOOL_ROUNDS = 3 保持（管线在单次工具调用内完成；planner 是�
 ### 4.8 UI（v1 最小改动）
 
 - 筛选页仍用 ChatPanel（page.tsx「论文筛选」视图，toolKey="p0"）；候选仍以 markdown 列表呈现，每条带可点链接（现有纪律）。
-- report 以 markdown 呈现「正在理解检索目标 → 系统扩展了 N 个方向 → 各源召回数（含 WoS/Scholar）→ 合并去重 → 主题初筛」——**截图问题的直接回应，也是 v0.2 的来源可见性要求**。
+- report 以 markdown 呈现「正在理解检索目标 → 系统扩展了 N 个方向 → 各源召回数 → 合并去重 → 主题初筛」——**截图问题的直接回应，也是 v0.2 的来源可见性要求**。
+- **未接线来源显示「○ 尚未接入」，绝不显示 0**（封板补丁：0 = 「搜过但无结果」，与「根本没搜」语义不同）。v1 只有 OpenAlex 接线，v1 的检索过程必须显示：
+
+~~~text
+OpenAlex            ✓ 67
+Google Scholar      ○ 尚未接入
+Web of Science      ○ 尚未接入
+Semantic Scholar    ○ 尚未接入
+~~~
+
+- 硬来源 missing（已接线但本轮无 API 也无导入）时，页面必须标注「**本次结果为部分检索：尚未包含 …**」，不能照常宣称筛选完成。
 - v2 起每篇候选卡片显示来源徽标 + 分源引用（§5.7），v1 先由 markdown 承担。
 
 ---
@@ -370,10 +424,19 @@ src/lib/search/
   按搜索次数计费（有免费额度，具体价格以官网为准）。
   provenance：sourceProvider="google-scholar"，accessProvider="serpapi"。
 
-路径 B（无 Key fallback）：
-  用户在 Scholar 页面搜索 → 用 Scholar 自带的「引用 → BibTeX」导出 → 导入管线
+路径 B（用户导入 Scholar 结果 —— 手动补充来源，不是自动检索 fallback）：
+  本质：用户手动在 Scholar 找到候选 → Research Atelier 接收这些候选。
+  流程：用户在 Scholar 页面搜索 → 用 Scholar 自带的「引用 → BibTeX」导出 → 导入管线
   （importers/bibtex.ts，sourceProvider="google-scholar"，accessProvider="user-import"）；
   同时保留「在 Google Scholar 中继续搜索 ↗」外链入口。
+  产品层区分（封板补丁）：
+    A. SerpApi      → 自动检索
+    B. 用户导入     → 手动补充来源
+  严禁把 B 描述成「未配置 SerpApi 时自动使用 BibTeX fallback」——程序不能凭空拿到 BibTeX。
+  未配置且未导入时显示：
+    Google Scholar 尚未加入本次检索
+    [配置 SerpApi] [在 Google Scholar 搜索] [导入 Scholar 引用]
+  且 coverage.googleScholar 保持 "missing"；只有用户真实导入后才变为 "imported"。
   provenance 必须写清楚：这条记录来自 Google Scholar 索引，渠道是用户导入，不是 SerpApi。
 ```
 
@@ -462,6 +525,13 @@ Semantic Scholar    ✓ 48
 共召回 188 条记录 → 去重后 103 篇 → 主题筛选后 24 篇
 ```
 
+**部分检索标注（封板补丁，缺一不可）**：若本轮 googleScholar/webOfScience 为 missing 或 not-wired，同一画面必须显示：
+
+~~~text
+⚠ 本次结果为部分检索：尚未包含 Google Scholar、Web of Science。
+（完整筛选 = Google Scholar 已覆盖 AND Web of Science 已覆盖；覆盖方式 = API 或用户导入）
+~~~
+
 **每篇候选卡片**（筛选对话内 markdown 呈现，v2 起）：
 
 ```text
@@ -539,7 +609,7 @@ WoS API         费用/权限随机构订阅合同；无 entitlement 走导入�
 | Step | 内容 | 验收 |
 |---|---|---|
 | **1** | src/lib/search/types.ts + PaperHitV2；chat/route.ts 工具接线（先不换行为） | 现有筛选对话无回归；download_paper 字段兼容；全量测试通过 |
-| **2** | Query Planner + OpenAlex Provider 升级 + report 输出 | 「world model」走查：report 显示 4 路 query、候选 50+、排除词生效；relevance_score/cited_by_count/type 在返回中 |
+| **2** | Query Planner + OpenAlex Provider 升级 + report 输出（含 coverage） | 「world model」走查：report 显示 4 路 query、候选 50+、排除词生效；relevance_score/cited_by_count/type 在返回中；未接线来源显示「○ 尚未接入」而非 0；GS/WoS 为 not-wired/missing 时标注部分检索 |
 | **3** | Hard Filters + Rerank + P0 prompt 同步 | 「world model」最终 15–25 篇中无 mental-health 类噪声；D5/D6 数据来自检索结果；自定义 prompt 用户重置提示 |
 | **4** | v1 验收（§12 全项） | 验收总则全过；截图问题复现对比：旧链路 vs 新链路同一 query |
 | **5** | Provider 接口（sourceProvider/accessProvider）+ Google Scholar Provider（SerpApi + BibTeX 导入 fallback） | SerpApi 未配置时走导入 fallback 且 provenance 正确；配置后 organic_results 进入候选池；绝不出现 sourceProvider="serpapi" |
@@ -580,6 +650,9 @@ WoS API         费用/权限随机构订阅合同；无 entitlement 走导入�
 7. **Key 安全**：所有 API key 只存 .env.local / 服务端；/api/sources 只返回状态，不发 LLM。
 8. **零回归**：download_paper 字段兼容、会话历史、提示词可编辑、论文库/精读不受影响；全量 regression 通过（现有测试 + 新增 planner/dedupe/filter/rerank/importer 单测）。
 9. **成本可控**：单次筛选工具执行 < 60s；SerpApi 未配置不阻塞管线；LLM 深筛 token 与现状相当或更低。
+10. **部分检索语义（封板补丁）**：完整筛选完成 = GS 已覆盖（api/imported）AND WoS 已覆盖（api/imported）；任一硬来源为 missing 时页面必须标注「本次结果为部分检索：尚未包含 …」，不得照常宣称筛选完成。
+11. **未接线 ≠ 0 命中（封板补丁）**：未实现的来源显示「○ 尚未接入」（not-wired），不显示 0；0 只表示「搜过但无结果」。
+12. **Scholar 导入是手动补充（封板补丁）**：BibTeX 导入是用户手动在 Scholar 找到候选后补充，不是自动检索 fallback；coverage 只在真实导入后由 missing 变为 imported。
 
 ---
 
@@ -605,4 +678,12 @@ v0.2（2026-08-27）用户硬约束修订：
 - 阶段重排：v1=公共管线发动机，v2=一等来源接入（Scholar/WoS/S2/Crossref/arXiv），v3=Citation Graph/IEEE/高级 Ranking/alerts（§3/§6）
 - 新增：数据源配置页 + /api/sources + Key 安全规则（§5.7）；检索过程各源命中可见（§5.7）
 - 验收总则扩充 9 条（§12）；明确不做扩充（§11）
+
+v0.2 封板补丁（2026-08-27，用户确认后封板，不再出 v0.3）：
+- SearchRun 新增一等字段 coverage（SourceCoverage：api/imported/missing/not-wired），
+  完整筛选完成 = GS 已覆盖 AND WoS 已覆盖（§4.1/§12.10）
+- 未接线来源显示「○ 尚未接入」而非 0（not-wired ≠ missing ≠ 0 命中）（§4.8/§12.11）
+- Scholar BibTeX 导入 = 用户手动补充来源，不是自动检索 fallback；未配置且未导入时
+  coverage 保持 missing，并提供 [配置 SerpApi] [在 Scholar 搜索] [导入 Scholar 引用] 三入口（§5.2/§12.12）
+```
 
