@@ -10,7 +10,8 @@
  *   - download_paper(...)：下载开放获取 PDF 并导入本地论文库
  * （AI 本身不联网，真正的检索/下载由后端 route 执行——见 src/lib/paper-tools.ts）
  */
-import { searchPapers, downloadPaper } from "@/lib/paper-tools";
+import { searchPapers, downloadPaper, type PaperHit } from "@/lib/paper-tools";
+import type { PaperHitV2 } from "@/lib/search/types";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
@@ -52,12 +53,33 @@ const TOOLS: ToolDef[] = [
   },
 ];
 
+/** PaperHit → PaperHitV2（Step 1 接线：行为不变，数据形态升级到 v2）。
+ *  v0.2 封板：sourceProvider/accessProvider 分源；字段名兼容现有 download_paper。 */
+function toPaperHitV2(h: PaperHit): PaperHitV2 {
+  return {
+    id: h.id,
+    arxivId: h.arxivId,
+    title: h.title,
+    authors: h.authors,
+    year: h.year,
+    abstract: h.abstract,
+    doi: h.doi,
+    isOa: h.isOa,
+    oaPdfUrl: h.oaPdfUrl,
+    publisherUrl: h.publisherUrl,
+    publisherName: h.publisherName,
+    sourceProvider: "openalex",
+    accessProvider: "official-api",
+    sources: ["openalex"],
+  };
+}
+
 async function executeTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (name === "search_papers") {
     const query = String(args.query ?? "").trim();
     if (!query) return { error: "需要一个检索关键词" };
     try {
-      const hits = await searchPapers(query);
+      const hits = (await searchPapers(query)).map(toPaperHitV2);
       return { hits };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e), hint: "检索失败，可能是网络到 api.openalex.org 不通（可配代理）。" };
