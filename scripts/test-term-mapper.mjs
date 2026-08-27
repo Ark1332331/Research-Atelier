@@ -82,13 +82,16 @@ const plan2 = planFromIntent(intent2, 2026);
 ok((plan2.databases.find((d) => d.recommendedNow)?.recommendedFirst ?? "").toLowerCase().includes("fencing"), "第三层才加入 robotic fencing");
 
 console.log("== 4. B-lite term calibration：基于真实候选证据 ==");
+// v1.6 门槛：≥8 篇有摘要才校准 → 全部候选带 abstract（evidence 充足才校准）
 const cands = [
-  { canonicalId: "a", title: "Human Action Recognition for Safe Human-Robot Interaction", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
-  { canonicalId: "b", title: "Human Motion Prediction in Human-Robot Collaboration", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
-  { canonicalId: "c", title: "Skeleton-Based Human Action Recognition with Transformers", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
+  { canonicalId: "a", title: "Human Action Recognition for Safe Human-Robot Interaction", abstract: "we study human action recognition for safe human-robot interaction", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
+  { canonicalId: "b", title: "Human Motion Prediction in Human-Robot Collaboration", abstract: "we study human motion prediction in human-robot collaboration", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
+  { canonicalId: "c", title: "Skeleton-Based Human Action Recognition with Transformers", abstract: "skeleton-based human action recognition with transformers", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
   { canonicalId: "d", title: "Intention-Aware Human Motion Prediction for Physical HRI", abstract: "we study human action recognition and human motion prediction for safe physical human-robot interaction", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
-  { canonicalId: "e", title: "Robot Learning for Human Action Recognition", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
-  { canonicalId: "f", title: "Robot Learning in Human-Robot Interaction", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
+  { canonicalId: "e", title: "Robot Learning for Human Action Recognition", abstract: "robot learning for human action recognition", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
+  { canonicalId: "f", title: "Robot Learning in Human-Robot Interaction", abstract: "robot learning in human-robot interaction", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
+  { canonicalId: "g", title: "Human Motion Prediction for Interactive Robots", abstract: "human motion prediction for interactive robots", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
+  { canonicalId: "h", title: "A Survey of Human Action Recognition", abstract: "survey of human action recognition methods", authors: [], sources: [], metrics: { citations: {} }, hits: [] },
 ];
 const cal = calibrateTerms(cands, map);
 ok(cal.termsConfirmed.some((t) => t.term === "human action recognition" && t.count >= 2), "human action recognition → confirmed（候选证据）");

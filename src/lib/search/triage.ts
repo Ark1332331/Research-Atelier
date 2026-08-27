@@ -8,7 +8,7 @@
  *    metadata 仅当来源在 enrichment provenance 或 import 中（v1.3）
  *  - 输出不做总分排行榜（B6），只给角色/深度/为什么
  */
-import type { CanonicalPaper, EvidenceLevel, PaperTriage, EvidenceRef } from "./types.ts";
+import type { CanonicalPaper, EvidenceLevel, PaperTriage, EvidenceRef, AcademicConceptMap } from "./types.ts";
 
 export function evidenceLevelFor(c: CanonicalPaper): EvidenceLevel {
   return c.abstract && c.abstract.trim().length > 0 ? "abstract" : "metadata";
@@ -111,11 +111,20 @@ const SYSTEM_PROMPT = "你是 Research Atelier 的论文筛选器。基于给定
   "keySections/skipSections 一律填空数组（没有全文）；不要给任何分数或总分排名；" +
   "role 是相对当前研究问题的判断，不是论文元数据。";
 
-/** v1.3：prompt 必须显式携带研究问题（relationToQuestion/role 依赖它） */
-export function buildTriageUserPrompt(candidates: CanonicalPaper[], question: string): string {
+/** v1.3：prompt 必须显式携带研究问题（relationToQuestion/role 依赖它）。
+ *  v1.6：同时携带 AcademicConceptMap 的 canonical 术语——AI 判断相对真实研究问题与学术术语。 */
+export function buildTriageUserPrompt(candidates: CanonicalPaper[], question: string, conceptMap?: AcademicConceptMap): string {
   const q = String(question ?? "").trim();
-  const header = "用户的研究问题：" + (q || "（未提供）") + "\n" +
-    "所有 role / relationToQuestion / worthReading 都相对这个研究问题判断。\n\n";
+  let header = "用户的研究问题：" + (q || "（未提供）") + "\n" +
+    "所有 role / relationToQuestion / worthReading 都相对这个研究问题判断。\n";
+  if (conceptMap) {
+    const terms: string[] = [];
+    for (const key of ["coreTasks", "methods", "broaderFields", "applicationTerms"] as const) {
+      for (const c of conceptMap[key] ?? []) terms.push(c.canonical);
+    }
+    if (terms.length) header += "学术术语映射（canonical）：" + [...new Set(terms)].join("、") + "\n";
+  }
+  header += "\n";
   const lines = candidates.map((c, i) => {
     const ev = evidenceLevelFor(c);
     return (i + 1) + ". canonicalId=" + c.canonicalId + " | title=" + c.title +
@@ -127,8 +136,8 @@ export function buildTriageUserPrompt(candidates: CanonicalPaper[], question: st
   return header + "候选列表：\n" + lines.join("\n");
 }
 
-/** LLM triage；RA_TRIAGE_MOCK 提供确定性路径（测试/无 key 环境）；question 显式传入 */
-export async function runTriage(candidates: CanonicalPaper[], question: string): Promise<PaperTriage[]> {
+/** LLM triage；RA_TRIAGE_MOCK 提供确定性路径（测试/无 key 环境）；question + conceptMap 显式传入 */
+export async function runTriage(candidates: CanonicalPaper[], question: string, conceptMap?: AcademicConceptMap): Promise<PaperTriage[]> {
   const mock = process.env.RA_TRIAGE_MOCK;
   if (mock) {
     let parsed: unknown = null;
@@ -144,7 +153,7 @@ export async function runTriage(candidates: CanonicalPaper[], question: string):
       model: "deepseek-chat",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: buildTriageUserPrompt(candidates, question) },
+        { role: "user", content: buildTriageUserPrompt(candidates, question, conceptMap) },
       ],
       stream: false,
       temperature: 0.2,

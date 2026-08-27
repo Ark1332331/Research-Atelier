@@ -94,6 +94,7 @@ export interface CanonicalPaper {
   type?: string;
   venue?: string;
   abstract?: string;
+  fulltext?: boolean;  // v1.6：全文证据（B-lite 不产生；gate 用）
   sources: SourceName[];
   metrics: { citations: Partial<Record<CitationSourceKey, number>> };
   links?: { isOa: boolean; oaPdfUrl?: string; publisherUrl?: string };
@@ -102,6 +103,7 @@ export interface CanonicalPaper {
   enrichment?: EnrichmentProvenance;  // v1.2：metadata provenance（分来源）
   importInfo?: { importId: string; detectedType: DetectedType; raw: string };  // v1.2：导入来源证据
   aliases?: string[];  // v1.3：身份别名（title:/doi:/arxiv:），enrichment 获新标识后并入，供 dedupe 复核
+  resolution?: CandidateResolution;  // v1.6：bibliographic resolution 结果
 }
 
 /** 工具返回给 LLM 的形态（字段名与现有 prompt 的 oa_pdf_url / publisher_url 兼容 download_paper） */
@@ -373,6 +375,8 @@ export interface ResearchSession {
   termCalibration?: TermCalibration;  // v1.4：基于真实候选的术语校准（建议，不改研究目标）
   candidates: CanonicalPaper[];
   triage: PaperTriage[];
+  screening: ScreeningRecord[];      // v1.6：筛选记录（AI recommendation + 用户 Keep/Maybe/Exclude）
+  pending: PendingRow[];             // v1.6：待用户处理的行（ambiguous 待选 / unresolved 待标）
   seedPapers: string[];
   map?: { nodes: MapNode[]; edges: MapEdge[] };
   readingPaths: ReadingPath[];
@@ -456,10 +460,12 @@ export interface QueryLadder {
 }
 
 export interface TermCalibration {
+  status: "ready" | "insufficient";   // v1.6：证据门槛（≥8 篇有摘要才 ready）
+  reason?: string;
   termsConfirmed: { term: string; count: number }[];
   termsSuggested: { term: string; count: number }[];
   termsWeakOrRare: { term: string; count: number; note: string }[];
-  basedOn: number;             // 参与统计的候选数
+  basedOn: number;             // 参与统计的候选数（有摘要）
   computedAt: string;
 }
 
@@ -472,13 +478,59 @@ export type DiscoveryEventKind =
   | "external-opened"   // { database, query }
   | "returned-import"
   | "batch-imported"    // { rawItems, recognized, unknown, merged, unique }
+  | "candidate-resolved" // { canonicalId, title, confidence }
+  | "candidate-pending"  // { inputId, status: ambiguous|unresolved }
   | "calibration"       // { confirmed, suggested, weakOrRare }
-  | "triage-computed"   // { count }
+  | "triage-computed"   // { count }（v1.6 起 = screen-computed）
   | "seeds-selected";   // { ids }
 
 export interface DiscoveryEvent {
   at: string;
   kind: DiscoveryEventKind;
   detail: Record<string, unknown>;
+}
+
+
+
+/* ================ v1.6：Candidate Screening 重定义（显式行 + 证据门控） ================ */
+
+/** 证据门控：candidate exists ≠ candidate screenable */
+export type EvidenceGate = "title-only" | "metadata" | "abstract" | "fulltext";
+
+export type UserDecision = "keep" | "maybe" | "exclude";
+
+export type ResolutionStatus = "resolved" | "ambiguous" | "unresolved";
+
+export interface CandidateResolution {
+  status: ResolutionStatus;
+  matchConfidence: "high" | "medium" | "low";
+  resolvedAt: string;
+  choices?: { title: string; doi?: string; arxivId?: string; year?: number; venue?: string }[];  // ambiguous 时供用户选择
+  warnings: string[];
+}
+
+/** 一行一篇（用户显式控制 paper boundary，系统不猜「一行还是一篇」）。
+ *  与 ImportedPaperCandidate 同形（importId = 行 id），可直接走 canonicalFromImport。 */
+export interface CandidateInput {
+  importId: string;
+  raw: string;
+  detectedType: DetectedType;
+  title?: string; doi?: string; arxivId?: string; url?: string;
+  parseWarnings: string[];
+}
+
+/** 筛选记录：AI 只出 recommendation，用户最终 Keep/Maybe/Exclude */
+export interface ScreeningRecord {
+  canonicalId: string;
+  screenable: boolean;            // 证据门 ≥ abstract 才可初筛
+  reason?: string;                // 不可筛原因（如「仅标题，可能相关——需要摘要」）
+  ai?: PaperTriage;               // recommendation only（含 evidence boundary）
+  userDecision?: UserDecision;
+}
+
+/** 等待用户处理的行（ambiguous 待选 / unresolved 待标） */
+export interface PendingRow {
+  input: CandidateInput;
+  resolution: CandidateResolution;
 }
 

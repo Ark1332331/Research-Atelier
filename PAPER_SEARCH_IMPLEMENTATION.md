@@ -741,6 +741,28 @@ v1.5（2026-08-27）发现过程记录（Discovery Event Log）：
 - UI：「发现过程（N 步）」折叠时间线，按序展示全部事件与关键细节
 - 测试：test-discovery-events 17 项（8 类事件、顺序、advance-tier 1→2→3→400、刷新不丢）；
   全量 68/42/25/20/28/14/17/30/23/59 + live 15/24 全绿；tsc 干净
+
+v1.6（2026-08-27）Candidate Screening 主交互重定义（实机使用暴露：大文本框混贴会拼错边界，
+错误级联到筛选/校准）：
+- 默认交互改为显式 Candidate Rows：一行一篇（＋ 添加一篇论文），用户控制 paper boundary，
+  系统不猜「一行还是一篇」；每条可贴 标题/DOI/arXiv/URL
+- 批量粘贴 = 次级入口：/preview 先识别「N 篇」→ 用户确认后才 /import（items 显式边界）
+- 拆开 Reference Resolution 与 Screening：
+  ① /resolve 逐行 bibliographic resolution：显示 title/authors/year/venue/DOI/abstract +
+     match confidence；ambiguous 让用户 choose-identity；unresolved 进 pending 明确标记
+  ② 证据门控 gateForCandidate：title-only / metadata / abstract / fulltext；
+     AI Title+Abstract Screening 只对有摘要候选出结论；无摘要只显示「可能相关」
+  ③ AI screening 消费 session.question + conceptMap + candidate abstract（prompt 显式携带）
+  ④ AI 只出 recommendation + explanation；用户最终 Keep / Maybe / Exclude（set-decision）
+  ⑤ 每条判断展示 evidence boundary（evidenceLevel/依据）
+  ⑥ UI 显示「候选 N · 具备摘要 X / N」；0 摘要 → /screen 400（宁可停下说不知道）
+  ⑦ term calibration 证据门槛：≥8 篇有摘要才 ready，否则 status=insufficient +
+     「证据不足，暂不校准术语」（只基于本轮候选）
+  ⑧ 优先阅读/背景/近期工作分类与种子选择放在筛选完成之后；PDF/fulltext 在 shortlist 后
+- 事件日志扩展：candidate-resolved / candidate-pending
+- 测试：test-screening-gate 14（gate 四级、screen 只对有摘要、无摘要不伪装、0 摘要 400、
+  userDecision、calibration 门槛）+ live v1.6 e2e 24（预览→确认导入→resolution→screen→
+  decision→seeds→刷新）+ 全量 68/42/25/20/28/14/17/14/30/23/59 全绿；tsc 干净
 ~~~
 
 

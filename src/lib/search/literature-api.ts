@@ -1,10 +1,12 @@
 /**
- * Literature Discovery API 处理器（Phase A）——三个真实子路由共享：
- *   /api/literature/plan    POST
- *   /api/literature/action  POST
- *   /api/literature/session GET
- * 存储：data/research-sessions/<id>.json（store 适配器；session 持久化，刷新不丢）
- * LLM 边界：plannerIntent 只产结构化 intent；WoS 串 / GS/arXiv URL 由代码确定性生成。
+ * Literature Discovery API 处理器（Phase A + B-lite + v1.6 Candidate Screening 重定义）。
+ * 路由：/plan /action /session /import /resolve /screen /preview
+ * v1.6：
+ *  - 显式 Candidate Rows：一行一篇（handleResolve 逐行解析；批量粘贴经 /preview → 确认后按 items 导入）
+ *  - 先 Resolution 后 Screening：resolved 才进 candidates；ambiguous/unresolved 进 pending 等待用户
+ *  - 证据门控：gate ≥ abstract 才可初筛；title-only/metadata 只能「可能相关」
+ *  - AI screening 消费 session.question + conceptMap + abstract；只出 recommendation；用户 Keep/Maybe/Exclude
+ *  - term calibration 证据门槛（≥8 篇有摘要才 ready）
  */
 import { plannerIntent, conceptMapper } from "./planner.ts";
 import { planFromIntent, deriveNextStep } from "./plan.ts";
@@ -15,6 +17,52 @@ import { parseCandidateBlob } from "./importer.ts";
 import { dedupeCandidates } from "./inbox.ts";
 import { enrichAll } from "./enrich.ts";
 import { runTriage } from "./triage.ts";
+import { resolveCandidate, mergeResolvedInto, gateForCandidate } from "./resolve.ts";
+import type { ResearchSession, CandidateInput, PendingRow, ScreeningRecord, UserDecision } from "./types.ts";
+
+/* ---------------- helpers ---------------- */
+
+/** 一行一篇：row raw → parse → 取第一篇（多篇则警告）。返回空数组 = 无法识别。 */
+function parseRowInput(o: Record<string, unknown>): CandidateInput[] {
+  const raw = String(o.raw ?? "");
+  const items = parseCandidateBlob(raw);
+  if (items.length === 0) return [];
+  const first = items[0];
+  const warnings = [...(first.parseWarnings ?? [])];
+  if (items.length > 1) warnings.push("该行识别出多篇，只取第一篇（请一行一篇）");
+  const input: CandidateInput = {
+    importId: String(o.importId ?? first.importId),
+    raw,
+    detectedType: first.detectedType,
+    ...(first.title ? { title: first.title } : {}),
+    ...(first.doi ? { doi: first.doi } : {}),
+    ...(first.arxivId ? { arxivId: first.arxivId } : {}),
+    ...(first.url ? { url: first.url } : {}),
+    parseWarnings: warnings,
+  };
+  return [input];
+}
+
+/** 证据变化后统一收尾：清 stale screening/triage/seeds + 重算校准（含门槛）+ 记录事件 */
+function afterEvidenceChange(s: ResearchSession): ResearchSession {
+  let out: ResearchSession = { ...s, triage: [], screening: [], seedPapers: [], updatedAt: new Date().toISOString() };
+  const map = out.plan?.conceptMap;
+  if (map && (out.candidates ?? []).length > 0) {
+    out.termCalibration = calibrateTerms(out.candidates, map);
+    const cal = out.termCalibration;
+    out = recordEvent(out, "calibration", {
+      status: cal.status,
+      confirmed: cal.termsConfirmed.map((t) => t.term),
+      suggested: cal.termsSuggested.map((t) => t.term),
+      weakOrRare: cal.termsWeakOrRare.map((t) => t.term),
+    });
+  } else {
+    out.termCalibration = undefined;
+  }
+  return out;
+}
+
+/* ---------------- plan / action / session（保持） ---------------- */
 
 export async function handlePlan(body: Record<string, unknown>): Promise<Response> {
   const question = String(body.question ?? "").trim();
@@ -23,7 +71,6 @@ export async function handlePlan(body: Record<string, unknown>): Promise<Respons
   if (!session) session = createSession(question);
   try {
     // v1.4：RA_PLANNER_MOCK 走旧快捷路径；否则 用户问题 → 术语映射 → Query Ladder → 活跃层 intent → plan。
-    // 非 mock 路径绝不把用户原词直接放进 intent.conceptGroups（A.5 核心约束）。
     let intent;
     let plan;
     if (process.env.RA_PLANNER_MOCK) {
@@ -77,7 +124,6 @@ export async function handleAction(body: Record<string, unknown>): Promise<Respo
       session = { ...session, seedPapers: valid, updatedAt: new Date().toISOString() };
       session = recordEvent(session, "seeds-selected", { ids: valid });
     } else if (action === "advance-tier") {
-      // v1.5：Query Ladder 下一层（单按钮，非面板）；记录 tier-advanced
       const ladder = session.plan?.ladder;
       const map = session.plan?.conceptMap;
       if (!ladder || !map) return Response.json({ error: "当前计划没有检索阶梯" }, { status: 400 });
@@ -88,6 +134,38 @@ export async function handleAction(body: Record<string, unknown>): Promise<Respo
       const nextPlan = planFromIntent(nextIntent, undefined, { conceptMap: map, ladder: { tiers: ladder.tiers, activeTier: to } });
       session = { ...session, intent: nextIntent, plan: nextPlan, updatedAt: new Date().toISOString() };
       session = recordEvent(session, "tier-advanced", { from: from + 1, to: to + 1, toLabel: ladder.tiers[to]?.label ?? "" });
+    } else if (action === "set-decision") {
+      // v1.6：AI 只出 recommendation；用户最终 Keep/Maybe/Exclude
+      const canonicalId = String(body.canonicalId ?? "");
+      const decision = String(body.decision ?? "") as UserDecision;
+      if (!["keep", "maybe", "exclude"].includes(decision)) return Response.json({ error: "未知 decision" }, { status: 400 });
+      const screening = (session.screening ?? []).map((r) => (r.canonicalId === canonicalId ? { ...r, userDecision: decision } : r));
+      session = { ...session, screening, updatedAt: new Date().toISOString() };
+    } else if (action === "choose-identity") {
+      // v1.6：ambiguous → 用户选择真实身份 → resolve → 进 candidates
+      const inputId = String(body.inputId ?? "");
+      const choiceIndex = Number(body.choiceIndex ?? 0);
+      const row = (session.pending ?? []).find((p) => p.input.importId === inputId);
+      if (!row) return Response.json({ error: "该行不在待处理列表" }, { status: 404 });
+      const choice = row.resolution.choices?.[choiceIndex];
+      if (!choice) return Response.json({ error: "选择越界" }, { status: 400 });
+      const input: CandidateInput = {
+        importId: row.input.importId, raw: row.input.raw, detectedType: "title",
+        title: choice.title, doi: choice.doi, arxivId: choice.arxivId, parseWarnings: [],
+      };
+      const { resolution, canon } = await resolveCandidate(input);
+      let updated = { ...session, pending: (session.pending ?? []).filter((p) => p.input.importId !== inputId) };
+      if (resolution.status === "resolved" && canon) {
+        const { candidates } = mergeResolvedInto(updated.candidates ?? [], canon);
+        updated = { ...updated, candidates };
+        updated = recordEvent(updated, "candidate-resolved", { canonicalId: canon.canonicalId, title: canon.title, confidence: resolution.matchConfidence });
+      } else {
+        updated = { ...updated, pending: [...(updated.pending ?? []), { input, resolution }] };
+      }
+      session = afterEvidenceChange(updated);
+    } else if (action === "drop-pending") {
+      const inputId = String(body.inputId ?? "");
+      session = { ...session, pending: (session.pending ?? []).filter((p) => p.input.importId !== inputId), updatedAt: new Date().toISOString() };
     } else {
       return Response.json({ error: "未知 action" }, { status: 400 });
     }
@@ -98,68 +176,106 @@ export async function handleAction(body: Record<string, unknown>): Promise<Respo
   }
 }
 
-/** v1.2 B-lite：粘贴导入 → parse → dedupe → enrich → screening。单篇 enrich 失败只记 warnings。 */
-export async function handleImport(body: Record<string, unknown>): Promise<Response> {
+/* ---------------- v1.6：resolve / preview / import / screen ---------------- */
+
+/** 逐行添加 → bibliographic resolution（一行一篇；用户控制边界） */
+export async function handleResolve(body: Record<string, unknown>): Promise<Response> {
   const sessionId = String(body.sessionId ?? "");
-  const raw = String(body.raw ?? "");
-  if (!raw.trim()) return Response.json({ error: "粘贴内容为空" }, { status: 400 });
   const session = await loadSession(sessionId);
   if (!session) return Response.json({ error: "会话不存在" }, { status: 404 });
-  const items = parseCandidateBlob(raw);
-  const unparsed = items.filter((it) => it.detectedType === "unknown");
-  const recognized = items.filter((it) => it.detectedType !== "unknown");
-  const { candidates: deduped, merged, versionNotes } = dedupeCandidates(recognized, session.candidates ?? []);
-  const { papers, warnings } = await enrichAll(deduped);
-  const stats = { rawItems: items.length, recognized: recognized.length, unknown: unparsed.length, merged, unique: papers.length };
-  let updated = withImport(session, stats, raw);
-  updated.candidates = papers;
-  // v1.3：candidates/evidence 变化后，旧 triage/seeds 一律清空（防止旧筛选伪装成当前结果）
-  updated.triage = [];
-  updated.seedPapers = [];
-  // v1.4：基于真实候选 title/abstract 的术语校准（只建议，不改研究目标）
-  const conceptMap = updated.plan?.conceptMap;
-  if (conceptMap && papers.length > 0) {
-    updated.termCalibration = calibrateTerms(papers, conceptMap);
-    const cal = updated.termCalibration;
-    updated = recordEvent(updated, "calibration", {
-      confirmed: cal.termsConfirmed.map((t) => t.term),
-      suggested: cal.termsSuggested.map((t) => t.term),
-      weakOrRare: cal.termsWeakOrRare.map((t) => t.term),
-    });
+  const rows = parseRowInput((body.input ?? {}) as Record<string, unknown>);
+  if (rows.length === 0) return Response.json({ error: "这一行无法识别为论文（请粘贴标题/DOI/arXiv/URL）" }, { status: 400 });
+  const row = rows[0];
+  const { resolution, canon } = await resolveCandidate(row);
+  let updated = session;
+  if (resolution.status === "resolved" && canon) {
+    const { candidates, merged } = mergeResolvedInto(session.candidates ?? [], canon);
+    updated = { ...updated, candidates };
+    updated = recordEvent(updated, "candidate-resolved", { canonicalId: canon.canonicalId, title: canon.title, confidence: resolution.matchConfidence, merged });
   } else {
-    updated.termCalibration = undefined;
+    const pendingRow: PendingRow = { input: row, resolution };
+    updated = { ...updated, pending: [...(updated.pending ?? []), pendingRow] };
+    updated = recordEvent(updated, "candidate-pending", { inputId: row.importId, status: resolution.status });
   }
-  updated = recordEvent(updated, "batch-imported", {
-    rawItems: stats.rawItems, recognized: stats.recognized,
-    unknown: stats.unknown, merged: stats.merged, unique: stats.unique,
-  });
+  updated = afterEvidenceChange(updated);
   await saveSession(updated);
-  return Response.json({
-    session: updated,
-    stats,
-    unparsed: unparsed.map((u) => ({ raw: u.raw, parseWarnings: u.parseWarnings })),
-    versionNotes,
-    enrichWarnings: warnings,
-  });
+  return Response.json({ session: updated, resolution, ...(canon ? { canon } : {}) });
 }
 
-/** v1.2 B-lite：evidence-aware Triage（LLM + 边界强制），结果持久化 */
-export async function handleTriage(body: Record<string, unknown>): Promise<Response> {
+/** 批量粘贴预览（次级入口；不改变状态） */
+export async function handlePreview(body: Record<string, unknown>): Promise<Response> {
+  const raw = String(body.raw ?? "");
+  const items = parseCandidateBlob(raw);
+  return Response.json({ recognized: items.length, items, unparsed: items.filter((i) => i.detectedType === "unknown") });
+}
+
+/** 导入：items（显式边界，来自批量预览确认）或 legacy raw → 逐行 resolve */
+export async function handleImport(body: Record<string, unknown>): Promise<Response> {
   const sessionId = String(body.sessionId ?? "");
   const session = await loadSession(sessionId);
   if (!session) return Response.json({ error: "会话不存在" }, { status: 404 });
-  if (!session.candidates?.length) return Response.json({ error: "还没有候选，先导入论文" }, { status: 400 });
-  try {
-    const triage = await runTriage(session.candidates, session.question);
-    let updatedSession = session;
-    updatedSession.triage = triage;
-    updatedSession = recordEvent(updatedSession, "triage-computed", { count: triage.length });
-    await saveSession(updatedSession);
-    return Response.json({ session: updatedSession, triage });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return Response.json({ error: msg, hint: "Triage 编译失败，请稍后重试（可检查网络/代理）" }, { status: 502 });
+  let items: CandidateInput[] = Array.isArray(body.items) ? (body.items as CandidateInput[]) : [];
+  let raw = String(body.raw ?? "");
+  if (items.length === 0 && raw) {
+    // legacy：raw 混贴 → parse（边界由 parse 决定；仅向后兼容，新 UI 不用）
+    items = parseCandidateBlob(raw);
   }
+  if (items.length === 0) return Response.json({ error: "没有可导入的条目" }, { status: 400 });
+  let updated = session;
+  let resolvedCount = 0, pendingCount = 0;
+  for (const it of items) {
+    const { resolution, canon } = await resolveCandidate(it);
+    if (resolution.status === "resolved" && canon) {
+      const { candidates } = mergeResolvedInto(updated.candidates ?? [], canon);
+      updated = { ...updated, candidates };
+      resolvedCount++;
+    } else {
+      updated = { ...updated, pending: [...(updated.pending ?? []), { input: it, resolution }] };
+      pendingCount++;
+    }
+  }
+  const stats = { rawItems: items.length, recognized: resolvedCount + pendingCount, unknown: 0, merged: 0, unique: (updated.candidates ?? []).length };
+  updated = withImport(updated, stats, raw);
+  updated = afterEvidenceChange(updated);
+  updated = recordEvent(updated, "batch-imported", { rawItems: stats.rawItems, resolved: resolvedCount, pending: pendingCount, unique: stats.unique });
+  await saveSession(updated);
+  return Response.json({ session: updated, stats, pendingCount });
+}
+
+/** v1.6：AI Title+Abstract Screening —— 只出 recommendation；gate ≥ abstract 才可筛 */
+export async function handleScreen(body: Record<string, unknown>): Promise<Response> {
+  const sessionId = String(body.sessionId ?? "");
+  const session = await loadSession(sessionId);
+  if (!session) return Response.json({ error: "会话不存在" }, { status: 404 });
+  const candidates = session.candidates ?? [];
+  const screenable = candidates.filter((c) => { const g = gateForCandidate(c); return g === "abstract" || g === "fulltext"; });
+  if (screenable.length === 0) {
+    return Response.json(
+      { error: "没有具备摘要的候选（" + candidates.length + " 篇中 0 篇有摘要），无法初筛——请先解析出摘要（DOI/arXiv 或补充标题解析）" },
+      { status: 400 },
+    );
+  }
+  const conceptMap = session.plan?.conceptMap;
+  const ai = await runTriage(screenable, session.question, conceptMap);
+  const aiBy = new Map(ai.map((t) => [t.paperId, t]));
+  const screening: ScreeningRecord[] = candidates.map((c) => {
+    const gate = gateForCandidate(c);
+    const ok = gate === "abstract" || gate === "fulltext";
+    return {
+      canonicalId: c.canonicalId,
+      screenable: ok,
+      ...(ok ? { ai: aiBy.get(c.canonicalId) } : { reason: gate === "title-only" ? "仅标题：可能相关，需要摘要才能初筛" : "仅元数据：需要摘要才能初筛" }),
+    };
+  });
+  const updated = { ...session, screening, triage: ai, updatedAt: new Date().toISOString() };
+  const saved = recordEvent(updated, "triage-computed", { count: screenable.length, total: candidates.length });
+  await saveSession(saved);
+  return Response.json({ session: saved, screening, triage: ai });
+}
+
+/** 兼容旧 /triage 路由 */
+export async function handleTriage(body: Record<string, unknown>): Promise<Response> {
+  return handleScreen(body);
 }
 
 export async function handleSessionGet(id: string): Promise<Response> {

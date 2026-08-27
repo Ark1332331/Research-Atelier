@@ -205,8 +205,22 @@ function extractPhrases(candidates: CanonicalPaper[]): { term: string; count: nu
     .sort((a, b) => b.count - a.count);
 }
 
-/** 基于真实候选 title/abstract 的术语校准：只建议，不改研究目标 */
+/** 基于真实候选 title/abstract 的术语校准：只建议，不改研究目标。
+ *  v1.6 证据门槛：有摘要候选 < 8 → status=insufficient（返回空趋势 + 原因），不做术语校准。 */
 export function calibrateTerms(candidates: CanonicalPaper[], map: AcademicConceptMap): TermCalibration {
+  const withAbstract = candidates.filter((c) => c.abstract && c.abstract.trim().length > 0);
+  const now = new Date().toISOString();
+  if (withAbstract.length < 8) {
+    return {
+      status: "insufficient",
+      reason: "证据不足：至少需要 8 篇具备摘要的候选（当前 " + withAbstract.length + " 篇），暂不校准术语。",
+      termsConfirmed: [],
+      termsSuggested: [],
+      termsWeakOrRare: [],
+      basedOn: withAbstract.length,
+      computedAt: now,
+    };
+  }
   const texts = candidates.map(allText);
   const countTerm = (term: string): number => {
     const t = term.toLowerCase();
@@ -243,11 +257,12 @@ export function calibrateTerms(candidates: CanonicalPaper[], map: AcademicConcep
     .slice(0, 5);
 
   return {
+    status: "ready",
     termsConfirmed: confirmed.slice(0, 8),
     termsSuggested: suggested,
     termsWeakOrRare: weak.slice(0, 8),
-    basedOn: candidates.length,
-    computedAt: new Date().toISOString(),
+    basedOn: withAbstract.length,
+    computedAt: now,
   };
 }
 

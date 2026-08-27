@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { normalizeSearchPlan, normalizeIntent, deriveNextStep } from "./plan.ts";
-import type { ResearchSession, SearchPlanStage, SearchPlan, SearchIntent, DatabaseAction, DiscoveryEvent, DiscoveryEventKind } from "./types.ts";
+import type { ResearchSession, SearchPlanStage, SearchPlan, SearchIntent, DatabaseAction, DiscoveryEvent, DiscoveryEventKind, ScreeningRecord, PendingRow } from "./types.ts";
 
 export const SESSION_SCHEMA_VERSION = 1;
 
@@ -22,6 +22,8 @@ export function createSession(question: string): ResearchSession {
     databaseActions: [],
     candidates: [],
     triage: [],
+    screening: [],
+    pending: [],
     seedPapers: [],
     readingPaths: [],
     openQuestions: [],
@@ -50,6 +52,8 @@ export function normalizeSession(raw: unknown): ResearchSession {
     ...(o.termCalibration && typeof o.termCalibration === "object" ? { termCalibration: o.termCalibration as ResearchSession["termCalibration"] } : {}),
     candidates: Array.isArray(o.candidates) ? o.candidates : [],
     triage: Array.isArray(o.triage) ? o.triage : [],
+    screening: Array.isArray(o.screening) ? (o.screening as ScreeningRecord[]) : [],
+    pending: Array.isArray(o.pending) ? (o.pending as PendingRow[]) : [],
     seedPapers: Array.isArray(o.seedPapers) ? o.seedPapers.map(String) : [],
     ...(o.map ? { map: o.map as ResearchSession["map"] } : {}),
     readingPaths: Array.isArray(o.readingPaths) ? o.readingPaths : [],
