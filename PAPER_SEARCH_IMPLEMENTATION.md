@@ -1,7 +1,7 @@
 # Research Atelier · Literature Discovery 实现方案
 ## （Design Intent v1.0 落地 · 取代旧 PAPER_SEARCH_IMPLEMENTATION v0.1/v0.2）
 
-> 状态：**方案 v1.0 —— 待用户审阅（产品逻辑 / 技术可行性 / 用户实际操作路径 / 是否膨胀成大全系统），未开始新代码**。
+> 状态：**方案 v1.1（hardening patch 已合入，2026-08-27）—— 用户四角度审核通过；待用户 GO 后从 Phase A 开始编码**。
 > 本文整体重写旧版 PAPER_SEARCH_IMPLEMENTATION.md（v0.1/v0.2 已由本版本取代；git 历史保留旧版与旧 Step 1 记录）。
 > 唯一已落地代码：**Paper Search Step 1**（src/lib/search/types.ts + 测试 + chat/route.ts 接线，2026-08-27 提交 fdebf7f）——保留，语义迁移见 §3。
 > 依据：《Research Atelier · Literature Discovery Design Intent v1.0》（用户 2026-08-27 提供，下文简称 DI）。
@@ -45,7 +45,7 @@ Research Atelier 不替代学术检索平台，而是负责用户最困难的部
 
 **成功指标改变（DI §1）：** 不再以「搜索到多少篇 / 接了多少 Provider」为主指标，而以「用户是否更快建立一个领域的正确认知结构」为目标。
 
-**成本原则（DI §26）：** 核心工作流**不能依赖任何额外付费 Search API**；Grok / Exa / Tavily / SerpApi / WoS API 等只能作为 Optional Accelerator（Phase E），不是产品依赖。
+**成本原则（DI §26，v1.1 精确化）：** **核心工作流不依赖任何额外付费 Search API**（Grok / Exa / Tavily / SerpApi / WoS API 等只能作为 Optional Accelerator，Phase E）。注意：这不等于「整套功能零成本」——Phase A 的策略生成使用项目已有的 LLM（DeepSeek），属既有运行成本；「零依赖」特指**不再新增付费检索 API 依赖**。
 
 ---
 
@@ -84,12 +84,14 @@ Research Atelier 不替代学术检索平台，而是负责用户最困难的部
 
 **首页不再是大聊天框**，四个入口：
 
-| 入口 | 用户状态 | 对应 Phase |
-|---|---|---|
-| 帮我开始检索 | 我只有一个研究问题，不知道该怎么搜 | A |
-| 帮我筛这些论文 | 我已经从 Scholar/WoS 等搜到一些论文 | B |
-| 从这篇论文继续找 | 我已找到一篇关键 seed paper | C |
-| 快速发现一些论文 | 先不动身去网站，用开放数据库快速找一批 | D |
+| 入口 | 用户状态 | 对应 Phase | 权重（v1.1） |
+|---|---|---|---|
+| 我只有一个研究问题 → 帮我开始检索 | 还没有论文 | A | **主入口**（研究工作流） |
+| 我已经搜到一些论文 → 帮我筛这些论文 | 已经有一堆论文 | B | **主入口**（研究工作流） |
+| 我已经有关键论文 → 从这篇继续找 | 已经找到关键论文 | C | **主入口**（研究工作流；第一版不实现，入口可后置） |
+| 快速发现一些论文 | 先不动身去网站 | D | **次级快捷工具**（页底小字「只是想先看看？」） |
+
+**入口权重（v1.1）**：A/B/C 是研究工作流（对应「还没有论文 → 已经有一堆论文 → 已经找到关键论文」的自然阶段），D 是快捷工具。首页用三张主卡片 + 页底次级入口「只是想先看看？[快速发现一些论文]（基于开放学术数据源）」，**避免新用户误以为「能自动搜」而跳过真实数据库**。
 
 四个入口共享同一个 **Research Session**（持久对象，DI §22）：
 
@@ -140,6 +142,8 @@ interface DatabaseStrategy {
   purpose: string;                 // 这个库适合干什么
   queries: string[];               // 各库语法的可执行检索式
   recommendedFirst?: string;       // 推荐先执行哪条
+  priority: "primary" | "secondary" | "later";  // v1.1：本轮是否主推
+  recommendedNow: boolean;         // v1.1：一个 SearchPlan 只允许一个 recommendedNow=true
   deepLinkUrl?: string;            // 可稳定带 query 的深链（GS 的 q= 通常可用；WoS 不稳定 → 以复制为主）
   nextActions: string[];           // 进去以后点什么：Cited by / Related Records / References …
   why: string;                     // 为什么这一轮建议它（默认一句话，可展开）
@@ -160,16 +164,20 @@ type PaperRole =
   | "survey" | "foundational" | "core" | "follow-up"
   | "competing" | "recent" | "applied" | "peripheral";
 type ReadingDepth = "skip" | "skim" | "targeted" | "deep";
+type EvidenceLevel = "metadata" | "abstract" | "fulltext" | "citation-graph";  // v1.1
 
 interface PaperTriage {
   paperId: string;
   role: PaperRole;
   roleReason: string;              // 为什么是这个角色
+  roleConfidence: "high" | "medium" | "low";   // v1.1：角色是相对当前问题的判断，不是绝对事实
+  roleEvidence: EvidenceRef[];     // v1.1：角色依据（如「被当前候选集 9 篇后续工作引用」）
   worthReading: string;            // 为什么值得读（或为什么跳过）
   relationToQuestion: "high" | "medium" | "low" | "unknown";
   depth: ReadingDepth;
-  keySections: string[];           // 重点看
-  skipSections: string[];          // 暂时不用看
+  evidenceLevel: EvidenceLevel;    // v1.1：本次判断基于什么证据
+  keySections: string[];           // 重点看 —— 仅 evidenceLevel=fulltext 时允许填写，否则必须为空
+  skipSections: string[];          // 暂时不用看 —— 同上
   d: {                             // 六维一句话判断（DI §8），不打分
     d1: string; d2: string; d3: string;
     d4: string; d5: string; d6: string;
@@ -177,42 +185,57 @@ interface PaperTriage {
   verdict: "读" | "扫读" | "跳过" | "待定";
 }
 
-/* ---- Phase C：Seed Paper + Literature Map ---- */
-type MapRelation = "references" | "citations" | "related" | "author-lineage";
+interface EvidenceRef {            // v1.1
+  kind: EvidenceLevel;
+  source: string;                  // 如「当前候选集内 9 篇引用」「Crossref 元数据」
+  detail?: string;
+}
+
+/* ---- Phase C：Seed Paper + Literature Map（设计保留，第一版不实现，见 §14） ---- */
+type MapRelation = "cites" | "related" | "author-continuity";   // v1.1：底层关系事实
 
 interface MapNode {
   paperId: string; title: string; year?: number;
   role?: PaperRole; cluster?: string;
 }
 interface MapEdge {
-  from: string; to: string;
+  from: string; to: string;        // Paper B cites Paper A → from=B, to=A, relation="cites"
   relation: MapRelation;
-  direction: "forward" | "backward" | "undirected";
   explanation: string;             // AI 解释为什么连在一起（DI §13）
   evidence: string;                // 证据（引用关系 / 方法继承 / 作者延续）
 }
+// v1.1：forward/backward 不再写进底层关系（避免 relation="citations"+direction="backward"
+// 自相矛盾），只作为「相对当前 seed 的 UI 视角」在展示层计算。
+// author-continuity 只表示作者/团队连续，不自动断言「学术路线传承」——更强结论由 AI 解释给出。
 interface ReadingPath {
   id: string; nodes: string[];
   audience: "beginner" | "recent-3y" | "custom";
   rationale: string;               // 为什么按这个顺序读
 }
 
-/* ---- 贯穿：Next Step + Research Session ---- */
+/* ---- 贯穿：Next Step（derived）+ Research Session ---- */
 interface NextStep { action: string; reason: string; }
+
+interface DatabaseAction {         // v1.1：替代 visitedDatabases（只记录系统可确认的动作）
+  database: string;
+  action: "query-generated" | "opened" | "results-imported";
+  at: string;
+}
 
 interface ResearchSession {
   id: string;
   question: string;
   intent?: SearchIntent;
   plan?: SearchPlan;
-  visitedDatabases: { id: string; at: string; action?: string }[];
+  databaseActions: DatabaseAction[];
   candidates: CanonicalPaper[];
   triage: PaperTriage[];
   seedPapers: string[];
   map?: { nodes: MapNode[]; edges: MapEdge[] };
   readingPaths: ReadingPath[];
   openQuestions: string[];
-  nextStep: NextStep;
+  // v1.1：nextStep 是 derived state —— deriveNextStep(session) 每次动态算，
+  // 不作为持久化事实（session 一变旧建议立即过期）；最近一次建议可存 history 备查
   createdAt: string; updatedAt: string;
 }
 ~~~
@@ -242,6 +265,62 @@ interface ResearchSession {
 | Semantic Scholar | 提示其定位：Related Papers / Citations / References / 推荐网络（不必重新关键词搜索） | 图关系能力 |
 | arXiv | 提示其定位：最新、尚未正式发表的工作 | 时效 |
 
+**一次只给一个主要任务（v1.1，与复现模块 UX 原则一致）：**
+
+~~~text
+第一步 · Google Scholar（推荐现在做）
+搜索："world model" robotics
+为什么：先建立较宽的候选池
+[复制并打开 Scholar]
+
+（折叠）之后可以：
+Web of Science —— 更规范的筛选和引用追踪
+arXiv —— 补最近工作
+Semantic Scholar —— 找到种子论文后展开引用网络
+~~~
+
+一个 SearchPlan 中只有一个 DatabaseStrategy 的 recommendedNow=true；其余全部折叠为「之后可以」。**不把四个数据库的检索式同时砸给用户。**
+
+**WoS 检索式 = 确定性 compiler（v1.1 技术原则）：**
+
+~~~text
+LLM 只产结构化概念（concepts / context / yearRange）
+  ↓
+compileWosQuery(intent)   ← 代码负责 WoS 语法
+  ↓
+TS=("world model" OR "world models") AND TS=(robot* OR "embodied agent*") AND PY=(2022-2026)
+~~~
+
+**禁止 LLM 直接生成最终 WoS 字符串**（括号未闭 / 字段 tag 写错 / 转义不对 / 年份语法错是常见但无聊的 bug）。compiler 规则：TS= 包概念组与语境组、AND 连接、PY= 年份区间；**年份跨度超过五年时不机械生成 PY=(2010-2026)**，改为提示「时间跨度较大，建议第一轮不限制，或拆成『近五年 + 历史基础工作』两轮」。
+
+**Google Scholar 用多条短 query，不追求复杂 Boolean（v1.1）：**
+
+~~~text
+① "world model" robotics          先搜；结果太宽再换②
+② "world model" "embodied agent"
+③ "world models" robotics review  需要背景综述时
+~~~
+
+Scholar 的性格是「短而明确的 query + 用户在其原生排序 / Cited by / Related articles 上继续探索」；WoS 才是「一条结构严谨的高级查询式」。两者不要互相照搬。
+
+**Return Path（v1.1，Phase A→B 的最大 UX 风险点）：**
+
+打开外链前固定显示「这一轮任务」：
+
+~~~text
+这一轮任务
+① 在 Scholar 执行这条搜索
+② 先浏览前 2–3 页
+③ 找到大约 10–20 篇看起来相关的论文
+④ 回来交给 Research Atelier 筛选
+
+[复制并打开 Google Scholar]
+
+回来以后：[我搜完了，开始导入论文]
+~~~
+
+用户点外链时 Research Session 已保存；回来页面仍在「World Model / Robotics · 当前步骤：把刚刚搜到的论文带回来」，而不是回到空聊天框。
+
 **Next Research Action（DI §5）**：不只给 query，还给「进去以后点什么」。例如已有 DreamerV3：
 
 ~~~text
@@ -254,11 +333,12 @@ Semantic Scholar → 看 References    （找它建立在哪些基础工作上�
 **轻量解释（DI §23）**：默认一句话「为什么这么做？」，想了解再展开（为什么用 exact phrase / 为什么点 Cited by / 为什么先看 survey）。不教程墙。
 
 **验收（Phase A）：**
-1. 输入「world model 在 robotics 最近三年」→ SearchPlan 含概念/同义词/排除/时间窗 + GS 3 条 query + WoS TS= 检索式 + S2/arXiv 定位 + 每库 why + 下一步动作
+1. 输入「world model 在 robotics 最近三年」→ SearchPlan 含概念/同义词/排除/时间窗 + **仅 1 个 recommendedNow 主动作** + GS 短 query 组 + WoS TS= 检索式（由 compileWosQuery 确定性生成）+ S2/arXiv 定位 + 每库 why + 下一步动作
 2. 每库有 [复制]；GS 深链可用则给 ↗，WoS 深链不稳定以复制为主（诚实降级）
-3. 零付费 API 依赖（纯 LLM 生成策略）
+3. 零额外付费 Search API 依赖（LLM 策略生成为项目既有成本）
 4. seed 场景给出 Cited by / Related Records / References 三动作
 5. 解释默认一句话、可展开
+6. **Return Path**：外链前显示「这一轮任务 ①–④」；回来有「我搜完了，开始导入论文」入口且 Session 不丢
 
 ---
 
@@ -305,23 +385,25 @@ DreamerV3
 暂时不用看：部分附录实现细节
 ~~~
 
+- **证据等级（v1.1，必须诚实）**：每次判断标注 evidenceLevel（metadata / abstract / fulltext / citation-graph）与 roleConfidence（high/medium/low）。UI 区分「基于标题+摘要判断」与「已读取全文后判断」；**只有全文可用时才输出「重点看 Method §3 / 跳过 Appendix B」，没有全文就写「重点阅读章节：需要导入全文后判断」——禁止凭空猜章节。**
 - **阅读深度四档（DI §9）**：跳过 / 扫读 / 定向阅读 / 精读 —— 回答「对当前任务值不值得投入 2 小时」。
 - **领域角色（DI §10）**：综述/入门、奠基工作、核心路线、重要 follow-up、竞争路线、近期进展、应用工作、边缘相关。用户最终看到的是「建立背景 2 篇 / 理解主路线 3 篇 / 了解最新进展 2 篇 / 了解竞争方向 1 篇」，而非 Top 10 列表。
 - **引用数分源（DI §20）**：OpenAlex citations: 980 / GS 1,250 / WoS 730 —— 明确写来源，不合并成一个「唯一事实」。
 - **provenance（DI §19）**：每条候选保留 sourceProvider + accessProvider，服务「判断可核实」。
 
-**验收（Phase B）：**
-1. 粘贴标题 / DOI / arXiv URL / BibTeX / WoS export 四条路径解析成功（单测 + 手工样例）
+**验收（Phase B，第一版为 B-lite，见 §14）：**
+1. **大文本框一次贴多行**（标题/DOI/URL 混贴自动逐条识别）+ BibTeX + RIS + WoS export 解析成功（单测 + 手工样例）
 2. 多版本归一：arXiv/会议/期刊识别为同一工作并呈现版本链
 3. Enrichment 后字段带来源；缺失标「未核实」
-4. Triage 输出：角色 + 四档深度 + 重点/暂不看 + 六维一句话（不打分）
+4. Triage 输出：角色 + roleConfidence/roleEvidence + 四档深度 + 六维一句话（不打分）
 5. 引用数分源；provenance 可核实
+6. **无全文不得编造章节**：evidenceLevel ≠ fulltext 时 keySections/skipSections 必须为空，UI 显示「需要导入全文后判断」
 
 ---
 
 ## 8. Phase C — Seed Paper + Literature Map（第三核心功能，DI §11–15）
 
-**职责**：解决「我不知道下一步往哪找」。从种子论文展开。
+**职责**：解决「我不知道下一步往哪找」。从种子论文展开。**开发状态（v1.1）：设计与 schema 完整保留，第一版不实现（§14 MVP 1 = A + B-lite；C 待 A/B 闭环验证后进入）。**
 
 ### 8.1 Seed Paper Expansion（DI §15，从旧 v0.2 的 follow_paper 升级为主要工作流）
 
@@ -346,7 +428,7 @@ DreamerV3
   └─ 2024–2026：robotics / embodied agents / foundation world models
 ~~~
 
-**四种关系（DI §12）：** references（引用了谁）/ citations（谁引用了它）/ related（主题结构相似）/ author-lineage（作者/团队延续）；以后可加 co-citation / bibliographic coupling。
+**底层三种关系（v1.1，避免字段自相矛盾）：** cites（Paper B cites Paper A，引用了谁 / 谁引用了它由 from→to 方向表达）/ related（主题结构相似）/ author-continuity（作者/团队连续——只表示延续，不自动断言「学术路线传承」，更强结论由 AI 解释给出）；以后可加 co-citation / bibliographic coupling。**forward/backward 只是相对当前 seed 的 UI 视角，不写进底层关系事实（§5.3）。**
 
 **每条重要边可展开（DI §13）：**
 
@@ -377,6 +459,8 @@ Dreamer → DreamerV2
 ---
 
 ## 9. Phase D — Quick Discovery（降级为辅助模式，DI §16–17）
+
+**开发状态（v1.1）：不进入第一版（§14 MVP 1）。** 旧 search_papers() 在 Phase D 落地前继续作为现状能力存在；Phase D 单独开发时把自动检索接回 Quick Discovery。
 
 旧方案的自动检索发动机**不是不要了**，降级为「快速发现」：
 
@@ -423,18 +507,35 @@ WoS API / Scholar API proxy（SerpApi）/ Grok / Exa / Tavily / 浏览器扩展 
 当前：已经读完 DreamerV3      → 下一步：不要继续关键词搜索；沿 citations 找 2024–2026 直接 follow-up
 ~~~
 
-这是整个模块最有「导航仪」感觉的能力。Research Session 作为持久对象（§4）承载它；存储沿用本地 data/ 模式（store.ts），可导出。
+这是整个模块最有「导航仪」感觉的能力。
+
+**实现原则（v1.1，derived state）**：nextStep 不持久化 —— deriveNextStep(session) 每次按当前 session 状态动态计算；session 一变（如刚导入 20 篇）旧建议立即过期。最近一次建议可存入 history 供展示，但不作为当前状态唯一真相。databaseActions 只记录系统可确认的动作（query-generated / opened / results-imported），不假装「访问过」。Research Session 作为持久对象（§4）承载这一切；存储沿用本地 data/ 模式（store.ts），可导出。
 
 ---
 
 ## 12. 首页 UX（DI §24）
 
 ~~~text
-你现在想做什么？
-┌ 帮我开始检索 ┐  ┌ 帮我筛这些论文 ┐
-│ 我只有一个问题 │  │ 我已经搜到一些 │
-┌ 从一篇论文继续找 ┐  ┌ 快速发现 ┐
-│ 我有 seed paper │  │ 开放数据源先搜一轮 │
+你现在处于哪一步？
+
+┌─────────────────────┐
+│ 我只有一个研究问题    │
+│ 帮我开始检索    →    │
+└─────────────────────┘
+
+┌─────────────────────┐
+│ 我已经搜到一些论文    │
+│ 帮我筛这些论文  →    │
+└─────────────────────┘
+
+┌─────────────────────┐
+│ 我已经有关键论文      │
+│ 从这篇继续找    →    │
+└─────────────────────┘
+
+────────────────────
+只是想先看看？
+[快速发现一些论文]   ← 次级快捷入口（基于开放学术数据源）
 
 进入后三层：
 顶部：当前研究目标 + 当前阶段
@@ -463,15 +564,26 @@ WoS API / Scholar API proxy（SerpApi）/ Grok / Exa / Tavily / 浏览器扩展 
 
 ## 14. 开发顺序与每阶段验收（旧 v0.2 Step 2–10 废止，重排如下）
 
-| Phase | 内容 | 验收要点 |
-|---|---|---|
-| **A** | Search Guide：入口「帮我开始检索」+ SearchPlan 生成 + 数据库策略（GS/WoS/S2/arXiv）+ 复制/深链 + Next Research Action + 轻量解释 + Research Session 骨架 | §6 五条 |
-| **B** | Candidate Inbox + Paper Triage：入口「帮我筛这些论文」+ 导入解析（title/DOI/arXiv/BibTeX/RIS/WoS export）+ dedupe + enrichment + 角色/深度输出 + 版本链 | §7 五条 |
-| **C** | Seed Paper + Literature Map：入口「从这篇论文继续找」+ 四类关系 + 关系解释 + 阅读路线 | §8 四条 |
-| **D** | Quick Discovery：入口「快速发现」+ OpenAlex/S2/arXiv 自动检索重新接入 + RRF/BM25 + UI 明示降级 | §9 四条 |
-| **E** | Optional Accelerators（WoS API / SerpApi / Grok / Exa / Tavily / 浏览器扩展 / alerts） | 按需；不改变核心架构 |
+| Phase | 内容 | 验收要点 | 第一版（v1.1） |
+|---|---|---|---|
+| **A** | Search Guide：入口「帮我开始检索」+ SearchPlan 生成（单 primary action）+ 数据库策略（GS/WoS/S2/arXiv）+ compileWosQuery + 复制/深链 + Return Path + 轻量解释 + Research Session 骨架 | §6 六条 | **MVP 1 必做** |
+| **B-lite** | Candidate Inbox（大文本框混贴 + BibTeX/RIS/WoS export）+ dedupe + metadata enrichment + 基础 Paper Triage（角色/深度/为什么，带 evidenceLevel） | §7 六条 | **MVP 1 必做** |
+| **C** | Seed Paper + Literature Map：入口「从这篇论文继续找」+ 三关系 + 关系解释 + 阅读路线 | §8 四条 | 保留设计，**不进入第一版** |
+| **D** | Quick Discovery：入口「快速发现」（首页次级）+ OpenAlex/S2/arXiv + RRF/BM25 + UI 明示降级 | §9 四条 | **不进入第一版**（旧 search_papers 继续存在） |
+| **E** | Optional Accelerators（WoS API / SerpApi / Grok / Exa / Tavily / 浏览器扩展 / alerts） | 按需 | 以后 |
 
-依赖关系：A 是地基（SearchPlan/ResearchSession 被 B/C/D 复用）；B 的 dedupe 复用 Step 1；C 需要 B 的候选/种子；D 可并行但依赖 Step 1 模型。A→B→C 为用户主路径，D 为便利功能。
+**MVP 1 范围（v1.1 锁定）：Phase A（完整）+ Phase B-lite（Candidate Inbox + enrichment + 基础 Triage）。**
+
+~~~text
+自然语言研究问题 → SearchIntent → 生成 1 个推荐当前动作 + GS/WoS 策略
+→ 复制 / 打开真实网站 → 回来 → 一次贴入多个标题/DOI/URL 或导入 BibTeX/RIS/WoS export
+→ Normalize / Dedupe → 补 metadata/abstract → AI 判断（角色 / 相关程度 / 阅读深度 / 为什么）
+→ 选择 1–3 篇 seed papers
+~~~
+
+**做到这里停**：第一版不做 Literature Map / RRF / BM25 / S2 自动图扩展 / Grok / Exa / SerpApi / WoS API / 浏览器扩展 / alerts。C/D/E 完整保留设计与 schema，等 MVP 1 闭环验证后再进入。
+
+依赖关系：A 是地基（SearchPlan/ResearchSession 被后续复用）；B-lite 的 dedupe 复用 Step 1；C 需要 B 的候选/种子；D 可并行但依赖 Step 1 模型。A→B-lite 为第一版主链路。
 
 ---
 
@@ -496,6 +608,21 @@ WoS API / Scholar API proxy（SerpApi）/ Grok / Exa / Tavily / 浏览器扩展 
 
 验收成立 ≠ 勾选「✓ OpenAlex ✓ WoS ✓ Scholar ✓ Grok ✓ Exa」，而 = 用户知道自己该读什么、为什么、下一步去哪。
 
+**MVP 1 成功标准（v1.1，用 "world model in robotics" 做一次真实测试）**——一个第一次用产品的人应能走完 8 步闭环：
+
+~~~text
+1. 不知道怎么搜
+2. 系统告诉他现在先去 Scholar，给出具体查询
+3. 他真的能打开 Scholar 并执行
+4. 带回来 20 篇
+5. 系统去重并解释其中哪些值得读
+6. 最后留下 3–5 篇
+7. 用户知道为什么读这几篇
+8. 系统告诉他下一步应从其中哪篇继续展开
+~~~
+
+这 8 步好用 → 产品成立，再做 Phase C（把那 3 篇种子论文展开成发展地图）。
+
 ---
 
 ## 16. 与复现模块的关系 + 成本原则
@@ -507,7 +634,7 @@ WoS API / Scholar API proxy（SerpApi）/ Grok / Exa / Tavily / 浏览器扩展 
 本方案不动复现模块；两模块共享的只有论文库（library.json）入口。
 ~~~
 
-成本硬原则（DI §26）：Phase A–D 全部零付费 API 依赖；Optional Accelerator 只是加速，不是依赖。
+成本硬原则（DI §26，v1.1 精确化）：**核心工作流不依赖额外付费 Search API**；Optional Accelerator 只是加速，不是依赖。这不等于「整套功能零成本」——LLM 策略生成使用项目已有 DeepSeek（既有运行成本）；「零依赖」特指不新增付费检索 API。
 
 ---
 
@@ -524,5 +651,18 @@ v1.0（2026-08-27）Design Intent 重写（本文）：
 - 新增：SearchPlan / DatabaseStrategy / ImportedCandidate / PaperTriage（角色+深度）/ LiteratureMap（四关系+解释+阅读路线）/ ResearchSession / NextStep
 - 四个入口取代单一聊天入口；成功指标改为「用户是否更快建立领域的正确认知结构」
 - 十项用户任务验收取代 Provider 数量验收
+
+v1.1（2026-08-27）hardening patch（用户四角度审核后锁定，产品方向不再改）：
+- A/B/C 主入口、Quick Discovery 降级为首页次级快捷入口（§4/§12）
+- SearchPlan 一次只推荐一个 primary action（priority/recommendedNow），其余折叠（§5.3/§6）
+- WoS：LLM 只产结构化 intent，compileWosQuery() 确定性编译 TS=/PY=；>5 年跨度提示拆两轮（§6）
+- Google Scholar：多条短 query，不追求复杂 Boolean；与 WoS 性格区分（§6）
+- Return Path：外链前固定「这一轮任务 ①–④」+「我搜完了，开始导入论文」；Session 不丢（§6）
+- PaperTriage 增加 evidenceLevel/roleConfidence/roleEvidence；无全文不得编造 keySections/skipSections（§5.3/§7）
+- Map 底层关系改 cites/related/author-continuity；forward/backward 只作 UI 视角（§5.3/§8）
+- nextStep 改 derived state（deriveNextStep）；visitedDatabases 改 databaseActions（§5.3/§11）
+- 成本原则精确为「核心工作流不依赖额外付费 Search API」（§1/§16）
+- 第一版范围锁定 MVP 1 = Phase A + Phase B-lite；C/D/E 保留设计不进入第一版（§14）
+- 新增 MVP 1 成功标准（8 步闭环，world model in robotics）（§15）
 ~~~
 
