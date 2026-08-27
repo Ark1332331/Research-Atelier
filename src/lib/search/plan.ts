@@ -256,7 +256,9 @@ export function deriveNextStep(s: { stage: ResearchSession["stage"]; plan?: Sear
     case "external-opened":
       return { action: "完成搜索后回来点「我搜完了，开始导入论文」", reason: "搜索进行中；回来后我们接住你。" };
     case "awaiting-import":
-      return { action: "把搜到的论文带回来（Phase B-lite 导入即将接入）", reason: "你的位置已保存。" };
+      return { action: "把搜到的论文带回来（粘贴进 Candidate Inbox 导入）", reason: "你的位置已保存；导入后进入候选筛选。" };
+    case "screening":
+      return { action: "把候选导入并筛选（去重 → 补证据 → 选出 3–5 篇值得继续的）", reason: "候选已在筛选状态；刷新不会丢。" };
   }
 }
 

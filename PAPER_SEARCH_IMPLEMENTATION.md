@@ -680,6 +680,24 @@ v1.1.2（2026-08-27）Phase A 封板 hardening：
 - 新增 API 级 goal 路由测试 scripts/test-literature-goals.mjs（六 goal：foundational→WoS / recent→arXiv /
   follow_paper→S2 primary + landingUrl + deep-link 区分 + context 不污染 WoS，42 项全过）；
   HTTP 集成测试补 primary landingUrl 断言（15/15）；单测 68/68
+
+v1.2（2026-08-27）Phase B-lite 实现（MVP 1 = A + B-lite 落成）：
+- Candidate Inbox：大文本框混贴（标题/DOI/arXiv URL/论文 URL/BibTeX/RIS/WoS export）自动拆分，
+  deterministic parser 无 LLM；无法识别条目进 unknown + warnings，绝不静默丢失（scripts/test-importer.mjs 16 项）
+- Dedupe：复用 Step 1 canonicalIdFor（DOI > arXiv > title），不重新造身份体系；标题相同但标识不同 →
+  两条都保留并标注「可能为不同版本」（保守不激进）
+- Enrichment：Crossref（仅按 DOI 校验）+ OpenAlex（DOI 或严格标题匹配）；只补不覆盖；
+  provenance 分来源（title/abstract/venue/citations 各自记录来源），citation 不跨源合并；
+  单篇失败只记 warnings，不进整批失败（B4）
+- Triage：evidenceLevel 由候选实际证据判定（abstract/metadata）；LLM 声称 fulltext 被 clamp；
+  evidenceLevel !== fulltext 时 keySections/skipSections 代码强制为空（B5）；输出角色/深度/为什么，
+  无总分排行榜（B6）
+- Session 状态机新增 screening（awaiting-import → screening）；importStats/importBatch 持久化，
+  刷新后候选/triage/种子/统计不丢（B8）
+- API：/api/literature/import + /api/literature/triage + action select-seeds（≤3）
+- UI：导入框 → 统计（导入N/识别N/合并N/候选N）→ 候选列表（未核实标红）→ AI 筛选 →
+  建议先读 / 建立背景 / 可以暂缓 三组 → 选种子
+- 测试：importer 16 + enrich/triage 18 + B-lite e2e（live :3000）24 项全过；回归 68+42+30+23+59+15 全绿；tsc 干净
 ~~~
 
 

@@ -10,7 +10,7 @@ import type { ResearchSession, SearchPlanStage, SearchPlan, SearchIntent, Databa
 
 export const SESSION_SCHEMA_VERSION = 1;
 
-const STAGES: SearchPlanStage[] = ["planning", "ready-to-search", "external-opened", "awaiting-import"];
+const STAGES: SearchPlanStage[] = ["planning", "ready-to-search", "external-opened", "awaiting-import", "screening"];
 
 export function createSession(question: string): ResearchSession {
   const now = new Date().toISOString();
@@ -44,6 +44,8 @@ export function normalizeSession(raw: unknown): ResearchSession {
     ...(o.intent ? { intent: normalizeIntent(o.intent) } : {}),
     ...(plan ? { plan } : {}),
     databaseActions: Array.isArray(o.databaseActions) ? (o.databaseActions as DatabaseAction[]) : [],
+    ...(o.importBatch && typeof o.importBatch === "object" ? { importBatch: o.importBatch as ResearchSession["importBatch"] } : {}),
+    ...(o.importStats && typeof o.importStats === "object" ? { importStats: o.importStats as ResearchSession["importStats"] } : {}),
     candidates: Array.isArray(o.candidates) ? o.candidates : [],
     triage: Array.isArray(o.triage) ? o.triage : [],
     seedPapers: Array.isArray(o.seedPapers) ? o.seedPapers.map(String) : [],
@@ -61,7 +63,8 @@ const TRANSITIONS: Record<SearchPlanStage, SearchPlanStage[]> = {
   planning: ["ready-to-search"],
   "ready-to-search": ["external-opened", "awaiting-import"],
   "external-opened": ["awaiting-import", "ready-to-search"],
-  "awaiting-import": ["awaiting-import"],
+  "awaiting-import": ["awaiting-import", "screening"],   // v1.2：导入完成 → screening
+  "screening": ["screening"],                              // v1.2：候选筛选状态（刷新后恢复）
 };
 
 export function transitionStage(s: ResearchSession, next: SearchPlanStage): ResearchSession {
@@ -86,6 +89,22 @@ export function withPlan(s: ResearchSession, intent: SearchIntent, plan: SearchP
     plan,
     stage: "ready-to-search",
     databaseActions: [...s.databaseActions, { database: primaryId, action: "query-generated", at: now }],
+    updatedAt: now,
+  };
+}
+
+/** v1.2：导入完成 → screening，记录导入统计与原始文本（刷新可恢复） */
+export function withImport(
+  s: ResearchSession,
+  stats: { rawItems: number; recognized: number; unknown: number; merged: number; unique: number },
+  raw: string,
+): ResearchSession {
+  const now = new Date().toISOString();
+  return {
+    ...s,
+    stage: "screening",
+    importBatch: { raw, importedAt: now },
+    importStats: stats,
     updatedAt: now,
   };
 }

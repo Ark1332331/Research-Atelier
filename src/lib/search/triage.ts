@@ -1,0 +1,131 @@
+/**
+ * Evidence-aware Triage（B5/B6，v1.2）：
+ *  - evidenceLevelFor：按候选实际拥有的证据判定（abstract / metadata），B-lite 无 fulltext
+ *  - enforceTriageEvidenceBoundary：evidenceLevel !== fulltext 时 keySections/skipSections 代码强制为空
+ *  - normalizeTriage：只绑定真实 Candidate ID；LLM 声称的 evidenceLevel 不得超过候选实际证据
+ *  - 输出不做总分排行榜（B6），只给角色/深度/为什么
+ */
+import type { CanonicalPaper, EvidenceLevel, PaperTriage, EvidenceRef } from "./types.ts";
+
+export function evidenceLevelFor(c: CanonicalPaper): EvidenceLevel {
+  return c.abstract && c.abstract.trim().length > 0 ? "abstract" : "metadata";
+}
+
+export function enforceTriageEvidenceBoundary(t: PaperTriage): PaperTriage {
+  if (t.evidenceLevel !== "fulltext" && (t.keySections.length > 0 || t.skipSections.length > 0)) {
+    return { ...t, keySections: [], skipSections: [] };
+  }
+  return t;
+}
+
+const ROLES = ["survey", "foundational", "core", "follow-up", "competing", "recent", "applied", "peripheral"];
+const DEPTHS = ["skip", "skim", "targeted", "deep"];
+const RELS = ["high", "medium", "low", "unknown"];
+const CONFS = ["high", "medium", "low"];
+const VERDICTS = ["读", "扫读", "跳过", "待定"];
+
+function str(v: unknown): string { return typeof v === "string" ? v.trim() : ""; }
+function strArr(v: unknown): string[] { return Array.isArray(v) ? v.map(str).filter(Boolean).slice(0, 8) : []; }
+
+/** 归一化 triage：绑定真实候选、clamp evidenceLevel、强制边界。幂等。 */
+export function normalizeTriage(raw: unknown, candidates: CanonicalPaper[]): PaperTriage[] {
+  if (!Array.isArray(raw)) return [];
+  const byId = new Map(candidates.map((c) => [c.canonicalId, c]));
+  const out: PaperTriage[] = [];
+  for (const r of raw) {
+    const o = (r ?? {}) as Record<string, unknown>;
+    const paperId = str(o.paperId);
+    const cand = byId.get(paperId);
+    if (!cand) continue; // 只绑定真实候选
+    const maxLevel = evidenceLevelFor(cand);
+    let level = str(o.evidenceLevel) as EvidenceLevel;
+    if (level !== "fulltext" && level !== "abstract" && level !== "metadata") level = maxLevel;
+    if (maxLevel === "metadata" && level !== "metadata") level = "metadata";   // 无 abstract 不许越权
+    const t: PaperTriage = {
+      paperId,
+      role: (ROLES.includes(str(o.role)) ? str(o.role) : "peripheral") as PaperTriage["role"],
+      roleReason: str(o.roleReason),
+      roleConfidence: (CONFS.includes(str(o.roleConfidence)) ? str(o.roleConfidence) : "low") as PaperTriage["roleConfidence"],
+      roleEvidence: (Array.isArray(o.roleEvidence) ? o.roleEvidence : []).filter((e) => e && typeof e === "object").slice(0, 5) as EvidenceRef[],
+      worthReading: str(o.worthReading),
+      relationToQuestion: (RELS.includes(str(o.relationToQuestion)) ? str(o.relationToQuestion) : "unknown") as PaperTriage["relationToQuestion"],
+      depth: (DEPTHS.includes(str(o.depth)) ? str(o.depth) : "skim") as PaperTriage["depth"],
+      evidenceLevel: level,
+      keySections: level === "fulltext" ? strArr(o.keySections) : [],
+      skipSections: level === "fulltext" ? strArr(o.skipSections) : [],
+      d: {
+        d1: str((o.d as Record<string, unknown> | undefined)?.d1), d2: str((o.d as Record<string, unknown> | undefined)?.d2), d3: str((o.d as Record<string, unknown> | undefined)?.d3),
+        d4: str((o.d as Record<string, unknown> | undefined)?.d4), d5: str((o.d as Record<string, unknown> | undefined)?.d5), d6: str((o.d as Record<string, unknown> | undefined)?.d6),
+      },
+      verdict: (VERDICTS.includes(str(o.verdict)) ? str(o.verdict) : "待定") as PaperTriage["verdict"],
+    };
+    out.push(enforceTriageEvidenceBoundary(t));
+  }
+  return out;
+}
+
+const SYSTEM_PROMPT = "你是 Research Atelier 的论文筛选器。基于给定证据对每篇候选给出结构化判断。\n" +
+  "输出 JSON 数组，每项：\n" +
+  '{ "paperId": "必须是给定列表中的 canonicalId",' +
+  ' "role": "survey|foundational|core|follow-up|competing|recent|applied|peripheral",' +
+  ' "roleReason": "为什么是这个角色（相对当前研究问题）",' +
+  ' "roleConfidence": "high|medium|low",' +
+  ' "roleEvidence": [{"kind":"abstract|metadata|citation-graph","source":"…","detail":"…"}],' +
+  ' "worthReading": "为什么值得读/跳过（一句话）",' +
+  ' "relationToQuestion": "high|medium|low|unknown",' +
+  ' "depth": "skip|skim|targeted|deep",' +
+  ' "evidenceLevel": "abstract 或 metadata（只许用给定证据，不得虚报）",' +
+  ' "keySections": [], "skipSections": [],' +
+  ' "d": {"d1":"…","d2":"…","d3":"…","d4":"…","d5":"…","d6":"…"},' +
+  ' "verdict": "读|扫读|跳过|待定" }\n' +
+  "规则：evidenceLevel 只能取给定证据允许的最高档（有摘要→abstract，否则→metadata）；" +
+  "keySections/skipSections 一律填空数组（没有全文）；不要给任何分数或总分排名；" +
+  "role 是相对当前研究问题的判断，不是论文元数据。";
+
+export function buildTriageUserPrompt(candidates: CanonicalPaper[]): string {
+  const lines = candidates.map((c, i) => {
+    const ev = evidenceLevelFor(c);
+    return (i + 1) + ". canonicalId=" + c.canonicalId + " | title=" + c.title +
+      " | authors=" + (c.authors ?? []).join("; ") +
+      " | year=" + (c.year ?? "?") + " | venue=" + (c.venue ?? "?") +
+      " | evidence=" + ev +
+      (ev === "abstract" ? " | abstract=" + (c.abstract ?? "").slice(0, 800) : " | 无摘要");
+  });
+  return "研究问题相关候选：\n" + lines.join("\n");
+}
+
+/** LLM triage；RA_TRIAGE_MOCK 提供确定性路径（测试/无 key 环境） */
+export async function runTriage(candidates: CanonicalPaper[]): Promise<PaperTriage[]> {
+  const mock = process.env.RA_TRIAGE_MOCK;
+  if (mock) {
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(mock); } catch { parsed = null; }
+    if (parsed) return normalizeTriage(parsed, candidates);
+  }
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) throw new Error("DEEPSEEK_API_KEY 未配置");
+  const res = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: buildTriageUserPrompt(candidates) },
+      ],
+      stream: false,
+      temperature: 0.2,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error("Triage LLM HTTP " + res.status + ": " + (data?.error?.message ?? ""));
+  const content: string = data?.choices?.[0]?.message?.content ?? "";
+  const start = content.indexOf("[");
+  const end = content.lastIndexOf("]");
+  if (start < 0 || end <= start) throw new Error("Triage 返回不是 JSON 数组");
+  let parsed: unknown;
+  try { parsed = JSON.parse(content.slice(start, end + 1)); } catch { throw new Error("Triage JSON 解析失败"); }
+  return normalizeTriage(parsed, candidates);
+}
+

@@ -99,6 +99,8 @@ export interface CanonicalPaper {
   links?: { isOa: boolean; oaPdfUrl?: string; publisherUrl?: string };
   topics?: string[];
   hits: ProviderPaper[];
+  enrichment?: EnrichmentProvenance;  // v1.2：metadata provenance（分来源）
+  importInfo?: { importId: string; detectedType: DetectedType; raw: string };  // v1.2：导入来源证据
 }
 
 /** 工具返回给 LLM 的形态（字段名与现有 prompt 的 oa_pdf_url / publisher_url 兼容 download_paper） */
@@ -273,7 +275,8 @@ export type SearchPlanStage =
   | "planning"          // 尚未生成计划
   | "ready-to-search"   // 计划已生成，推荐当前动作，等待用户去真实网站
   | "external-opened"   // 用户已点击打开外部数据库
-  | "awaiting-import";  // 用户声称搜完回来，等待导入（Phase B-lite）
+  | "awaiting-import"   // 用户声称搜完回来，等待导入
+  | "screening";        // v1.2：候选已导入，处于筛选状态（导入/去重/补证据/Triage/选种子）
 
 export interface DatabaseStrategy {
   id: "google-scholar" | "web-of-science" | "semantic-scholar" | "arxiv" | "openalex";
@@ -353,6 +356,8 @@ export interface ResearchSession {
   intent?: SearchIntent;
   plan?: SearchPlan;
   databaseActions: DatabaseAction[];
+  importBatch?: { raw: string; importedAt: string };  // v1.2：最近一次粘贴的原始文本（可重解析）
+  importStats?: { rawItems: number; recognized: number; unknown: number; merged: number; unique: number };  // v1.2：导入统计（刷新可恢复）
   candidates: CanonicalPaper[];
   triage: PaperTriage[];
   seedPapers: string[];
@@ -366,4 +371,34 @@ export interface ResearchSession {
 
 /** LLM 只产结构化意图（guardrail #2）；计划/URL/查询串由代码确定性生成 */
 export interface RawPlannerOutput { intent: SearchIntent; }
+
+
+
+/* ================ Phase B-lite：Candidate Inbox / Enrichment / Triage（v1.2） ================ */
+
+/** B1/B2：导入候选（deterministic parser 产物，无 LLM） */
+export type DetectedType = "doi" | "arxiv" | "url" | "title" | "bibtex" | "ris" | "wos-export" | "unknown";
+
+export interface ImportedPaperCandidate {
+  importId: string;
+  raw: string;                 // 原始文本（保留证据）
+  detectedType: DetectedType;
+  title?: string;
+  doi?: string;
+  arxivId?: string;
+  url?: string;
+  parseWarnings: string[];
+}
+
+/** B4：metadata provenance——分来源保存，citation 不跨源合并 */
+export interface EnrichmentProvenance {
+  title: string[];
+  authors: string[];
+  year: string[];
+  venue: string[];
+  abstract: string[];
+  doi: string[];
+  oa: string[];
+  citations: Partial<Record<CitationSourceKey, number>>;
+}
 
