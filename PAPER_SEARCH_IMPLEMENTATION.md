@@ -1,689 +1,528 @@
-# Research Atelier → 论文检索管线（Paper Search Pipeline）实现方案
+# Research Atelier · Literature Discovery 实现方案
+## （Design Intent v1.0 落地 · 取代旧 PAPER_SEARCH_IMPLEMENTATION v0.1/v0.2）
 
-> 状态：**方案 v0.2 已封板（2026-08-27，含三处语义修正：SearchRun coverage / 未接线显示「尚未接入」/ Scholar 导入=手动补充）—— 用户已确认，Step 1 实现中**。开发顺序见 §10。
-> 本方案只动「论文筛选（P0）」的检索侧；复现模块（REPRO_SPEC_IMPLEMENTATION.md，已确认）与精读/术语卡/论文库保持不动。
-> v0.1 → v0.2：**用户硬约束修订**（2026-08-27）——Web of Science 与 Google Scholar 必须是一等检索来源，
-> 不得放在 v3 或只做外链；总体管线不推翻，Provider 层与开发顺序重排。修订记录见 §13。
-
----
-
-## 0. 产品核心（一句话定调）
-
-> Research Atelier 的论文筛选，不是「多接几个数据库」，而是把现在 **search_papers 一次搜 6 条、原样丢给 LLM 挑** 的链路，改成一条**检索管线**：LLM 把模糊研究意图**编译成检索策略** → 多数据源（含 **Web of Science 与 Google Scholar 两个一等来源**）建立**高召回候选池**（50–150）→ **规则硬过滤**（30–50）→ **语义重排**（15–25）→ **证据富化** → LLM 科研筛选（最终 5–10）。
-
-**用户硬约束（2026-08-27 确认，全方案的最高优先级）：**
-
-```text
-1. Web of Science：一等检索来源。官方 Starter/Expanded API 优先；
-   无 API entitlement 时走「WoS 网页导出 → 导入管线」fallback。
-   绝不静默用 OpenAlex 顶替 WoS，然后界面还显示「WoS」。
-2. Google Scholar：一等检索来源。不直接爬 scholar.google.com（官方禁止批量抓取，
-   会验证码/IP 限制/HTML 改版）；首选第三方 SerpApi 的 Google Scholar API，
-   无 Key 时保留「Scholar 引用导入 + 外部检索入口」fallback。
-3. 每个来源的 provenance 必须可分：sourceProvider（这条记录来自哪个学术索引）
-   与 accessProvider（通过什么渠道拿到的：official-api / serpapi / user-import）分离。
-4. 引用量分源展示、绝不合并（GS 1250 / WoS 730 / OpenAlex 980 / S2 901 各自成立）。
-```
-
-核心转变：
-
-```text
-现在（问题所在）：
-query → OpenAlex search=query → 前 6 篇 → LLM 从错误的 6 篇里挑好的
-
-目标（本方案）：
-用户研究问题 → Query Planner → Providers（WoS · Google Scholar · OpenAlex · S2 · arXiv · Crossref 校验）
-  → Candidate Pool 50–150 → Normalize + Dedupe → Hard Filters 30–50
-  → Semantic Rerank 15–25 → Evidence Enrichment → LLM Screening → 5–10
-```
-
-**LLM 不再负责「从错误的 6 篇里面挑好的」，而负责「从已经高召回、高相关的候选池里做科研判断」。**
-
-两条贯穿性原则（与复现模块同一风格）：
-
-```text
-1. 模糊的人类目标先被「编译」成结构化任务，再调用外部工具，而不是直接让 AI 凭感觉回答；
-2. 检索过程的每个阶段可追溯：每条候选携带 sourceProvider + accessProvider + 命中 query +
-   分源引用量，不允许出现「无法核实是从哪来的」论文。
-```
+> 状态：**方案 v1.0 —— 待用户审阅（产品逻辑 / 技术可行性 / 用户实际操作路径 / 是否膨胀成大全系统），未开始新代码**。
+> 本文整体重写旧版 PAPER_SEARCH_IMPLEMENTATION.md（v0.1/v0.2 已由本版本取代；git 历史保留旧版与旧 Step 1 记录）。
+> 唯一已落地代码：**Paper Search Step 1**（src/lib/search/types.ts + 测试 + chat/route.ts 接线，2026-08-27 提交 fdebf7f）——保留，语义迁移见 §3。
+> 依据：《Research Atelier · Literature Discovery Design Intent v1.0》（用户 2026-08-27 提供，下文简称 DI）。
 
 ---
 
-## 1. 现状盘点（已核对真实代码）
+## 0. 一句话定调（DI §29）
 
-| 模块 | 现状（真实代码位置） | 判断 |
+> **Research Atelier Literature Discovery 不以「替代学术数据库」为目标，而以「让不会使用学术数据库的人，也能完成高质量文献发现」为目标。**
+> AI 负责把研究意图编译成检索策略、评价真实候选、解释引用与发展关系并持续建议下一步；
+> Google Scholar、Web of Science 等成熟数据库继续负责它们最擅长的论文索引与检索。
+
+---
+
+## 1. 产品重新定位（DI §0/§1）
+
+旧定位（被取代）：
+
+~~~text
+「AI 聚合多个学术数据库，替用户自动搜索论文」
+成功指标 ≈ 接了多少 Provider / 搜到多少篇
+~~~
+
+新定位：
+
+~~~text
+Guided Literature Discovery Workflow / AI Research Navigator（科研检索导航层）
+Research Atelier 不替代学术检索平台，而是负责用户最困难的部分：
+  ① 不知道该怎么搜        → 检索策略编译（Search Guide）
+  ② 不知道搜到的值不值得读 → 真实候选评价（Paper Triage）
+  ③ 不知道下一步往哪找    → 引用与发展地图 + 下一步建议（Literature Map / Next Step）
+~~~
+
+**三个用户问题（DI §1）：**
+
+| 用户问题 | Research Atelier 的职责 |
+|---|---|
+| 我不会搜 | 理解研究意图、拆概念、扩同义词、生成不同数据库的检索式、告诉用户为什么去这个数据库 |
+| 我不知道哪些值得读 | 接收真实候选论文，基于摘要/正文/引用关系/venue/时间/代码数据等证据筛选 |
+| 我不知道下一步找什么 | 从种子论文沿 references / citations / related / authors / timeline 展开并解释路线 |
+
+**成功指标改变（DI §1）：** 不再以「搜索到多少篇 / 接了多少 Provider」为主指标，而以「用户是否更快建立一个领域的正确认知结构」为目标。
+
+**成本原则（DI §26）：** 核心工作流**不能依赖任何额外付费 Search API**；Grok / Exa / Tavily / SerpApi / WoS API 等只能作为 Optional Accelerator（Phase E），不是产品依赖。
+
+---
+
+## 2. 现状盘点（真实代码 + Step 1 状态）
+
+| 模块 | 现状（真实位置） | 新方案处理 |
 |---|---|---|
-| searchPapers() | src/lib/paper-tools.ts:57 — 原始字符串直接 works?search=<query>&per-page=≤10；select 不含 relevance_score / cited_by_count / type / topics；已有 3 次指数退避重试 + 25s 超时 | **重写为 Provider + 管线**；重试/超时/mailto/User-Agent 保留 |
-| PaperHit | paper-tools.ts:25 — 只有 id/arxivId/title/authors/year/abstract/doi/isOa/oaPdfUrl/publisherUrl/publisherName | **升级为 PaperHitV2**（§4.1）：补 type/venue/citationCount/relevanceScore/topics/sourceProvider/accessProvider/分源引用 |
-| P0 Prompt 的信息赤字 | src/lib/data.ts:32-33 — 要求 D5 可复现性、D6 引用量「可核实」，但 PaperHit 不提供引用量/类型/venue | **prompt 与数据层同步改**（§4.7），否则 D6 永远是「未知」 |
-| 工具定义 | src/app/api/chat/route.ts:20-53 — search_papers(query) 单参数；download_paper(pdf_url/arxiv_id/title) | search_papers 升级多参数 + 管线执行；download_paper **字段名保持兼容** |
-| 工具循环 | chat/route.ts:150 — MAX_TOOL_ROUNDS = 3 | 保持；管线在单次工具调用内完成，不额外占轮次 |
-| P0 筛选入口 | src/app/page.tsx「论文筛选」视图 — ChatPanel toolKey="p0" enableToolcall，system prompt 来自 data.ts TOOLS.p0 | 保留；候选呈现方式升级（§4.8/§5.7），不推翻现有交互 |
-| 提示词可编辑 | src/components/chat-panel.tsx — /api/prompts 可自定义/重置 | 保留；prompt 升级后自定义版本需重置（§10 Step 3 验收注明） |
-| 论文库/精读/下载导入 | /api/paper + paper-tools.ts downloadPaper | **不动**（download 依赖的字段名不破坏） |
-| 复现模块 | REPRO_SPEC_IMPLEMENTATION.md（已确认，Step 1/2 已合入） | 不动，本方案与之并行 |
-| 外部来源配置 | 目前不存在；DEEPSEEK_API_KEY 走 .env.local 先例（chat/route.ts:139） | **新增数据源配置页 + 服务端 /api/sources**（§5.7）；key 只存 .env.local / 服务端，不进 JSON、不发 LLM |
+| Step 1 数据模型 | src/lib/search/types.ts（已提交 fdebf7f）：SearchIntent / ProviderQuery / ProviderPaper / CanonicalPaper / PaperHitV2 / SearchRun + normalizeDoi / normalizeArxivId / normalizedTitle / canonicalIdFor + SourceCoverage / hardSourcesCovered / partialRetrievalWarning / coverageStatusLabel | **保留**；coverage 语义迁移（§3） |
+| Step 1 测试 | scripts/test-search-types.mjs（30 用例通过）+ 回归 23/59 + tsc 干净 | 保留；随语义迁移补/改用例 |
+| search_papers 接线 | chat/route.ts：search_papers 返回 PaperHitV2（sourceProvider=openalex，行为不变） | 保留；Phase D 重接为 Quick Discovery |
+| 旧检索实现 | paper-tools.ts:57 searchPapers(query, max=6)：OpenAlex 单查询、select 无 relevance_score/cited_by_count/type | **降级为 Quick Discovery 的 provider 之一**（Phase D），不再作为产品主线 |
+| P0 筛选 prompt | data.ts TOOLS.p0：六维评分 + 强制链接 | **升级为 Paper Triage**（Phase B）；六维保留、输出形态改（§7） |
+| 筛选入口 | page.tsx「论文筛选」视图（ChatPanel toolKey="p0"） | **改造为四入口 + Research Session**（§4/§12） |
+| 复现模块 | REPRO_SPEC_IMPLEMENTATION.md（Step 1–3 已合入，并行会话进行中） | 不动 |
 
 ---
 
-## 2. 目标架构：Search Pipeline
+## 3. Step 1 保留 / 迁移 / 废止（用户点名要求，逐项说明）
 
-```text
-用户真实研究问题
-        │
-        ▼
-  Query Planner（LLM 编译：goal/concepts/context/exclude/type/yearRange → ≥4 条 query）
-        │
-        ▼
-  Providers（并行，一等 + 公共来源）：
-     Web of Science（Starter/Expanded API ｜ 导出导入 fallback）
-     Google Scholar（SerpApi ｜ 引用导入 fallback）
-     OpenAlex · Semantic Scholar · arXiv
-     Crossref（仅元数据校验）
-        │
-        ▼
-  Candidate Pool  50–150 篇（每篇带 sourceProvider + accessProvider + 命中 query + 分源引用）
-        │
-        ▼
-  Normalize + Deduplicate  →  CanonicalPaper（canonicalId: doi > arxivId > normalizedTitle）
-        │
-        ▼
-  Hard Filters（exclude 命中剔除 / 年份窗 / preferredTypes 降级）→ 30–50 篇
-        │
-        ▼
-  Semantic Rerank（relevance + 时间衰减 + 模式权重；可选 LLM 批排）→ 15–25 篇
-        │
-        ▼
-  Evidence Enrichment（Crossref DOI 校验 / 分源引用数 / 可点链接）
-        │
-        ▼
-  LLM Research Screening（P0 六维评分，D5/D6 由数据提供）→ 最终 5–10 篇
-```
-
-**数字预算（为什么不是 100 篇全进 DeepSeek）：**
-
-```text
-Recruit 50–100（规则层面，token 便宜）→ 硬过滤 30–50 → 语义重排 15–25（标题+摘要 ≈ 4–8k token）
-→ LLM 深筛 5–10（2 轮内完成，总成本与现在「6 篇反复试」相当或更低）
-```
-
-检索系统最大的忌讳之一是 **在 recall 很低的时候提前截断**；本方案在第一层就拉高召回，把截断放到有依据的过滤器/重排器。
+| Step 1 内容 | 处理 | 说明 |
+|---|---|---|
+| SearchIntent（goal/concepts/context/exclude/preferredTypes/yearRange/seedPaper） | **保留** | 语义不变；Phase A 在其上产出 SearchPlan（§5） |
+| ProviderPaper（sourceProvider/accessProvider 分源） | **保留** | provenance 从「证明接了多少 API」改为「让所有科研判断可核实」（DI §19） |
+| CanonicalPaper + canonicalIdFor + normalizeDoi/ArxivId/normalizedTitle | **保留** | Candidate Inbox 去重的核心（DI §7）；多版本链呈现（§7.2） |
+| PaperHitV2 | **保留** | Quick Discovery 的返回形态；字段名兼容 download_paper |
+| SearchRun | **保留类型，语义迁移** | 从「本轮检索运行记录」泛化为 Research Session 内的记录单元；不再承担完整度门控 |
+| SourceCoverage / CoverageStatus | **保留类型，语义迁移** | coverage 从「完整筛选门控」降级为「本轮数据来源的透明记录/诊断展示」（哪些源贡献了、哪些没有） |
+| hardSourcesCovered() / partialRetrievalWarning() | **废止作为产品门控** | 「GS AND WoS = 完整检索」判据取消（DI §25）；函数保留为诊断/透明展示工具，代码加 @deprecated 注释，Phase B 起不再作任何门控 |
+| coverageStatusLabel() | 保留 | 用于来源状态展示（✓ 已检索 / ○ 尚未接入 / ⚠ 未覆盖），但**不再触发「部分检索」警示门控** |
+| Query Planner（旧 v0.2 §4.2 设计） | **保留思想，职责改变** | 从「生成多路自动检索 query」改为「生成不同数据库的检索策略 + 为什么去这个库 + 进去以后点什么」（DI §3–5） |
+| 旧 v0.2 的 Step 2–10（OpenAlex 管线 / WoS API / SerpApi / 数据源配置页 / Citation Graph 后置 …） | **废止，重排为 Phase A–E** | 新顺序见 §14；WoS/SerpApi 从产品依赖降为 Optional Accelerator（§10） |
 
 ---
 
-## 3. 三阶段路线（v0.2 按用户硬约束重排）
+## 4. 四个入口 + Research Session（DI §2/§22/§24）
 
-| 阶段 | 做什么 | 价值 | 完成标志 |
-|---|---|---|---|
-| **Search v1** | 检索管线「发动机」：Query Planner + OpenAlex + Normalize/Dedupe + Hard Filter + Rerank + PaperHitV2 + Prompt 对齐 | 立刻解决截图问题（"world model" 不再混入 mental-health 调查）；为所有 Provider 打好公共管线 | §10 Step 4 验收 |
-| **Search v2** | **满足真实来源要求**：Google Scholar Provider（SerpApi + 导入 fallback）、Web of Science Provider（API + 导入 fallback）、Semantic Scholar、Crossref、arXiv → 真正 Multi-source Candidate Pool + 数据源配置页 | WoS 与 Scholar 成为**真的一等检索来源**，不再是外链摆设 | §10 Step 9 验收 |
-| **Search v3** | Citation Graph / seed-paper snowballing / IEEE Xplore / 更高级 RankingProfile / 长期检索 alerts | 从「多源检索」升级为「科研发现」；按需触发 | 按需 |
+**首页不再是大聊天框**，四个入口：
 
-**为什么 Citation Graph 后移（v3）**：不是不重要，而是硬需求已明确——「WoS 和 Scholar 要真正成为搜索来源」。先满足真实使用需求，再叠科研发现能力。v0.1 中 v3 的「Scholar 外部跳转」删除：Scholar 的接入路径（SerpApi/导入）已整体并入 v2。
+| 入口 | 用户状态 | 对应 Phase |
+|---|---|---|
+| 帮我开始检索 | 我只有一个研究问题，不知道该怎么搜 | A |
+| 帮我筛这些论文 | 我已经从 Scholar/WoS 等搜到一些论文 | B |
+| 从这篇论文继续找 | 我已找到一篇关键 seed paper | C |
+| 快速发现一些论文 | 先不动身去网站，用开放数据库快速找一批 | D |
+
+四个入口共享同一个 **Research Session**（持久对象，DI §22）：
+
+~~~text
+Research Session {
+  研究问题
+  检索意图（SearchIntent）
+  检索计划（SearchPlan）
+  用过的查询与访问过的平台（visitedDatabases）
+  候选论文（CanonicalPaper[]）
+  筛选结果（PaperTriage[]）
+  种子论文（seedPapers）
+  文献地图（MapNode[] / MapEdge[]）
+  阅读路径（ReadingPath[]）
+  未解决问题（openQuestions）
+  下一步建议（NextStep）
+}
+~~~
+
+进入入口后页面保持三层（DI §24）：顶部=当前研究目标+当前阶段；主体=当前最重要任务；侧边/下方=候选论文 / 地图 / 检索记录 / 证据。避免一次摊开几十个功能。
 
 ---
 
-## 4. Search v1 详细设计（发动机）
+## 5. 数据模型（保留 + 新增）
 
-### 4.1 数据模型
+### 5.1 保留（来自 Step 1，不改动字段）
 
-新文件 src/lib/search/types.ts（核心 schema；PaperHitV2 是给 LLM/工具的返回形态，必须兼容现有 download_paper）：
+SearchIntent / ProviderQuery / ProviderPaper / CanonicalPaper / PaperHitV2 / normalizeDoi / normalizeArxivId / normalizedTitle / canonicalIdFor（全文见 src/lib/search/types.ts）。
 
-```ts
-/** 检索意图：Query Planner 的输出（用户不需要学习检索语法） */
-interface SearchIntent {
-  goal: "explore" | "recent" | "foundational" | "survey" | "reproducible" | "follow_paper";
-  concepts: string[];        // 核心概念，如 ["world model"]
-  context: string[];         // 语境约束，如 ["LLM agent", "robotics", "embodied AI"]
-  exclude: string[];         // 明确排除，如 ["mental health", "world development report"]
-  preferredTypes?: string[]; // 如 ["review", "conference-paper", "journal-article"]
-  yearRange?: [number, number];
-  seedPaper?: { provider: string; id: string; title?: string }; // v3 的「从这篇论文继续找」
-}
+### 5.2 迁移（类型保留，语义调整）
 
-/** 单条检索请求（planner 产出，provider 消费） */
-interface ProviderQuery {
-  providerId: string;        // openalex | semantic-scholar | google-scholar | web-of-science | arxiv | crossref
-  mode: "keyword" | "phrase" | "boolean" | "semantic" | "title";
-  raw: string;               // 该 provider 的具体查询串
-  intent: SearchIntent;
-  limit: number;             // 该路取多少（25–50）
-}
+SearchRun / SourceCoverage / CoverageStatus：记录与展示用；hardSourcesCovered / partialRetrievalWarning 标记 @deprecated（不作为产品门控，§3）。
 
-/** provider 原始返回，未归一化。sourceProvider 与 accessProvider 分离（v0.2 硬约束） */
-interface ProviderPaper {
-  sourceProvider:
-    | "openalex" | "semantic-scholar" | "google-scholar" | "web-of-science"
-    | "arxiv" | "crossref";  // 这条记录来自哪个学术索引（对科研用户真正重要）
-  accessProvider?:           // 通过什么渠道拿到：official-api / serpapi / user-import
-    | "official-api" | "serpapi" | "user-import";
-  externalId: string;        // 源内 id（WoS 的 UT / Scholar 的 cluster / OpenAlex 的 W...）
-  doi?: string; arxivId?: string;
-  title: string; authors: string[];
-  year?: number; venue?: string; type?: string;
-  abstract?: string;
-  citationCount?: number;    // 分源，不合并
-  relevanceScore?: number;   // provider 自带（OpenAlex 实测有）
-  isOa?: boolean; oaPdfUrl?: string; publisherUrl?: string;
-  topics?: string[];
-  raw?: unknown;             // 诊断用，不发给 LLM
-}
-
-/** 去重后的规范形态 */
-interface CanonicalPaper {
-  canonicalId: string;       // doi 规范化 > arxivId > normalizedTitle
-  doi?: string; arxivId?: string;
-  title: string; authors: string[];
-  year?: number; type?: string; venue?: string; abstract?: string;
-  sources: string[];         // ["google-scholar", "web-of-science", "openalex", "semantic-scholar"]
-  metrics: {                 // 引用量分源记录，绝不合并
-    citations: {
-      googleScholar?: number; webOfScience?: number;
-      openAlex?: number; semanticScholar?: number;
-    };
-  };
-  links?: { isOa: boolean; oaPdfUrl?: string; publisherUrl?: string };
-  topics?: string[];
-  hits: ProviderPaper[];     // 证据保留（含各自 accessProvider）
-}
-
-/** 工具返回给 LLM 的形态（名字与现有 prompt 使用的 oa_pdf_url / publisher_url 保持一致） */
-interface PaperHitV2 {
-  id: string;
-  arxivId?: string;
-  title: string;
-  authors: string;           // 展示用（前 4 位）
-  year: string;
-  abstract: string;
-  doi?: string;
-  isOa: boolean;
-  oaPdfUrl?: string;         // 兼容 download_paper
-  publisherUrl: string;      // 兼容
-  publisherName: string;
-  type?: string;             // 新增：article/review/preprint/...
-  venue?: string;            // 新增
-  sourceProvider: string;    // 主来源（openalex / google-scholar / web-of-science / ...）
-  accessProvider?: string;   // 主来源的访问渠道（official-api / serpapi / user-import）
-  sources?: string[];        // 全部命中来源徽标
-  relevanceScore?: number;   // 新增
-  topics?: string[];         // 新增
-  citations?: {              // 分源引用（v0.2 硬约束：不合并）
-    source: string; count: number; access: string;
-  }[];
-}
-```
-
-**SearchRun 覆盖语义（v0.2 封板补丁 §0/§12）——coverage 是 SearchRun 的一等字段：**
+### 5.3 新增（本方案核心 schema）
 
 ~~~ts
-/** 来源覆盖状态：api=本轮真实 API 检索；imported=本轮来自用户导入；
-    missing=provider 已接线但本轮无 API 也无导入；not-wired=当前构建尚未实现（v1 显示「尚未接入」） */
-type CoverageStatus = "api" | "imported" | "missing" | "not-wired";
-
-interface SourceCoverage {
-  googleScholar: CoverageStatus;
-  webOfScience: CoverageStatus;
-  openAlex: CoverageStatus;
-  semanticScholar: CoverageStatus;
-  arxiv: CoverageStatus;
-}
-
-interface SearchRun {
-  id: string;
+/* ---- Phase A：Search Guide ---- */
+interface SearchPlan {
   intent: SearchIntent;
-  queries: ProviderQuery[];
-  coverage: SourceCoverage;   // 硬约束：反映本轮真实覆盖，不许虚报
-  candidateCount: number;     // 去重前
-  afterDedupe: number; afterFilter: number; afterRerank: number;
-  warnings: string[];
+  stage: "plan-ready";
+  databases: DatabaseStrategy[];   // 按当前研究状态推荐哪些库、怎么搜
+  suggestedFirstAction: string;    // 「先找 1–2 篇近年综述」
   createdAt: string;
 }
-~~~
 
-**覆盖规则（封板补丁）：**
-
-~~~text
-完整筛选完成 = googleScholar ∈ {api, imported} AND webOfScience ∈ {api, imported}
-（OpenAlex/S2/arXiv 为公共来源，不参与「完整」判定）
-
-任一硬来源为 missing 时，页面必须标注：
-  「本次结果为部分检索：尚未包含 Google Scholar、Web of Science。」
-  不得照常宣称「论文筛选完成」。
-
-not-wired 与 missing 显示不同：
-  not-wired → 「○ 尚未接入」（根本没搜）
-  missing   → 「⚠ 未覆盖」（本轮应搜但没搜到数据）
-  两者都 ≠ 0 命中（0 = 搜过但无结果，是第三种语义）
-~~~
-
-### 4.2 Query Planner（新文件 src/lib/search/planner.ts）
-
-- **职责**：把用户一句话（或 P0 澄清后的目标+子问题）编译成 SearchIntent + ≥4 条 ProviderQuery。只产出查询，**不产出论文**，不自己编来源。
-- **实现**：一次 deepseek-chat 调用（低温、JSON 输出），复用 chat/route.ts 的 API key / 120s 超时 / 重试模式（抽共享小函数或按需复制，plan 阶段不引入抽象负担）。
-- **"world model" 案例**（用户走查案例，写入验收）:
-
-```text
-Q1 exact  : "world model" AND (agent OR robotics OR embodied)
-Q2 boolean: ("world model" OR "world models") AND (model-based RL OR predictive model)
-Q3 semantic: learned internal predictive models for autonomous agents, robotics,
-             or model-based reinforcement learning      [search.semantic=，已实测可用]
-Q4 survey : "world model" AND (survey OR review)
-排除       : mental health / world development report 由 exclude 过滤兜底
-时间窗     : 默认近 5 年（explore 模式）
-```
-
-### 4.3 OpenAlex Provider（新文件 src/lib/search/providers/openalex.ts）
-
-把 searchPapers() 的重试/mailto/UA/超时保留，查询方式与字段升级：
-
-```text
-mode keyword / phrase → search=<编码串>（支持引号精确短语、AND/OR/NOT）
-mode boolean         → search= + filter=display_name.search:<词>,from_publication_date:<年>-01-01
-                       排除用 OpenAlex filter 的 ! 前缀（如 filter=!title.search:mental health）
-mode semantic        → search.semantic=<自然语言句>
-select               → id,doi,display_name,publication_year,type,primary_location,authorships,
-                       abstract_inverted_index,open_access,cited_by_count,relevance_score,topics,ids
-分页                 → per-page=50，page 1..2（每 query 25–50 条）
-```
-
-**已实测（2026-08-27）**：search= 返回 relevance_score（如 2513.02）、cited_by_count、type、ids；search.semantic= 可用（49 条结果，相关性合理）；filter=display_name.search:world model,from_publication_date:2020-01-01 可用（12k 条）。当前代码的 select 只取 6 个字段，这些能力**一个都没用上**。
-
-### 4.4 Normalize + Dedupe（src/lib/search/dedupe.ts）
-
-- canonicalId 优先级：**DOI（规范化：去 https://doi.org/ 前缀）> arxivId > normalizedTitle**（小写、去标点/空白、去版本后缀）。
-- 合并：sources 累加、metrics.citations 分源记录、hits 保留全部证据（含 accessProvider）。
-- **不同数据库的引用数绝不合并成一个「唯一正确数字」**（覆盖范围不同）；展示为 Google Scholar 1,250 · WoS 730 · OpenAlex 980 · S2 901，或默认显示一两个并展开「其他来源」。
-
-### 4.5 Hard Filters（src/lib/search/filters.ts）
-
-```text
-exclude 命中（标题/摘要含词）  → 剔除
-yearRange 外                  → 剔除
-preferredTypes 不匹配          → 降级（不剔除；survey 模式下 review 优先）
-abstract 缺失                 → 标「无摘要」，不剔除（可能仍值得读）
-预算                          → 50–100 → 30–50
-```
-
-### 4.6 Semantic Reranker（src/lib/search/rerank.ts）
-
-v1 **不引入外部 embedding 依赖**，两层方案：
-
-```text
-方案 A（默认，零成本）：OpenAlex relevance_score（已按相关性+引用排序）为基底
-  + 时间衰减（越新加权，explore/recent 模式）
-  + type 加分（review 在 survey 模式、journal-article 在 explore 模式）
-  → top 15–25
-方案 B（可选 LLM 批排）：把 30–50 篇标题+摘要分 2–3 批，每批 2k token 预算，
-  让 LLM 打 0–3 相关性分，再取 top。成本可控（40 篇 × ~200 词 ≈ 8k token）。
-```
-
-不采用「统一论文质量分」（见 §7）。
-
-### 4.7 工具与提示词改动（v1 一起提交）
-
-src/app/api/chat/route.ts：
-
-```text
-search_papers 参数升级：
-  query（保留，必填）
-  goal / concepts / context / exclude / year_from / year_to（可选；不填则由 planner 从 query 推断）
-  seed_paper（v3 预留）
-executeTool("search_papers") → runSearchPipeline(query, intent?)
-  内部：planner → providers → dedupe → filters → rerank
-  返回：{ report, hits: PaperHitV2[] }
-report = {
-  intent: SearchIntent,                    // 让用户看到系统理解了什么
-  coverage: SourceCoverage,                // 封板补丁：本轮真实覆盖（api/imported/missing/not-wired）
-  queries: [{ mode, provider, access, raw, hits }] // 每路召回数（含 accessProvider）
-  candidateCount / afterDedupe / afterFilter / afterRerank,
-  sources: [{ source, access, status, hits }],   // 各来源状态与命中数（v0.2 硬约束可见）
-  warnings: string[]                       // 如「Google Scholar 未配置 SerpApi 且本轮无导入——本结果为部分检索」
+interface DatabaseStrategy {
+  id: "google-scholar" | "web-of-science" | "semantic-scholar" | "arxiv" | "openalex";
+  purpose: string;                 // 这个库适合干什么
+  queries: string[];               // 各库语法的可执行检索式
+  recommendedFirst?: string;       // 推荐先执行哪条
+  deepLinkUrl?: string;            // 可稳定带 query 的深链（GS 的 q= 通常可用；WoS 不稳定 → 以复制为主）
+  nextActions: string[];           // 进去以后点什么：Cited by / Related Records / References …
+  why: string;                     // 为什么这一轮建议它（默认一句话，可展开）
 }
-```
 
-src/lib/data.ts P0 prompt 同步（步骤 2 重写）：
+/* ---- Phase B：Candidate Inbox + Paper Triage ---- */
+type ImportKind = "title" | "doi" | "arxiv-url" | "bibtex" | "ris" | "wos-export" | "library";
 
-```text
-旧：调用 search_papers 工具联网检索 5–10 篇候选论文
-新：调用 search_papers（会先编译检索策略，再从 Web of Science / Google Scholar / OpenAlex /
-    Semantic Scholar 等多源检索并去重/重排）拿到 15–25 篇候选，从中逐篇筛选；
-    候选必须携带可点链接与来源（sourceProvider + 分源引用量），缺失标「未知」——禁止凭印象填写。
-```
+interface ImportedCandidate {
+  id: string;
+  importKind: ImportKind;
+  raw: string;                     // 粘贴文本 / 文件原文（保留证据）
+  parsed: ProviderPaper[];         // 解析出的候选（0..n 条）
+  importedAt: string;
+}
 
-MAX_TOOL_ROUNDS = 3 保持（管线在单次工具调用内完成；planner 是服务端内部调用，不占对话轮次）。
+type PaperRole =
+  | "survey" | "foundational" | "core" | "follow-up"
+  | "competing" | "recent" | "applied" | "peripheral";
+type ReadingDepth = "skip" | "skim" | "targeted" | "deep";
 
-### 4.8 UI（v1 最小改动）
-
-- 筛选页仍用 ChatPanel（page.tsx「论文筛选」视图，toolKey="p0"）；候选仍以 markdown 列表呈现，每条带可点链接（现有纪律）。
-- report 以 markdown 呈现「正在理解检索目标 → 系统扩展了 N 个方向 → 各源召回数 → 合并去重 → 主题初筛」——**截图问题的直接回应，也是 v0.2 的来源可见性要求**。
-- **未接线来源显示「○ 尚未接入」，绝不显示 0**（封板补丁：0 = 「搜过但无结果」，与「根本没搜」语义不同）。v1 只有 OpenAlex 接线，v1 的检索过程必须显示：
-
-~~~text
-OpenAlex            ✓ 67
-Google Scholar      ○ 尚未接入
-Web of Science      ○ 尚未接入
-Semantic Scholar    ○ 尚未接入
-~~~
-
-- 硬来源 missing（已接线但本轮无 API 也无导入）时，页面必须标注「**本次结果为部分检索：尚未包含 …**」，不能照常宣称筛选完成。
-- v2 起每篇候选卡片显示来源徽标 + 分源引用（§5.7），v1 先由 markdown 承担。
-
----
-
-## 5. Search v2 详细设计（一等来源接入，v0.2 重排后成为第二优先级）
-
-### 5.1 Provider 接口（src/lib/search/providers/types.ts）
-
-```ts
-interface ScholarlyProvider {
-  id: "openalex" | "semantic-scholar" | "google-scholar" | "web-of-science" | "arxiv" | "crossref";
-  capabilities: {
-    keywordSearch: boolean; semanticSearch: boolean; citations: boolean;
-    references: boolean; openAccess: boolean; recommendations: boolean;
-    importSupport: boolean;   // WoS 导出 / Scholar 引用导入
+interface PaperTriage {
+  paperId: string;
+  role: PaperRole;
+  roleReason: string;              // 为什么是这个角色
+  worthReading: string;            // 为什么值得读（或为什么跳过）
+  relationToQuestion: "high" | "medium" | "low" | "unknown";
+  depth: ReadingDepth;
+  keySections: string[];           // 重点看
+  skipSections: string[];          // 暂时不用看
+  d: {                             // 六维一句话判断（DI §8），不打分
+    d1: string; d2: string; d3: string;
+    d4: string; d5: string; d6: string;
   };
-  search(q: ProviderQuery): Promise<ProviderPaper[]>;
-  import?(file: ImportedSourceFile): Promise<ProviderPaper[]>;  // v2 fallback 路径
+  verdict: "读" | "扫读" | "跳过" | "待定";
 }
-```
 
-目录结构（**禁止**以后在 paper-tools.ts 里 if (source === ...) 堆砌）：
+/* ---- Phase C：Seed Paper + Literature Map ---- */
+type MapRelation = "references" | "citations" | "related" | "author-lineage";
 
-```text
-src/lib/search/
-  types.ts          // SearchIntent / ProviderQuery / ProviderPaper / CanonicalPaper / PaperHitV2
-  planner.ts        // Query Planner
-  pipeline.ts       // runSearchPipeline 编排
-  dedupe.ts         // canonicalId + 合并（含 accessProvider 证据）
-  filters.ts        // 硬过滤
-  rerank.ts         // 重排
-  importers/        // 文件导入解析（v0.2 新增）
-    wos-export.ts   // WoS 网页导出的 tab-delimited / plain text
-    bibtex.ts       // BibTeX / EndNote 引用导入（Scholar fallback）
-  providers/
-    types.ts        // ScholarlyProvider
-    google-scholar.ts  // SerpApi + import fallback
-    web-of-science.ts  // Starter/Expanded API + import fallback
-    openalex.ts
-    semantic-scholar.ts
-    crossref.ts
-    arxiv.ts
-    ieee.ts         // v3
-```
+interface MapNode {
+  paperId: string; title: string; year?: number;
+  role?: PaperRole; cluster?: string;
+}
+interface MapEdge {
+  from: string; to: string;
+  relation: MapRelation;
+  direction: "forward" | "backward" | "undirected";
+  explanation: string;             // AI 解释为什么连在一起（DI §13）
+  evidence: string;                // 证据（引用关系 / 方法继承 / 作者延续）
+}
+interface ReadingPath {
+  id: string; nodes: string[];
+  audience: "beginner" | "recent-3y" | "custom";
+  rationale: string;               // 为什么按这个顺序读
+}
 
-### 5.2 Google Scholar Provider（一等来源；不直接爬 scholar.google.com）
+/* ---- 贯穿：Next Step + Research Session ---- */
+interface NextStep { action: string; reason: string; }
 
-**接入总则**：Google Scholar 官方明确不支持批量检索、不提供 bulk access，自动大量下载会被阻止（验证码/IP 限制），robots.txt 也禁止自动抓取。因此**绝不**写 fetch("https://scholar.google.com/scholar?q=...") 或 Puppeteer/Playwright 抓页面。两条正式路径：
-
-```text
-路径 A（首选）SerpApi Google Scholar API：
-  GET https://serpapi.com/search.json?engine=google_scholar&q=<query>&api_key=<key>
-  返回 organic_results（title / link / publication_info / snippet / cited_by / versions /
-  related_pages / cluster）；支持 cites=<cluster_id> 做 cited-by 查询。
-  已验证（2026-08-27）：SerpApi 官网仍维护 google_scholar engine，字段含上述内容；
-  按搜索次数计费（有免费额度，具体价格以官网为准）。
-  provenance：sourceProvider="google-scholar"，accessProvider="serpapi"。
-
-路径 B（用户导入 Scholar 结果 —— 手动补充来源，不是自动检索 fallback）：
-  本质：用户手动在 Scholar 找到候选 → Research Atelier 接收这些候选。
-  流程：用户在 Scholar 页面搜索 → 用 Scholar 自带的「引用 → BibTeX」导出 → 导入管线
-  （importers/bibtex.ts，sourceProvider="google-scholar"，accessProvider="user-import"）；
-  同时保留「在 Google Scholar 中继续搜索 ↗」外链入口。
-  产品层区分（封板补丁）：
-    A. SerpApi      → 自动检索
-    B. 用户导入     → 手动补充来源
-  严禁把 B 描述成「未配置 SerpApi 时自动使用 BibTeX fallback」——程序不能凭空拿到 BibTeX。
-  未配置且未导入时显示：
-    Google Scholar 尚未加入本次检索
-    [配置 SerpApi] [在 Google Scholar 搜索] [导入 Scholar 引用]
-  且 coverage.googleScholar 保持 "missing"；只有用户真实导入后才变为 "imported"。
-  provenance 必须写清楚：这条记录来自 Google Scholar 索引，渠道是用户导入，不是 SerpApi。
-```
-
-**绝不允许**：把 sourceProvider 写成 "serpapi"——对科研用户重要的是「来自 Google Scholar 索引」，SerpApi 只是访问渠道。
-
-### 5.3 Web of Science Provider（一等来源；绝不静默替代）
-
-```text
-模式 A（API，优先）：
-  官方 Starter API（Clarivate Developer Portal 注册 + API Key）：
-    检索 WoS Core Collection 元数据 + times-cited；端点以官方 OpenAPI 为准
-    （api.clarivate.com/apis/wos-starter/...，官方提供 Python client：
-    github.com/clarivate/wosstarter_python_client，2026 仍在维护）。
-  官方 Expanded API：完整检索 / 引用 / 参考文献 / 机构 / 基金（权限随机构订阅合同）。
-  provenance：sourceProvider="web-of-science"，accessProvider="official-api"。
-
-模式 B（无 API entitlement fallback）：
-  用户在学校 WoS 网页检索 → 导出检索结果（tab-delimited / plain text，含
-  author/title/source/DOI/times cited）→ importers/wos-export.ts 解析 → 进入同一 Candidate Pool。
-  provenance：sourceProvider="web-of-science"，accessProvider="user-import"。
-```
-
-**UI 状态必须是显式的三态，不能假装已连接：**
-
-```text
-Web of Science
-● 已连接 API          → 模式 A
-
-Web of Science
-⚠ 当前没有 API 权限   → 模式 B（提供 [配置 API Key] 与 [导入 WoS 检索结果] 两个入口）
-```
-
-**绝不允许**：没有 WoS API Key 时悄悄用 OpenAlex 结果顶替并显示「WoS 已检索」。
-
-### 5.4 Semantic Scholar（公共来源）
-
-- 搜索：GET https://api.semanticscholar.org/graph/v1/paper/search?query=...&limit=50&fields=title,abstract,year,venue,externalIds,citationCount,publicationTypes,authors
-- **已实测：无 key 会 429**（2026-08-27 实测 Too Many Requests）。因此必须：
-  - 限速 + 退避（请求间隔 ≥500ms，429 时指数退避）；
-  - 可选 S2_API_KEY（.env.local，提示配 key 提高额度）；
-  - **失败降级**：该 provider 缺失不算整体失败，进 report.warnings。
-- Recommendations API（/graph/v1/paper/{paperId}/recommendations）：v3 seed-paper 扩展用。
-
-### 5.5 Crossref 校验器（不是主搜索引擎）
-
-- 职责：按 DOI 核对**正式标题/作者/出版日期/journal/publisher/type**；用于「arXiv 版 vs 会议版 vs 期刊版」的版本归一，避免同一工作被当三篇。
-- 接口：GET https://api.crossref.org/works/{doi}?select=DOI,title,author,container-title,published,type,publisher（已实测 select 可用，2026-08-27）。
-- 输出：CanonicalPaper.crossrefCheck = { status: "match"|"mismatch"|"missing"; fields }；mismatch 进 report 供筛选时参考。
-
-### 5.6 arXiv Provider
-
-- https://export.arxiv.org/api/query?search_query=...（**https**；Atom 响应，用轻量 XML 解析，不引新依赖）。
-- 预印本源：标 type="preprint"，不冒充正式出版；arxivId 直接复用现有 download_paper 的 arxiv 下载路径。
-
-### 5.7 数据源配置页 + 来源可见 UI（v0.2 新增，硬约束落地）
-
-**配置页**（新视图或「论文筛选」页内卡片，服务端 /api/sources 提供状态）：
-
-```text
-论文数据源
-
-Google Scholar
-● 已连接   Access: SerpApi            [配置 API Key] [测试连接]
-  或 ⚠ 未配置 → 提示「SerpApi Key 未配置，将使用引用导入 fallback」
-
-Web of Science
-● 已连接   Access: Starter API        [测试连接]
-  或 ⚠ 未配置 → 提示「机构 WoS 网页权限不一定包含 API 权限」[配置 API Key] [导入 WoS 检索结果]
-
-OpenAlex         ● 可用，无需配置
-Semantic Scholar ● 可用（限流降级）    [配置 API Key 提升额度]
-```
-
-**Key 安全（硬规则）**：所有 API key 只存 .env.local / 服务端环境变量；/api/sources 只返回「已配置/未配置/最近测试结果」，**绝不把 key 写进普通 JSON 或发给 LLM**。
-
-**检索过程可见性（用户可见即真实）**：
-
-```text
-正在检索 4 个学术来源
-
-Google Scholar      ✓ 42
-Web of Science      ✓ 31
-OpenAlex            ✓ 67
-Semantic Scholar    ✓ 48
-
-共召回 188 条记录 → 去重后 103 篇 → 主题筛选后 24 篇
-```
-
-**部分检索标注（封板补丁，缺一不可）**：若本轮 googleScholar/webOfScience 为 missing 或 not-wired，同一画面必须显示：
-
-~~~text
-⚠ 本次结果为部分检索：尚未包含 Google Scholar、Web of Science。
-（完整筛选 = Google Scholar 已覆盖 AND Web of Science 已覆盖；覆盖方式 = API 或用户导入）
+interface ResearchSession {
+  id: string;
+  question: string;
+  intent?: SearchIntent;
+  plan?: SearchPlan;
+  visitedDatabases: { id: string; at: string; action?: string }[];
+  candidates: CanonicalPaper[];
+  triage: PaperTriage[];
+  seedPapers: string[];
+  map?: { nodes: MapNode[]; edges: MapEdge[] };
+  readingPaths: ReadingPath[];
+  openQuestions: string[];
+  nextStep: NextStep;
+  createdAt: string; updatedAt: string;
+}
 ~~~
 
-**每篇候选卡片**（筛选对话内 markdown 呈现，v2 起）：
-
-```text
-DreamerV3: Mastering Diverse Domains through World Models   (2023 · ICML)
-来源：Google Scholar · Web of Science · OpenAlex · Semantic Scholar
-引用：GS 1,2xx · WoS 8xx   （展开：OpenAlex 980 · S2 901）
-[看摘要] [看来源证据] [加入论文库]
-```
-
 ---
 
-## 6. Search v3（后移，按需触发）
+## 6. Phase A — Search Guide（第一核心功能，DI §3–5/§21/§23）
 
-```text
-1. Citation Graph / seed-paper snowballing：
-   references / citations / related（S2 recommendations、OpenAlex referenced_works/cited_by）
-   → 奠基工作 / 直接后续 / 相似路线 / 最新进展 四组，各走不同 RankingProfile（§7）
-2. IEEE Xplore Provider（Metadata Search API，注册 API key；工科价值高，但先满足 WoS/Scholar 硬需求）
-3. 更高级 RankingProfile（foundational 用引用图中心性、reproducible 用 code/data 信号）
-4. 长期检索 / alerts（新论文到达通知）
-```
+**职责**：解决「我不会搜」。输入研究问题，产出 **SearchPlan**——不是「这里有 8 篇论文」，而是：
 
-后移理由（同 §3）：硬需求优先；Citation Graph 是增值不是替代。
+~~~text
+你的研究目标
+核心概念：World Model / Embodied AI / Robotics
+相关表达：Predictive world model · Latent dynamics · Model-based agent · Embodied foundation model
+可能歧义：「world model」也大量出现在 mental health / economics 等领域
+建议排除：mental health / world development report
+时间范围：2022–2026
+本轮目标：先找 1–2 篇近年综述、2–3 篇路线核心、2–3 篇近期代表
+~~~
 
----
+**AI 是「不同数据库的检索式编译器」（DI §4）：**
 
-## 7. RankingProfile：按目的排序，不做统一「论文质量分」
-
-不采用 Score = 0.4*relevance + 0.2*citation + 0.2*venue + ...：最新进展场景里，一篇刚发 2 个月、只有 3 引的论文完全可能比 2019 年 3000 引的更有用；可复现场景里代码/数据完整性比引用数重要得多。
-
-```text
-探索领域     explore       → relevance + citation + 领域覆盖（v1 落地）
-最新进展     recent        → relevance + recency（时间衰减权重最高）（v1 落地）
-奠基论文     foundational  → citation + 引用图中心性（v3 起用 citation graph）
-找综述       survey        → type(review) + 覆盖度 + citation
-找可复现     reproducible  → relevance + code/data 信号（v3：GitHub 链接检测 + 关键词）
-从论文继续   follow_paper  → 图距离 + 模式匹配（v3）
-```
-
-v2 起，WoS 的 times-cited 与 Scholar 的 cited_by 成为 citation 信号的组成部分（分源，不合并）。
-
----
-
-## 8. 成本与超时预算
-
-```text
-Query Planner    1 次 LLM 调用（~1k token in / ~600 out）
-候选池 50–100    标题+摘要 ≈ 15–25k token —— 但只有 rerank 后的 15–25 篇（4–8k）发给 LLM
-LLM 批排（可选） 2–3 批 × 2k 预算
-S2 限流          ≥500ms 间隔；429 → 退避 + 降级 warnings
-SerpApi         付费（按搜索次数计费，有免费额度；价格以官网为准）——仅在配置了 key 时启用，
-                未配置自动走导入 fallback，不阻塞管线
-WoS API         费用/权限随机构订阅合同；无 entitlement 走导入路径（免费）
-单次工具执行     预算 < 60s；provider 超时各自独立，超时降级不阻塞整体
-```
-
-（与当前「6 篇反复重试 + 多轮 tool call」相比，总 token 不必然更贵，且召回质量显著提升。）
-
----
-
-## 9. 与复现模块的对称关系（本方案不重复实现）
-
-```text
-论文检索：Human question → Search Plan → Providers → Candidate Set → Screened Papers
-复现模块：Paper → Reproduction Spec → Codex Tasks
-
-共同风格：先把模糊的人类目标「编译」成结构化任务，再调用外部工具 —— Research Atelier 的主线。
-本方案只实现检索侧；复现侧由 REPRO_SPEC_IMPLEMENTATION.md 负责，两者不交叉。
-```
-
----
-
-## 10. 开发顺序（每步有独立验收；确认后从 Step 1 开始）
-
-| Step | 内容 | 验收 |
+| 库 | 输出 | 为什么这一轮用它 |
 |---|---|---|
-| **1** | src/lib/search/types.ts + PaperHitV2；chat/route.ts 工具接线（先不换行为） | 现有筛选对话无回归；download_paper 字段兼容；全量测试通过 |
-| **2** | Query Planner + OpenAlex Provider 升级 + report 输出（含 coverage） | 「world model」走查：report 显示 4 路 query、候选 50+、排除词生效；relevance_score/cited_by_count/type 在返回中；未接线来源显示「○ 尚未接入」而非 0；GS/WoS 为 not-wired/missing 时标注部分检索 |
-| **3** | Hard Filters + Rerank + P0 prompt 同步 | 「world model」最终 15–25 篇中无 mental-health 类噪声；D5/D6 数据来自检索结果；自定义 prompt 用户重置提示 |
-| **4** | v1 验收（§12 全项） | 验收总则全过；截图问题复现对比：旧链路 vs 新链路同一 query |
-| **5** | Provider 接口（sourceProvider/accessProvider）+ Google Scholar Provider（SerpApi + BibTeX 导入 fallback） | SerpApi 未配置时走导入 fallback 且 provenance 正确；配置后 organic_results 进入候选池；绝不出现 sourceProvider="serpapi" |
-| **6** | WoS Provider（Starter/Expanded API + wos-export 导入 fallback）+ 三态状态 | 无 API key 时 UI 显示 ⚠ 未配置 + 导入入口；导出文件解析后进入同一候选池；无任何静默 OpenAlex 顶替路径 |
-| **7** | Semantic Scholar + arXiv | S2 无 key 时 429 被降级进 warnings 不阻塞；arXiv 预印本可下载 |
-| **8** | Crossref 校验器 + dedupe 升级 + 分源引用 UI + /api/sources 配置页 | 同一工作多源命中只显示一次；引用分源标注（GS/WoS/OpenAlex/S2）；key 不进 JSON、不发 LLM |
-| **9** | v2 验收（§12 全项） | 多源候选池（WoS + Scholar + OpenAlex + S2）命中数在检索过程可见；两条 fallback 路径均走通 |
-| **10** | v3：Citation Graph / seed-paper / IEEE / 高级 RankingProfile / alerts | 按需触发，不在默认链路 |
+| Google Scholar | 3 条建议检索式（如 "world model" (robotics OR "embodied agent")）+ [打开 Google Scholar ↗] / [复制] | 广泛召回、Cited by、Related articles |
+| Web of Science | 自动转 WoS 语法：TS=("world model" OR "world models") AND TS=(robot* OR "embodied agent*") AND PY=(2022-2026) + [复制] / [打开 Advanced Search ↗] | 精确主题检索、引用追踪、Related Records、更规范的筛选条件 |
+| Semantic Scholar | 提示其定位：Related Papers / Citations / References / 推荐网络（不必重新关键词搜索） | 图关系能力 |
+| arXiv | 提示其定位：最新、尚未正式发表的工作 | 时效 |
+
+**Next Research Action（DI §5）**：不只给 query，还给「进去以后点什么」。例如已有 DreamerV3：
+
+~~~text
+你已经有一篇很好的种子论文，这一轮不建议继续关键词搜索：
+Google Scholar   → 点 Cited by      （找后来的 follow-up）
+Web of Science   → 点 Related Records （找主题接近但术语不同的论文）
+Semantic Scholar → 看 References    （找它建立在哪些基础工作上）
+~~~
+
+**轻量解释（DI §23）**：默认一句话「为什么这么做？」，想了解再展开（为什么用 exact phrase / 为什么点 Cited by / 为什么先看 survey）。不教程墙。
+
+**验收（Phase A）：**
+1. 输入「world model 在 robotics 最近三年」→ SearchPlan 含概念/同义词/排除/时间窗 + GS 3 条 query + WoS TS= 检索式 + S2/arXiv 定位 + 每库 why + 下一步动作
+2. 每库有 [复制]；GS 深链可用则给 ↗，WoS 深链不稳定以复制为主（诚实降级）
+3. 零付费 API 依赖（纯 LLM 生成策略）
+4. seed 场景给出 Cited by / Related Records / References 三动作
+5. 解释默认一句话、可展开
 
 ---
 
-## 11. 明确不做（防止膨胀成「大聊天框 + 更多 API」）
+## 7. Phase B — Candidate Inbox + Paper Triage（第二核心功能，DI §6–10/§18–20）
 
-```text
-1. 不直接爬 scholar.google.com（fetch HTML / Puppeteer / Playwright）——官方禁止批量抓取；
-   Scholar 只走 SerpApi 或用户导入
-2. 不用 OpenAlex（或任何其他源）静默顶替 WoS 并显示「WoS」；无权限时必须显式三态
-3. 不写 sourceProvider="serpapi"（渠道与索引分离；SerpApi 只是访问渠道）
-4. 不做统一「论文质量分」（§7）
-5. 不在 paper-tools.ts 里 if(source===...) 堆 provider（必须走 ScholarlyProvider 接口）
-6. 不引入外部 embedding 服务/向量库（v1 用 OpenAlex relevance + 规则；当前规模不需要本地索引）
-7. 不把 100 篇全部塞给 LLM 深筛（分层截断，见 §2 预算）
-8. API key 不进普通 JSON、不进 LLM 上下文（只存 .env.local / 服务端，/api/sources 只报状态）
-9. 不改复现模块 / 术语卡 / 精读讲解 / 论文库导入
-10. 不做多轮「关键词重写」循环（planner 一次编译，用户可改 report 后重跑，不自动迭代）
-```
+**职责**：解决「我不知道搜回来的论文值不值得读」。用户把真实检索结果带回来。
+
+### 7.1 Candidate Inbox（DI §6）
+
+第一版入口（简单实用，不做浏览器扩展）：
+
+~~~text
+粘贴论文标题 / 粘贴 DOI / 粘贴 arXiv URL / 粘贴 BibTeX / 导入 RIS / 导入 WoS export / 从现有论文库选择
+~~~
+
+管线：import → 解析（importers/）→ **normalize + dedupe（保留 Step 1 纯函数）** → **metadata enrichment** → Paper Triage。
+
+### 7.2 去重与版本链（DI §7，保留并完善）
+
+~~~text
+canonical identity：DOI > arXiv ID > normalized title（Step 1 已实现）
+
+同一工作：
+  arXiv preprint → Conference → Journal Extension
+不稀里糊涂显示成三篇，也不粗暴合并 —— 呈现「版本链」：
+  Preprint → Conference → Journal Extension
+~~~
+
+### 7.3 Metadata Enrichment（DI §18）
+
+用开放数据源（Crossref / OpenAlex / Semantic Scholar）补：DOI、正式标题、venue、年份、摘要、**引用数（标来源）**、OA PDF、arXiv、代码链接、项目页。**不知道就是「未核实」**，禁止凭记忆填「大概发在 NeurIPS」。
+
+### 7.4 Paper Triage（DI §8–10）
+
+六维判断保留（D1 相关性 / D2 领域位置 / D3 知识关系 / D4 阅读门槛 / D5 可复现性 / D6 出处可信度），**输出不是六项考试打分**，而是：
+
+~~~text
+DreamerV3
+角色：路线核心
+为什么值得读：把 Dreamer 路线扩展到更广泛任务，后续大量 world-model 工作沿用了这一方向
+与你的问题：高度相关
+建议阅读深度：精读
+重点看：Method §3 · Figure 2 · Main Experiments · Ablation
+暂时不用看：部分附录实现细节
+~~~
+
+- **阅读深度四档（DI §9）**：跳过 / 扫读 / 定向阅读 / 精读 —— 回答「对当前任务值不值得投入 2 小时」。
+- **领域角色（DI §10）**：综述/入门、奠基工作、核心路线、重要 follow-up、竞争路线、近期进展、应用工作、边缘相关。用户最终看到的是「建立背景 2 篇 / 理解主路线 3 篇 / 了解最新进展 2 篇 / 了解竞争方向 1 篇」，而非 Top 10 列表。
+- **引用数分源（DI §20）**：OpenAlex citations: 980 / GS 1,250 / WoS 730 —— 明确写来源，不合并成一个「唯一事实」。
+- **provenance（DI §19）**：每条候选保留 sourceProvider + accessProvider，服务「判断可核实」。
+
+**验收（Phase B）：**
+1. 粘贴标题 / DOI / arXiv URL / BibTeX / WoS export 四条路径解析成功（单测 + 手工样例）
+2. 多版本归一：arXiv/会议/期刊识别为同一工作并呈现版本链
+3. Enrichment 后字段带来源；缺失标「未核实」
+4. Triage 输出：角色 + 四档深度 + 重点/暂不看 + 六维一句话（不打分）
+5. 引用数分源；provenance 可核实
 
 ---
 
-## 12. 验收总则
+## 8. Phase C — Seed Paper + Literature Map（第三核心功能，DI §11–15）
 
-1. **「world model」案例**：不再混入 World Mental Health Survey 类噪声，或明确被 exclude 并说明；候选池 50+，最终 15–25 篇全部与 agent/robotics 语境相关。
-2. **一等来源真实接入**：Google Scholar 与 Web of Science 是正式检索来源（SerpApi / WoS API 或对应导入 fallback），命中数在检索过程可见；不是外链摆设。
-3. **来源可溯源**：每条候选带 sourceProvider + accessProvider + 命中 query + 可点链接；引用量分源标注（GS/WoS/OpenAlex/S2 各自成立），缺失标「未知」。
-4. **不静默替代**：WoS 无 API 权限时 UI 显式 ⚠ 未配置 + 导入入口；任何路径都不存在「无 WoS 却显示 WoS 命中」。
-5. **去重**：同一篇论文多源命中只展示一次（sources 徽标）；arXiv/会议/期刊版本不重复。
-6. **用户无需学习检索语法**：自然语言进，结构化候选出；planner 输出（intent + queries）可见、可修改后重跑。
-7. **Key 安全**：所有 API key 只存 .env.local / 服务端；/api/sources 只返回状态，不发 LLM。
-8. **零回归**：download_paper 字段兼容、会话历史、提示词可编辑、论文库/精读不受影响；全量 regression 通过（现有测试 + 新增 planner/dedupe/filter/rerank/importer 单测）。
-9. **成本可控**：单次筛选工具执行 < 60s；SerpApi 未配置不阻塞管线；LLM 深筛 token 与现状相当或更低。
-10. **部分检索语义（封板补丁）**：完整筛选完成 = GS 已覆盖（api/imported）AND WoS 已覆盖（api/imported）；任一硬来源为 missing 时页面必须标注「本次结果为部分检索：尚未包含 …」，不得照常宣称筛选完成。
-11. **未接线 ≠ 0 命中（封板补丁）**：未实现的来源显示「○ 尚未接入」（not-wired），不显示 0；0 只表示「搜过但无结果」。
-12. **Scholar 导入是手动补充（封板补丁）**：BibTeX 导入是用户手动在 Scholar 找到候选后补充，不是自动检索 fallback；coverage 只在真实导入后由 missing 变为 imported。
+**职责**：解决「我不知道下一步往哪找」。从种子论文展开。
+
+### 8.1 Seed Paper Expansion（DI §15，从旧 v0.2 的 follow_paper 升级为主要工作流）
+
+找到关键论文后，用户选择：
+
+~~~text
+找它之前的基础工作 / 找它之后的重要工作 / 找同路线工作 / 找竞争路线
+找最近两年的 follow-up / 找作者后续
+~~~
+
+数据来源：开放源（Semantic Scholar recommendations/references/citations、OpenAlex referenced_works/cited_by）+ 用户导入候选中的关系。**不做 generic keyword search**。
+
+### 8.2 Literature Map（DI §11–14）
+
+不是「节点 + 一堆线」的视觉玩具，而是**有语义的地图**：
+
+~~~text
+2018 World Models（路线起点）
+  ├─ PlaNet（latent planning）
+  ├─ Dreamer（latent imagination）
+  │    └─ DreamerV2 → DreamerV3（scaling / generalization）
+  └─ 2024–2026：robotics / embodied agents / foundation world models
+~~~
+
+**四种关系（DI §12）：** references（引用了谁）/ citations（谁引用了它）/ related（主题结构相似）/ author-lineage（作者/团队延续）；以后可加 co-citation / bibliographic coupling。
+
+**每条重要边可展开（DI §13）：**
+
+~~~text
+Dreamer → DreamerV2
+关系：直接后续工作
+变化：从 continuous control 扩展到 discrete actions
+证据：DreamerV2 references Dreamer + 方法部分明确建立在 Dreamer framework 上
+~~~
+
+原则：**AI 解释关系，图算法发现候选关系。**
+
+### 8.3 阅读路线生成（DI §14）
+
+用户选择身份后生成 reading path：
+
+~~~text
+我是初学者     → Survey → World Models → PlaNet → Dreamer → DreamerV3 → 最近 robotics 工作
+只关心近三年   → 跳过大量历史节点，直接进入 2024–2026 主线
+~~~
+
+**验收（Phase C）：**
+1. seed → 前向（citations）+ 后向（references）+ related + author-lineage 四类候选
+2. 每条边可展开「关系 + 变化 + 证据」
+3. 生成两条 reading path（初学者全历史 / 最近三年跳过历史）
+4. 地图先保证有解释、有路线、有下一步动作，再谈可视化
 
 ---
 
-## 13. 修订记录
+## 9. Phase D — Quick Discovery（降级为辅助模式，DI §16–17）
 
-```text
-v0.1（2026-08-27）初稿：
-- 现状逐条核对真实代码（paper-tools.ts:25,57；chat/route.ts:20-53,150；data.ts:13-59；page.tsx 筛选视图）
-- API 能力实测：OpenAlex search.semantic / relevance_score / filter=...search 可用；
-  Semantic Scholar 无 key 429；Crossref select= 可用
-- 采纳用户走查结论：问题在 retrieval/recall 阶段而非 LLM 判断；PaperHit 信息赤字；
-  Query Planner 先行；分阶段召回；引用数分源；不做统一质量分；v1/v2/v3 三阶段
-- 对齐复现模块风格：REPRO_SPEC_IMPLEMENTATION.md 的「现状盘点 → 核心 schema → 开发顺序 → 明确不做 → 验收」结构
+旧方案的自动检索发动机**不是不要了**，降级为「快速发现」：
 
-v0.2（2026-08-27）用户硬约束修订：
-- 硬约束：Web of Science 与 Google Scholar 升为一等检索来源，移出 v3/外链（§0）
-- Google Scholar：不爬 scholar.google.com；首选 SerpApi google_scholar engine（已核实官网仍在维护），
-  无 Key 走 BibTeX 引用导入 + 外链 fallback；schema 强制 sourceProvider="google-scholar" 与
-  accessProvider="serpapi"|"user-import" 分离（§5.2）
-- Web of Science：官方 Starter/Expanded API 优先（Clarivate Developer Portal + 官方 OpenAPI/Python client
-  已核实），无 entitlement 走导出文件导入；三态 UI 状态，禁止静默 OpenAlex 顶替（§5.3）
-- 数据模型：ProviderPaper 拆分 sourceProvider/accessProvider；metrics.citations 分源（§4.1）
-- 阶段重排：v1=公共管线发动机，v2=一等来源接入（Scholar/WoS/S2/Crossref/arXiv），v3=Citation Graph/IEEE/高级 Ranking/alerts（§3/§6）
-- 新增：数据源配置页 + /api/sources + Key 安全规则（§5.7）；检索过程各源命中可见（§5.7）
-- 验收总则扩充 9 条（§12）；明确不做扩充（§11）
+~~~text
+我现在还没想去 Scholar/WoS，先给我找十几篇看看。
+来源：OpenAlex · Semantic Scholar · arXiv · Crossref enrichment
+UI 必须明示：这是开放学术源的快速发现，不等于完整 Google Scholar/WoS 检索。
+~~~
 
-v0.2 封板补丁（2026-08-27，用户确认后封板，不再出 v0.3）：
-- SearchRun 新增一等字段 coverage（SourceCoverage：api/imported/missing/not-wired），
-  完整筛选完成 = GS 已覆盖 AND WoS 已覆盖（§4.1/§12.10）
-- 未接线来源显示「○ 尚未接入」而非 0（not-wired ≠ missing ≠ 0 命中）（§4.8/§12.11）
-- Scholar BibTeX 导入 = 用户手动补充来源，不是自动检索 fallback；未配置且未导入时
-  coverage 保持 missing，并提供 [配置 SerpApi] [在 Scholar 搜索] [导入 Scholar 引用] 三入口（§5.2/§12.12）
-```
+管线（复用旧方案成熟设计，作为内部工具）：
+
+~~~text
+Query Planner（多 query 召回）→ 100+ → Normalize → Dedupe → Hard Filters
+→ RRF（多源排名融合）/ BM25（title+abstract 文本相关性）→ 20 → LLM → 5–10
+~~~
+
+**RRF + BM25 是内部工具（DI §17）**：用户不看到 BM25=13.77 / RRF=0.041，只看到「为什么留下」。旧 v0.2 的 relevance_score/cited_by_count/type 字段升级、语义检索（search.semantic）等在这里全部用上。
+
+**验收（Phase D）：**
+1. 开放源一轮快速发现 15–20 篇
+2. RRF 融合多源排名；BM25 内部使用，不展示分数
+3. UI 明示「快速发现 ≠ 完整 Scholar/WoS 检索」
+4. 复用 Step 1 模型与 dedupe（无新数据模型）
+
+---
+
+## 10. Phase E — Optional Accelerators（DI §26/§28-E，最后才考虑）
+
+~~~text
+WoS API / Scholar API proxy（SerpApi）/ Grok / Exa / Tavily / 浏览器扩展 / alerts
+~~~
+
+约束：**不能改变核心架构**；核心工作流（策略生成、网站跳转、候选导入、筛选、地图、开放 metadata enrichment）零付费依赖即可运行。
+
+---
+
+## 11. 「下一步建议」贯穿能力 + Research Session 持久化（DI §21–22）
+
+**任何时候系统回答「你现在最值得做的下一步是什么」：**
+
+~~~text
+当前：只有一个模糊方向        → 下一步：先找 survey
+当前：已有 18 篇候选          → 下一步：先筛出 3 篇种子论文
+当前：已经读完 DreamerV3      → 下一步：不要继续关键词搜索；沿 citations 找 2024–2026 直接 follow-up
+~~~
+
+这是整个模块最有「导航仪」感觉的能力。Research Session 作为持久对象（§4）承载它；存储沿用本地 data/ 模式（store.ts），可导出。
+
+---
+
+## 12. 首页 UX（DI §24）
+
+~~~text
+你现在想做什么？
+┌ 帮我开始检索 ┐  ┌ 帮我筛这些论文 ┐
+│ 我只有一个问题 │  │ 我已经搜到一些 │
+┌ 从一篇论文继续找 ┐  ┌ 快速发现 ┐
+│ 我有 seed paper │  │ 开放数据源先搜一轮 │
+
+进入后三层：
+顶部：当前研究目标 + 当前阶段
+主体：当前最重要任务
+侧边/下方：候选论文 / 地图 / 检索记录 / 证据
+~~~
+
+---
+
+## 13. 明确不做（DI §27 + 旧方案保留合理项）
+
+~~~text
+1. 自己复刻 Google Scholar corpus
+2. 直接抓 Scholar HTML 对抗 CAPTCHA / 浏览器自动化
+3. 同时接 10 个 Search API 作为产品能力指标
+4. 复杂知识图谱平台 / 自动替用户决定研究方向
+5. 把所有论文全文都下载下来
+6. 一开始就做漂亮但没有科研语义的巨大节点图（地图先保证解释/路线/下一步）
+7. 第一版不做浏览器扩展（候选导入用粘贴/文件）
+8. 「GS AND WoS = 完整检索」门控（已废止，§3）
+9. 核心工作流依赖付费 Search API（§10 仅 Optional）
+10. 不改复现模块 / 术语卡 / 精读讲解 / 论文库导入
+~~~
+
+---
+
+## 14. 开发顺序与每阶段验收（旧 v0.2 Step 2–10 废止，重排如下）
+
+| Phase | 内容 | 验收要点 |
+|---|---|---|
+| **A** | Search Guide：入口「帮我开始检索」+ SearchPlan 生成 + 数据库策略（GS/WoS/S2/arXiv）+ 复制/深链 + Next Research Action + 轻量解释 + Research Session 骨架 | §6 五条 |
+| **B** | Candidate Inbox + Paper Triage：入口「帮我筛这些论文」+ 导入解析（title/DOI/arXiv/BibTeX/RIS/WoS export）+ dedupe + enrichment + 角色/深度输出 + 版本链 | §7 五条 |
+| **C** | Seed Paper + Literature Map：入口「从这篇论文继续找」+ 四类关系 + 关系解释 + 阅读路线 | §8 四条 |
+| **D** | Quick Discovery：入口「快速发现」+ OpenAlex/S2/arXiv 自动检索重新接入 + RRF/BM25 + UI 明示降级 | §9 四条 |
+| **E** | Optional Accelerators（WoS API / SerpApi / Grok / Exa / Tavily / 浏览器扩展 / alerts） | 按需；不改变核心架构 |
+
+依赖关系：A 是地基（SearchPlan/ResearchSession 被 B/C/D 复用）；B 的 dedupe 复用 Step 1；C 需要 B 的候选/种子；D 可并行但依赖 Step 1 模型。A→B→C 为用户主路径，D 为便利功能。
+
+---
+
+## 15. 最终验收：十项用户任务（DI §29，取代「接了多少 Provider」）
+
+输入：「我想学习 robotics 中的 world model，最近三年为主，但也需要知道路线起点。」
+
+系统必须做到：
+
+~~~text
+① 正确理解研究范围
+② 给出合理关键词、同义词和排除项
+③ 生成 Google Scholar / WoS 等可执行检索式
+④ 告诉用户为什么用这些数据库
+⑤ 用户导入 20–30 篇后能够正确去重
+⑥ 将候选分成 survey / foundational / core / recent / peripheral
+⑦ 给出每篇阅读深度和原因
+⑧ 选择种子论文后生成前向/后向引用地图
+⑨ 能给出一条「只读 5 篇」的合理阅读路线
+⑩ 始终告诉用户当前最值得做的下一步
+~~~
+
+验收成立 ≠ 勾选「✓ OpenAlex ✓ WoS ✓ Scholar ✓ Grok ✓ Exa」，而 = 用户知道自己该读什么、为什么、下一步去哪。
+
+---
+
+## 16. 与复现模块的关系 + 成本原则
+
+~~~text
+文献发现：Human question → Search Plan → 真实数据库检索 → Candidate Inbox → Triage → Map → Next Step
+复现模块：Paper → Reproduction Spec → Codex Tasks
+共同风格：先把模糊目标「编译」成结构化任务，再调用外部工具（这里是把研究意图编译成检索策略）。
+本方案不动复现模块；两模块共享的只有论文库（library.json）入口。
+~~~
+
+成本硬原则（DI §26）：Phase A–D 全部零付费 API 依赖；Optional Accelerator 只是加速，不是依赖。
+
+---
+
+## 17. 修订记录
+
+~~~text
+v0.1（2026-08-27）：旧方案初稿 —— 「多源自动检索管线」（Query Planner + OpenAlex/S2/Crossref/arXiv + dedupe/rerank）
+v0.2（2026-08-27）：用户硬约束 —— WoS/Google Scholar 升一等来源（SerpApi/WoS API + 导入 fallback + coverage 门控）
+v1.0（2026-08-27）Design Intent 重写（本文）：
+- 产品定位从「AI 聚合数据库替用户搜索」改为「科研检索导航层（Guided Literature Discovery）」
+- 保留：SearchIntent / ProviderPaper / CanonicalPaper / dedupe 纯函数 / provenance / PaperHitV2 / RankingProfile 思想
+- 迁移：SearchRun/SourceCoverage 从完整度门控 → 透明记录；hardSourcesCovered/partialRetrievalWarning 废止为门控（保留诊断）
+- 废止：GS AND WoS = 完整检索判据；WoS/SerpApi 从产品依赖降为 Optional Accelerator；旧 v0.2 Step 2–10 重排为 Phase A–E
+- 新增：SearchPlan / DatabaseStrategy / ImportedCandidate / PaperTriage（角色+深度）/ LiteratureMap（四关系+解释+阅读路线）/ ResearchSession / NextStep
+- 四个入口取代单一聊天入口；成功指标改为「用户是否更快建立领域的正确认知结构」
+- 十项用户任务验收取代 Provider 数量验收
+~~~
 
