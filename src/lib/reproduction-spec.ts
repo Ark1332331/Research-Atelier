@@ -44,6 +44,7 @@ export interface Fact {
   status: FactStatus;
   confidence: FactConfidence;
   importance: FactImportance;
+  missingReason?: string;    // status=missing 时保留原因（如「论文未报告 / repo 未找到」）
   source?: FactSource;
 }
 
@@ -272,6 +273,7 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           status: (["observed", "inferred", "missing"] as const).includes(f.status) ? f.status : "observed",
           confidence: (["high", "medium", "low"] as const).includes(f.confidence) ? f.confidence : "medium",
           importance: (["required", "recommended", "optional"] as const).includes(f.importance) ? f.importance : "recommended",
+          missingReason: typeof f.missingReason === "string" ? f.missingReason : undefined,
           source: normFactSource(f.source),
         } : null).filter(notNull)
       : [],
