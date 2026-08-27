@@ -8,7 +8,7 @@
  * GET  /api/environments?name=<env> → { env, packages: [{name,version,build}] }
  * POST { name, purpose?, stage? }   → 存用途/阶段；返回 { ok, envs }
  */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { readStore, writeStore } from "@/lib/store";
 
@@ -32,6 +32,32 @@ async function readMeta(): Promise<EnvStore> {
 
 async function writeMeta(m: EnvStore): Promise<void> {
   await writeStore(FILE, JSON.stringify(m, null, 2));
+}
+
+/** 全局系统环境（Ubuntu/内核/GPU/驱动/架构/系统 Python） */
+function collectSystem(): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const rel = execFileSync("cat", ["/etc/os-release"], { encoding: "utf-8" });
+    const m = rel.match(/PRETTY_NAME="([^"]+)"/);
+    if (m) out.os = m[1];
+  } catch { /* */ }
+  try { out.arch = execFileSync("uname", ["-m"], { encoding: "utf-8" }).trim(); } catch { /* */ }
+  try { out.kernel = execFileSync("uname", ["-r"], { encoding: "utf-8" }).trim(); } catch { /* */ }
+  try {
+    const s = execFileSync("nvidia-smi", ["--query-gpu=name,driver_version", "--format=csv,noheader"], { encoding: "utf-8", timeout: 8000 });
+    const line = s.split("\n")[0] || "";
+    const parts = line.split(",");
+    if (parts[0]) out.gpu = parts[0].trim();
+    if (parts[1]) out.driver = parts[1].trim();
+  } catch {
+    try {
+      const v = execFileSync("cat", ["/proc/driver/nvidia/version"], { encoding: "utf-8" }).trim().split("\n")[0] || "";
+      out.driver = v.replace(/^NVRM version:/, "").trim().slice(0, 40);
+    } catch { /* */ }
+  }
+  try { out.python = execFileSync("python3", ["--version"], { encoding: "utf-8" }).trim().replace(/^Python /, ""); } catch { /* */ }
+  return out;
 }
 
 async function condaList(): Promise<{ name: string; prefix: string }[]> {
@@ -80,7 +106,7 @@ export async function GET(request: Request) {
     const m = meta.envs.find((x) => x.name === e.name);
     return { name: e.name, python: s.python, torch: s.torch, pkgCount: s.pkgCount, purpose: m?.purpose ?? "", stage: m?.stage ?? "" };
   }));
-  return Response.json({ envs: list });
+  return Response.json({ system: collectSystem(), envs: list });
 }
 
 export async function POST(request: Request) {

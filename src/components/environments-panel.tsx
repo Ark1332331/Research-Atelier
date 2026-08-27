@@ -16,12 +16,14 @@ export default function EnvironmentsPanel() {
   const [stage, setStage] = useState("");
   const [loadPkgs, setLoadPkgs] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const [system, setSystem] = useState<Record<string, string>>({});
 
   async function load() {
     try {
       const r = await fetch("/api/environments");
       const d = await r.json();
       setEnvs(d.envs ?? []);
+      setSystem(d.system ?? {});
     } catch { /* */ }
   }
   useEffect(() => { void load(); }, []);
@@ -61,6 +63,19 @@ export default function EnvironmentsPanel() {
         <span className="mono-label">conda 环境卡</span>
         <button className="btn btn--ghost btn--quiet" onClick={() => void load()}>刷新</button>
       </div>
+      {Object.keys(system).length > 0 && (
+        <div className="env-system">
+          <div className="env-system-title"><span className="mono-label">全局环境</span></div>
+          <div className="env-system-grid">
+            {system.os && <span>系统 <b>{system.os}</b></span>}
+            {system.kernel && <span>内核 <b>{system.kernel}</b></span>}
+            {system.arch && <span>架构 <b>{system.arch}</b></span>}
+            {system.gpu && <span>GPU <b>{system.gpu}</b></span>}
+            {system.driver && <span>驱动 <b>{system.driver}</b></span>}
+            {system.python && <span>系统 Python <b>{system.python}</b></span>}
+          </div>
+        </div>
+      )}
       {envs.length === 0 && <p className="mono-label">未读到环境（非本机或需 ra_conda_bin）</p>}
       <ul className="env-list">
         {envs.map((e) => (

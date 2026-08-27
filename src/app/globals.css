@@ -3580,3 +3580,9 @@ input, textarea, select {
 .env-pkgs { margin-top: 0.4rem; }
 .env-pkgs ul { list-style: none; padding: 0; margin: 0.2rem 0 0; max-height: 10rem; overflow: auto; }
 .env-pkgs li { display: flex; justify-content: space-between; font-family: var(--font-dm-mono); font-size: 0.6rem; padding: 0.1rem 0; opacity: 0.8; }
+
+/* 环境卡 · 全局环境 */
+.env-system { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 0.6rem; margin-bottom: 0.6rem; }
+.env-system-grid { display: flex; flex-wrap: wrap; gap: 0.6rem 0.9rem; margin-top: 0.3rem; }
+.env-system-grid span { font-family: var(--font-dm-mono); font-size: 0.6rem; color: var(--muted-foreground); }
+.env-system-grid b { color: var(--fg); font-weight: 600; }
