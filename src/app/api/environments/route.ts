@@ -16,6 +16,15 @@ const execFileAsync = promisify(execFile);
 const CONDA = process.env.RA_CONDA_BIN ?? "/home/ark/miniconda3/bin/conda";
 const FILE = "environments.json";
 
+/** 简易内存缓存：conda 取样较慢（每次几秒），跨请求缓存 60s，避免反复刷新卡顿。 */
+const cacheTTL = 60_000;
+const cache = new Map<string, { at: number; data: unknown }>();
+function cached<T>(key: string, fn: () => Promise<T>, ttl = cacheTTL): Promise<T> {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < ttl) return Promise.resolve(hit.data as T);
+  return fn().then((data) => { cache.set(key, { at: Date.now(), data }); return data; });
+}
+
 interface EnvMeta { name: string; purpose?: string; stage?: string }
 interface EnvStore { envs: EnvMeta[] }
 
@@ -71,7 +80,7 @@ async function condaList(): Promise<{ name: string; prefix: string }[]> {
 }
 
 async function envSummary(name: string, prefix?: string): Promise<{ python: string; torch: string; pkgCount: number }> {
-  const pkgs = await pkgListOf(name, prefix);
+  const pkgs = await cached(`pkg:${name}`, () => pkgListOf(name, prefix));
   const find = (n: string) => pkgs.find((p) => p.name === n)?.version ?? "";
   return { python: find("python"), torch: find("torch"), pkgCount: pkgs.length };
 }
@@ -137,11 +146,14 @@ export async function GET(request: Request) {
   const name = url.searchParams.get("name");
   const baseline = url.searchParams.get("baseline"); // 基线环境名（对比式特征包）
   const meta = await readMeta();
-  const envs = await condaList();
-  const prefixOf = (n: string) => envs.find((e) => e.name === n)?.prefix;
+
+  // 只要全局系统信息（快，不碰 conda）——给 global env 卡片专用，避免等 conda 取样。
+  if (url.searchParams.get("system") === "1") {
+    return Response.json({ system: await getSystem() });
+  }
 
   if (name) {
-    const pkgs = await pkgListOf(name, prefixOf(name));
+    const pkgs = await cached(`pkg:${name}`, () => pkgListOf(name));
     return Response.json({
       env: name,
       purpose: (meta.envs.find((x) => x.name === name)?.purpose) ?? "",
@@ -149,10 +161,24 @@ export async function GET(request: Request) {
     });
   }
 
+  return Response.json({ system: await getSystem(), ...(await envsPayload(url, meta)) });
+}
+
+/** 全局系统信息（带缓存）。 */
+async function getSystem(): Promise<Record<string, string>> {
+  return cached("system", async () => collectSystem(), 30_000);
+}
+
+/** 环境列表 + 可选基线对比。 */
+async function envsPayload(url: URL, meta: EnvStore) {
+  const baseline = url.searchParams.get("baseline");
+  const envs = await cached("envlist", () => condaList());
+  const prefixOf = (n: string) => envs.find((e) => e.name === n)?.prefix;
+
   // 基线对比模式：取样基线包名→版本，再取样每个环境，计算相对基线的特征包。
   let baseMap: Map<string, string> | null = null;
   if (baseline) {
-    const basePkgs = await pkgListOf(baseline, prefixOf(baseline));
+    const basePkgs = await cached(`pkg:${baseline}`, () => pkgListOf(baseline, prefixOf(baseline)));
     baseMap = new Map(basePkgs.map((p) => [p.name, p.version]));
   }
 
@@ -161,7 +187,7 @@ export async function GET(request: Request) {
     const purpose = m?.purpose ?? "";
     const stage = m?.stage ?? "";
     if (baseMap) {
-      const pkgs = await pkgListOf(e.name, e.prefix);
+      const pkgs = await cached(`pkg:${e.name}`, () => pkgListOf(e.name, e.prefix));
       const find = (n: string) => pkgs.find((p) => p.name === n)?.version ?? "";
       return {
         name: e.name,
@@ -176,7 +202,7 @@ export async function GET(request: Request) {
     const s = await envSummary(e.name, e.prefix);
     return { name: e.name, python: s.python, torch: s.torch, pkgCount: s.pkgCount, purpose, stage };
   }));
-  return Response.json({ system: collectSystem(), envs: list, baseline: baseline ?? null });
+  return { envs: list, baseline: baseline ?? null };
 }
 
 export async function POST(request: Request) {

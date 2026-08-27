@@ -8,7 +8,7 @@ export default function SystemPanel() {
 
   async function load() {
     try {
-      const r = await fetch("/api/environments");
+      const r = await fetch("/api/environments?system=1");
       const d = await r.json();
       setSystem(d.system ?? {});
     } catch { /* */ }
