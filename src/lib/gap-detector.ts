@@ -165,12 +165,13 @@ export function detectGaps(facts: Fact[]): Gap[] {
           description: `${absentSide}侧对 ${key} 来源有歧义（ambiguous），需用户判定`,
         }));
       } else if (!notApplicable) {
-        // 一侧有值、另一侧完全 absent（连 missing fact 都没有）
+        // 一侧有值、另一侧**完全没有该 key 的 Fact record**：没有扫描证据，不得判 not_found；
+        // 按 not_scanned（coverage_unknown）处理：required 阻塞且不可 Decision。
         gaps.push(mkGap({
-          key, type: "not_found", salt: "-absent",
+          key, type: "not_scanned", salt: "-absent",
           paperFacts: absentSide === "paper" ? [] : hasSide, repoFacts: absentSide === "repo" ? [] : hasSide,
           paperValue: absentSide === "paper" ? undefined : v, repoValue: absentSide === "repo" ? undefined : v,
-          description: `${sideKey} 说 ${key}=${v}，但${absentSide}侧完全没有该 key 的事实（absent）`,
+          description: `${sideKey} 说 ${key}=${v}，但${absentSide}侧完全没有该 key 的记录（coverage_unknown；需扫描确认，不可 Decision 消解）`,
         }));
       }
       // not_applicable → 不报 gap
@@ -231,79 +232,122 @@ export function isDecisionStale(d: Decision, currentGaps: Gap[]): boolean {
   return false;
 }
 
-/** 合成 resolved fact（custom choice 用；side 与 source 标记 user） */
-function makeResolvedFact(key: string, side: "paper" | "repo", value: unknown): Fact {
+/** 合成 resolved fact 的确定性 id：由 key + gapFingerprint + side 派生（同 decision 重复 resolve 结果一致） */
+export function resolvedFactId(key: string, gapFingerprint: string | undefined, side: "paper" | "repo"): string {
+  return `f-res-${createHash("sha1").update(`${key}|${gapFingerprint ?? "no-fp"}|${side}`).digest("hex").slice(0, 12)}`;
+}
+
+/** 合成 resolved fact（custom choice 用；id 确定性派生，不用 Date.now/random） */
+function makeResolvedFact(key: string, side: "paper" | "repo", value: unknown, fp?: string): Fact {
   const def = factDef(key);
   const { normalizedValue, unit } = normalizeValue(value, { valueType: def?.valueType ?? "string", enumValues: def?.enumValues, key });
   return {
-    id: `f-res-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
+    id: resolvedFactId(key, fp, side),
     key, side, value, normalizedValue, unit,
     status: "observed", confidence: "high", importance: def?.importance ?? "recommended",
-    source: { kind: "user", note: "用户通过 Decision 自定义" },
+    source: { kind: "user", note: `用户通过 Decision 定义（fingerprint ${fp?.slice(0, 8) ?? "?"}）` },
   };
 }
 
 import { normalizeValue } from "./fact-extract.ts";
 
-/**
- * effective/resolved fact view：Gap 检测与 Ready 必须基于它（Raw Facts + 有效 Decisions）。
- *  - accepted + 非 stale 的 decision 生效；
- *  - source_conflict：同侧只保留选中 fact（另一侧保留 → 继续跨侧比较，避免"source 已解决却假 Ready"）；
- *  - value_conflict / not_found / uncomparable：收敛为选择值（kind=fact 选一侧、移除另一侧；kind=custom 合成 user fact）。
- */
-export function applyDecisions(facts: Fact[], decisions: Decision[], rawGaps: Gap[]): Fact[] {
-  const active = decisions.filter((d) => d.status === "accepted" && !isDecisionStale(d, rawGaps));
+/** 单个 Decision 应用：source_conflict 保留同侧选中（custom → 合成该侧 resolved fact）；其余收敛为选择值 */
+function applyOneDecision(facts: Fact[], d: Decision, gap: Gap, fp: string): Fact[] {
   const out = [...facts];
   const remove = (id: string) => {
     const i = out.findIndex((f) => f.id === id);
     if (i >= 0) out.splice(i, 1);
   };
-  for (const d of active) {
-    const g = rawGaps.find((x) => x.id === d.gapId);
-    if (!g || !d.choice) continue;
-    const paperIds = new Set(g.paperFacts.map((f) => f.id));
-    const repoIds = new Set(g.repoFacts.map((f) => f.id));
+  const paperIds = new Set(gap.paperFacts.map((f) => f.id));
+  const repoIds = new Set(gap.repoFacts.map((f) => f.id));
+  const involved = [...gap.paperFacts, ...gap.repoFacts];
+  const choice: DecisionChoice | undefined = d.choice;
 
-    if (g.type === "source_conflict") {
-      // 同侧只保留选中 fact；另一侧保留（继续跨侧比较）
-      if (d.choice.kind === "fact") {
-        const chosenSide = paperIds.has(d.choice.factId) ? paperIds : repoIds;
-        for (const id of chosenSide) if (id !== d.choice.factId) remove(id);
-      }
-      continue;
+  if (gap.type === "source_conflict") {
+    // 冲突侧 = paper 有多个候选 → paper；否则 repo
+    const conflictSide: "paper" | "repo" = paperIds.size > 1 ? "paper" : "repo";
+    const sideIds = conflictSide === "paper" ? paperIds : repoIds;
+    if (choice?.kind === "fact") {
+      for (const id of sideIds) if (id !== choice.factId) remove(id);
+    } else if (choice?.kind === "custom") {
+      // 真实生效：该冲突侧全部移除，合成 deterministic resolved fact；另一侧保留 → 继续跨侧比较
+      for (const id of sideIds) remove(id);
+      out.push(makeResolvedFact(d.key, conflictSide, choice.value, fp));
     }
-    // value_conflict / not_found / uncomparable：收敛为选择值
-    if (d.choice.kind === "fact") {
-      const chosenSide = paperIds.has(d.choice.factId) ? "paper" : "repo";
-      const chosen = d.choice.factId;
-      // 移除另一侧 + 同侧未选中的
-      const otherIds = chosenSide === "paper" ? repoIds : paperIds;
-      for (const id of [...paperIds, ...repoIds]) if (id !== chosen) remove(id);
-      void otherIds;
-      // 保留选中的 fact（已满足该侧）
-      const chosenFact = out.find((f) => f.id === chosen);
-      if (chosenFact && chosenSide === "repo" && !out.some((f) => f.side === "paper" && f.key === d.key)) {
-        out.push(makeResolvedFact(d.key, "paper", chosenFact.value));
-      } else if (chosenFact && chosenSide === "paper" && !out.some((f) => f.side === "repo" && f.key === d.key)) {
-        out.push(makeResolvedFact(d.key, "repo", chosenFact.value));
-      }
-    } else {
-      // custom：移除两侧参与 fact，合成 user fact 补到两侧
-      for (const id of [...paperIds, ...repoIds]) remove(id);
-      out.push(makeResolvedFact(d.key, "paper", d.choice.value));
-      out.push(makeResolvedFact(d.key, "repo", d.choice.value));
+    return out;
+  }
+
+  // value_conflict / not_found / uncomparable：收敛为选择值
+  if (choice?.kind === "fact") {
+    const chosenFact = involved.find((f) => f.id === choice.factId);
+    if (!chosenFact) return out;
+    const chosenSide = chosenFact.side;
+    for (const id of [...paperIds, ...repoIds]) if (id !== choice.factId) remove(id);
+    // 另一侧若无 observed/inferred → 补 deterministic resolved fact（值取选中 fact）
+    const otherSide: "paper" | "repo" = chosenSide === "paper" ? "repo" : "paper";
+    if (!out.some((f) => f.side === otherSide && f.key === d.key && (f.status === "observed" || f.status === "inferred"))) {
+      out.push(makeResolvedFact(d.key, otherSide, chosenFact.value, fp));
     }
+  } else if (choice?.kind === "custom") {
+    for (const id of [...paperIds, ...repoIds]) remove(id);
+    out.push(makeResolvedFact(d.key, "paper", choice.value, fp));
+    out.push(makeResolvedFact(d.key, "repo", choice.value, fp));
   }
   return out;
 }
 
-/** 完整流程：raw facts + decisions → effective facts → gaps（含 stale 标注） */
+/** choice 有效性：fact choice 必须是参与且 observed/inferred 的真实事实（不能选 missing marker） */
+function validChoiceFor(d: Decision, gap: Gap): boolean {
+  const choice = d.choice;
+  if (!choice) return false;
+  if (choice.kind === "custom") return true;
+  const f = [...gap.paperFacts, ...gap.repoFacts].find((x) => x.id === choice.factId);
+  return Boolean(f && (f.status === "observed" || f.status === "inferred"));
+}
+
+/**
+ * 迭代 fixed-point resolution engine：
+ * 从 raw facts 出发，重复「detect gaps → 应用与当前 gaps 匹配的 accepted decisions」直到不动点。
+ * source_conflict 决定后暴露的新 value_conflict 在下一轮被第二个 Decision 消解（多层链式消解）。
+ * 只应用 accepted 且非 stale 的 decision；gap 不存在或 fingerprint 不匹配 → stale。
+ */
+export function resolveToFixedPoint(facts: Fact[], decisions: Decision[]): {
+  effectiveFacts: Fact[]; finalGaps: Gap[]; applied: string[]; stale: Decision[];
+} {
+  let cur = [...facts];
+  const applied = new Set<string>();
+  const stale: Decision[] = [];
+  // 确定性顺序：按 decision id 排序
+  const sorted = [...decisions].sort((a, b) => (a.id ?? "").localeCompare(b.id ?? ""));
+  for (let round = 0; round < 12; round++) {
+    const gaps = detectGaps(cur);
+    let progressed = false;
+    for (const d of sorted) {
+      if (d.status !== "accepted" || applied.has(d.id) || stale.some((s) => s.id === d.id)) continue;
+      const gap = gaps.find((g) => g.id === d.gapId);
+      if (!gap) continue; // gap 尚未出现（可能在后续轮次由其他 decision 应用后产生）——不标 stale
+      const fp = gapFingerprint(gap);
+      if (d.gapFingerprint && fp !== d.gapFingerprint) { stale.push(d); continue; }
+      if (!validChoiceFor(d, gap)) { stale.push(d); continue; }
+      cur = applyOneDecision(cur, d, gap, fp);
+      applied.add(d.id);
+      progressed = true;
+    }
+    if (!progressed) break;
+  }
+  // 到不动点仍未应用的 accepted decisions：其 gap 从未出现 → stale（证据已变/无法消解）
+  for (const d of sorted) {
+    if (d.status === "accepted" && !applied.has(d.id) && !stale.some((s) => s.id === d.id)) stale.push(d);
+  }
+  // applied 语义 = 真正消解成功（不含 stale 失败的）
+  return { effectiveFacts: cur, finalGaps: detectGaps(cur), applied: [...applied], stale };
+}
+
+/** 完整流程：raw facts + decisions → fixed-point effective facts → gaps（含 stale 标注） */
 export function detectWithDecisions(facts: Fact[], decisions: Decision[]): {
-  effectiveFacts: Fact[]; rawGaps: Gap[]; effectiveGaps: Gap[]; staleDecisions: Decision[];
+  effectiveFacts: Fact[]; rawGaps: Gap[]; effectiveGaps: Gap[]; staleDecisions: Decision[]; applied: string[];
 } {
   const rawGaps = detectGaps(facts);
-  const staleDecisions = decisions.filter((d) => d.status === "accepted" && isDecisionStale(d, rawGaps));
-  const effectiveFacts = applyDecisions(facts, decisions, rawGaps);
-  const effectiveGaps = detectGaps(effectiveFacts);
-  return { effectiveFacts, rawGaps, effectiveGaps, staleDecisions };
+  const { effectiveFacts, finalGaps, applied, stale } = resolveToFixedPoint(facts, decisions);
+  return { effectiveFacts, rawGaps, effectiveGaps: finalGaps, staleDecisions: stale, applied };
 }
