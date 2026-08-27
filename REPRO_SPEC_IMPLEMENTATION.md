@@ -1,8 +1,8 @@
 # Research Atelier → Paper-to-Reproduction Compiler 实现方案
 
-> 状态：**方案待确认**（未开始实现）。用户确认本方案可行后，按 §8 开发顺序逐步落地。
+> 状态：**方案 v0.2（按评审修订）——待确认，未开始实现**。用户确认后按 §13 开发顺序进入 Step 1。
 > 配套设计文档：`../paper_repro_compiler.md`（产品定位 + NSR 走查 + token 审计证据）。
-> 本文只写"改什么 / 怎么改 / 落在哪个文件 / 验收是什么"，不写代码。
+> v0.1 → v0.2 修订记录见 §14（用户评审 7 点已全部采纳）。
 
 ---
 
@@ -20,11 +20,11 @@
 |---|---|---|
 | 论文库/阅读 | `/api/paper` + PDF reader | 保留 |
 | 论文筛选 | OpenAlex + DeepSeek function calling | 保留 |
-| 代码读取 | `/api/code-read`，`ALLOWED_EXT = [.py,.ts,.tsx,.js,.jsx,.mjs]` | 保留；**扩展可读类型** |
+| 代码读取 | `/api/code-read`，`ALLOWED_EXT = [.py,.ts,.tsx,.js,.jsx,.mjs]`，`path.extname` 判断 | 保留；**抽共享层 + 修允许规则**（§7） |
 | Python 调用链 | `scripts/py_chain.py`（AST） | 保留；喂给 Repo Analyzer |
 | 代码画像 | `/api/code-profile` | 保留；**默认不进 Codex 上下文**（Human Context） |
 | 环境 | `/api/environments`（真实采样 + 基线对比） | 保留；**升级为 Environment Resolver**（Desired vs Actual vs Diff vs Plan） |
-| 复现数据 | `reproduction.ts`：`{path: Step[], pitfalls: Pitfall[]}` | **重构为 ReproductionSpec**（地基） |
+| 复现数据 | `reproduction.ts`：`{path: Step[], pitfalls: Pitfall[]}` | **重构为 ReproductionSpec v2**（地基） |
 | 坑点 | `reproduction.pitfalls`（含 env/stage/threads） | 保留；升级为 Failure Record 跨论文复用 |
 | Codex 复盘 | `/api/reproduction/review`（读本机 codex threads） | 保留；升级为增量 Failure Interpreter |
 | Prompt | `/api/reproduction/prompt`（拼接大 Prompt） | 降级为展示层；核心换成 `tasks` + `context-packet` |
@@ -34,240 +34,375 @@
 
 ---
 
-## 2. 核心改动一：Reproduction 数据模型 → ReproductionSpec
+## 2. ReproductionSpec v2（核心 schema）
 
-文件：`src/lib/reproduction.ts` + `data/reproduction.json`（**向后兼容迁移**：旧记录缺字段时用默认值，不丢数据）。
+文件：`src/lib/reproduction.ts` + `data/reproduction.json`。
+
+**两条结构性原则**（评审点 7）：
+
+1. **Source of truth（持久保存）**：`target / constraints / acceptance / facts / mappings / decisions / evidence / pitfalls / path`
+2. **Derived state（计算产生，不持久或带 revision 快照）**：`gaps / readiness / tasks / context packets`
+
+第一版实现：**readiness 每次 GET 动态算、不存储；gaps 动态算；tasks 允许保存快照但必须带 `compiledFromRevision`**。杜绝"Fact 改了 Gap 还是旧的"这类缓存一致性地狱。
 
 ```ts
 ReproductionSpec {
-  identity:  { slug, title, sourceUrl?, repoUrl? }
-  target:    { type: "table"|"figure"|"metric"|"full"|"custom",
-               name, metric, expected?, tolerance? }        // §3
-  paperFacts: Fact[]     // 论文侧事实，带来源+置信度       // §4
-  repoFacts:  Fact[]     // 代码侧事实，带文件+行号         // §4
-  mappings:   Mapping[]  // 论文概念 ↔ 代码 ↔ config        // §6
-  gaps:       Gap[]      // 缺失/冲突/风险，分级             // §5
-  decisions:  Decision[] // Decision Ledger                  // §5
-  environment?: EnvPlan  // Desired/Actual/Diff/Plan         // §7
-  tasks:      CodexTask[]// Task Compiler 产物               // §8
-  evidence:   Evidence[] // 证据账本（P4 要求）              // §9
-  readiness:  { target:boolean, facts:boolean, repo:boolean,
-                env:boolean, criticalGaps:number,
-                pendingDecisions:number, acceptance:boolean,
-                score:number }                               // §10
-  path: Step[]        // 保留：复现路径（历史兼容）
-  pitfalls: Pitfall[] // 保留：坑点（历史兼容 + Failure Record）
+  schemaVersion: 2;                 // 评审点 4：版本锚点
+
+  identity: { slug, title, sourceUrl?, repoUrl? }
+
+  paperRevision: {                  // 评审点 4
+    id?: string;
+    fileHash?: string;
+  }
+  repoRevision: {                   // 评审点 4：必须
+    root: string;
+    repoUrl?: string;
+    commit?: string;
+    branch?: string;
+    dirty?: boolean;
+  }
+
+  target: Target;                   // §3（评审点 1 分家）
+  constraints: Constraints;         // §3
+  acceptance: Acceptance;           // §3
+
+  facts: Fact[];                    // §4（paper + repo 统一，带 provenance/normalization）
+  mappings: Mapping[];              // §5（评审点 5：补实现步骤）
+  decisions: Decision[];            // §6 Decision Ledger
+  environment?: EnvPlan;            // §8
+
+  evidence: Evidence[];             // §11（评审点：Evidence 微调）
+
+  // —— 历史兼容（保留，不丢数据）——
+  path: Step[];
+  pitfalls: Pitfall[];
+
+  createdAt?: string;
+  updatedAt?: string;
+}
+```
+
+**向后兼容迁移**：`normalizeReproduction(raw) → ReproductionSpec`——旧记录缺字段用默认值；旧 UI/API 行为完全不变；迁移后写回时 `schemaVersion: 2` 成为稳定真相源（Step 1 验收，见 §13）。
+
+---
+
+## 3. Target / Constraints / Acceptance（评审点 1 分家）
+
+`target` 只装科学目标；执行约束、验收标准各自独立。**`metric` 从单数改数组**（一张表可同时有 Accuracy/F1/Latency/Memory）。
+
+```ts
+Target {
+  scope: "table" | "figure" | "metric" | "full" | "custom";
+  name: string;                    // "Table 2" / "Figure 4" ...
+  metrics: TargetMetric[];         // 数组
+}
+TargetMetric { name: string; expected?: number|string; tolerance?: number; unit?: string }
+
+Constraints {
+  hardware?: HardwareConstraint;   // { gpu?: string; memoryGb?: number }
+  timeBudgetHours?: number;
+  modificationPolicy: "none" | "minimal" | "allowed";
+  computeBudget?: number;
+  dataPolicy?: string;             // 如 "仅用官方 train split"
 }
 
+Acceptance { criteria: AcceptanceCriterion[] }
+AcceptanceCriterion {
+  id: string;
+  text: string;                    // "validation F1 超过 current-measurement baseline"
+  kind: "metric" | "behavior" | "artifact";
+  satisfied?: boolean;
+}
+```
+
+页面交互：新建记录后**强制先走 Target → Constraints → Acceptance**，不能上来就"添加步骤"。
+接口：`/api/reproduction` POST `setTarget` / `setConstraints` / `setAcceptance`。
+
+---
+
+## 4. Fact：status / confidence / importance 三分 + normalizedValue（评审点 2、3）
+
+**`missing` 从 confidence 里拆出**——存在性（status）与可信度（confidence）是两个维度。**importance 决定是否阻塞**：只有 `required + missing` 才计入 blocking（论文没写 num_workers/logging interval 不该卡住 Codex）。
+
+```ts
 Fact {
-  key: "training.batch_size"   // 点分路径，跨侧可比
-  value: unknown
-  source: { kind:"paper", section?, page?, quote? }
-        | { kind:"repo", file, line? }
-  confidence: "confirmed"|"inferred"|"missing"   // 禁止 AI 假装知道
+  id: string;
+  key: string;                     // "training.batch_size"（点分路径，跨侧可比）
+  side: "paper" | "repo";
+
+  value?: unknown;                 // 显示用原文，如 "84.7%" / "Adam" / "0.0001"
+  normalizedValue?: unknown;       // 比较用归一值，如 0.847 / "adam" / 1e-4（评审点 3）
+  unit?: string;                   // "ratio" / "samples" / "step"
+
+  status: "observed" | "inferred" | "missing";
+  confidence: "high" | "medium" | "low";
+  importance: "required" | "recommended" | "optional";
+
+  source?: FactSource;             // §4.1
+}
+
+FactSource =
+  | { kind: "paper"; section?: string; page?: number; quote?: string }
+  | { kind: "repo"; file: string; lineStart?: number; lineEnd?: number; commit?: string }  // commit 绑定 repoRevision（评审点 4）
+  | { kind: "user"; note?: string };
+```
+
+**Gap Detector 比较 `normalizedValue`，UI 显示 `value`**。归一化规则集中在 `src/lib/fact-normalize.ts`（百分比↔ratio、科学计数、Adam↔torch.optim.Adam、大小写/单位换算），逐条测试。
+
+接口：POST `addFact` / `updateFact` / `deleteFact`。
+
+---
+
+## 5. Paper ↔ Code Mapping（评审点 5：新增独立实现步骤，不能靠 Facts 替代）
+
+```ts
+Mapping {
+  id: string;
+  concept: string;                 // "Multi-scale feature aggregation"
+  paperRefs: PaperRef[];           // { section, page?, quote? }
+  codeRefs: CodeRef[];             // { file, lineStart?, lineEnd?, symbol?, commit? }
+  configRefs?: CodeRef[];          // config 锚点
+  relation: "implements" | "configures" | "preprocesses" | "trains" | "evaluates";
+  status: "proposed" | "confirmed";
+  confidence: "high" | "medium" | "low";
+  evidenceIds: string[];
 }
 ```
 
-**为什么先做这个**：所有后续模块（Gap Detector、Decision Center、Context Router、Task Compiler、Evidence）都消费这份结构；页面、接口、Codex 输出全部以它为准。旧 `path/pitfalls` 字段保留，保证已存数据不坏。
+第一版**半自动**：AI 提议 Mapping（基于论文结构抽取 + Repo Analyzer 的 entry 识别）→ 用户逐条确认 → `status: confirmed`。确认后的 mapping 进入 Context Router 与 Task Compiler 的锚点来源。
+
+UI：`PAPER ↔ CODE` 面板，选中论文概念 → 右侧显示实现锚点（文件/符号/config）→ 确认/驳回。
 
 ---
 
-## 3. 目标定义器（Target Definition）
+## 6. Gap Detector + Decision Ledger（blocking-aware，评审点 7）
 
-页面入口：`repro.tsx` 新建记录后**强制先走目标定义**，不能上来就"添加步骤"。
-接口：`/api/reproduction` POST 新增 `setTarget` action。
-
-交互（点选，非 prompt）：
+### 6.1 Gap（derived，动态算）
+`/api/reproduction/gaps`（GET 时由 facts/mappings 计算，不持久）：
 ```
-复现目标：○ Table 2 主实验  ○ Figure 4  ○ 某指标  ● 完整论文
-目标指标：F1 / height MAE / accuracy
-期望值：84.7   允许误差：±0.5
-硬件：RTX 5070 Laptop   最大实验时间：12h
-是否允许修改官方实现：○ 否  ● 最小修改  ○ 可以
+Gap {
+  id, key?, type: "conflict"|"missing"|"risk"|"mapping_uncertain",
+  paperValue?, repoValue?,          // 显示用 value
+  severity: "critical"|"high"|"medium"|"low",
+  blocksReady: boolean,             // 评审点 7：从 importance/severity 推导
+  relatedDecisions?: string[]
+}
 ```
-产出冻结到 `spec.target`；后续所有 acceptance 引用它。
+- conflict：`paperFacts[key].normalizedValue` vs `repoFacts[key].normalizedValue` 不等。
+- missing：`required + status=missing` → `blocksReady: true`；`optional missing` 不阻塞。
+- 语义歧义（论文 Adam / repo AdamW）：先确定性抓，抓不到的进 Decision 由 LLM 辅助，不猜。
 
-**验收**：新建记录后不定义目标无法添加步骤；目标写入 `spec.target` 并在页面顶部常驻显示。
-
----
-
-## 4. Paper Facts + Repo Facts（来源 + 置信度）
-
-接口：`/api/reproduction` POST 新增 `addFact` / `updateFact` / `deleteFact`（paper/repo 两侧）。
-来源：`paperFacts` 从论文解析（当前是导入 PDF + 术语抽取，先**半自动**：AI 提议 + 用户确认来源节号）；`repoFacts` 从 Repo Analyzer（§5）产出。
-
-UI：一个"参数表"，每行 = Fact，列 = key / paper 值 / repo 值 / 状态（Confirmed / Inferred / **Missing 标红**）。
-
-**验收**：任一 Missing 事实在 UI 显红且计入 readiness；AI 生成的 Fact 必须带 `source`，无来源的推断标 `inferred`，禁止空口 `confirmed`。
-
----
-
-## 5. Repo Analyzer v1（先扩 code-read，再自动识别结构）
-
-第一处小改：`src/app/api/code-read/route.ts` 的 `ALLOWED_EXT` 扩为：
-```
-.py .ts .tsx .js .jsx .mjs
-.yaml .yml .toml .json .md .txt .sh .cfg .ini
-requirements*.txt requirements*.in environment*.yml pyproject.toml setup.py setup.cfg
-Dockerfile* Makefile README* LICENSE*
-```
-（逐类验证解析安全：yaml/toml 用轻量解析或当文本返回，不执行。）
-
-新增 `src/lib/repo-analyzer.ts` + `/api/repo-analyzer`：导入 repo 路径后自动：
-```
-扫描入口 → README/requirements/env.yml/pyproject/Dockerfile/configs/**/train*/eval*/dataset*/model*
-产出 Repository Snapshot:
-  entrypoints / training / evaluation / datasets / configs /
-  dependencies(依赖图) / checkpoints / scripts / repoUrl+commit
-```
-snapshot 落进 `spec.repoFacts`（文件+行号来源）。
-
-**验收**：导入任意 repo 目录，`repo-analyzer` 返回结构化 snapshot；requirements 里的 python/torch/cuda 约束进入 `repoFacts`；`code-read` 能读 yaml/toml/md/txt。
-
----
-
-## 6. Gap Detector + Decision Center
-
-### 6.1 确定性冲突优先（不靠 LLM 猜）
-`/api/reproduction/gaps`：对比 `paperFacts[key]` vs `repoFacts[key]`，自动产出：
-```
-gap { type:"conflict"|"missing", key, paperValue?, repoValue?, severity:"critical"|"high"|"medium"|"low" }
-```
-例：`training.batch_size` paper=64 / repo=32 → conflict high。
-
-### 6.2 Decision Center（独立 Ledger）
-`/api/reproduction/decisions`（或并入 POST action）：
+### 6.2 Decision Ledger
 ```
 D-004 · Batch size conflict
   论文：64 · Section 4.1
-  代码：32 · configs/train.yaml:21
+  代码：32 · configs/train.yaml:21 (commit 13e8fa)
   推荐：优先用 repo 实验对应 config 的 32（可能为论文发表后 release 配置）
   影响：可能影响最终指标
   [采用 32] [采用 64] [自定义] [稍后决定]
 ```
-确认 → `spec.decisions[]`：`{id, key, chosen, rationale, status:"accepted"|"pending"}`。
-**Codex 后续永远不再问已决问题**（Context Router 会注入决策）。
-
-**验收**：同一 key 冲突自动生成 Gap + 待决 Decision；用户采纳后写入 ledger；`pendingDecisions` 计入 readiness，>0 时 Ready 不放行。
-
----
-
-## 7. Environment Resolver（Desired vs Actual vs Diff vs Plan）
-
-现有 `/api/environments` 已能采样 Actual（OS/GPU/driver/python/conda 环境/包版本）——保留为数据源。
-新增 `src/lib/env-resolver.ts` + `/api/environments/plan`：
-```
-Desired（来自 repoFacts/requirements/env.yml 解析）
-vs Actual（现有采样）
-→ Compatibility Diff（python/torch/CUDA/驱动逐项 ⚠✓）
-→ Environment Plan（Option A/B + 置信度 + 推荐，复用 conda；参考 PR#637 实测结论）
-→ Scientific impact（无 / 低 / 高）
-```
-另修一处工程债：`CONDA = /home/ark/miniconda3/bin/conda` 硬编码 → 改为 PATH 探测 + `RA_CONDA_BIN` 覆盖 + 配置文件。
-
-**验收**：导入 repo 后一键算出"项目要什么 vs 本机有什么 vs 差在哪 vs 怎么用最少修改跑起来"；plan 含选项+置信度；conda 路径不再写死单机。
-
----
-
-## 8. Task Compiler + Context Router（核心省 token 改造）
-
-### 8.1 Task Compiler：`/api/reproduction/tasks`
-把 `/api/reproduction/prompt`（拼接大 Prompt）降级为展示层；核心换成按任务编译：
-```
-POST { slug } → tasks: CodexTask[]
-CodexTask {
-  id: "R04", goal, scientific_target,
-  inputs: { paper:[Section refs], code:[files+anchors] },
-  known_facts[], open_questions[],
-  decisions[](引用 ledger),
-  allowed_changes:{ level: 0|1|2 },
-  forbidden[], acceptance[], stop_conditions[]
+```ts
+Decision {
+  id, key,
+  paperValue?, repoValue?, chosen,
+  rationale?, impact?,
+  status: "accepted" | "pending",
+  blocksReady: boolean,             // 评审点 7
+  resolvedAt?
 }
 ```
-例（沿用你给的 R04 结构）直接采用。
+Codex 后续不再问已决问题（Context Router 注入 ledger）。
 
-### 8.2 Context Router：`/api/context` 重做
-现状 `kind=repro → 返回整份 repro-context.md`——**与省 token 目标直接矛盾**。
-改为：
-```
-GET /api/context?task=R04 → Context Packet
-  paper facts    310 tok
-  code excerpts  920
-  decisions      130
-  known risks     95
-  acceptance      80
-  ───────────── 1535 tok
-```
-实现：`src/lib/context-router.ts`，按 taskId 查 `spec.facts/mappings/gaps/decisions/tasks`，从 `code-read` 取文件锚点片段，汇总 token 预算并返回。旧 `kind=repro/environment` 保留兼容。
+---
 
-### 8.3 Human Context 与 Agent Context 分离
+## 7. Repo Analyzer v1（评审点 6：允许规则 + 大小限制 + secret denylist）
+
+### 7.1 先抽共享层 `src/lib/code-reader.ts`（评审点：Context Router 不 HTTP 调自己）
+```
+code-read route → code-reader.ts ← repo-analyzer ← context-router
+```
+三个模块共享底层读取/锚点函数，避免 server route 调 server route。
+
+### 7.2 允许规则（不再只靠 `path.extname`）
+```ts
+const ALLOWED_EXTENSIONS = new Set([".py",".ts",".tsx",".js",".jsx",".mjs",
+  ".yaml",".yml",".toml",".json",".md",".txt",".sh",".cfg",".ini",".csv",".env.example"]);
+const ALLOWED_BASENAMES = new Set(["Dockerfile","Makefile","README","LICENSE"]);  // 无扩展名文件
+const ALLOWED_PATTERNS = [ /^requirements.*\.(txt|in)$/, /^environment.*\.ya?ml$/, /^README.*$/, /^Dockerfile.*$/ ];
+function isAllowedFile(name: string): boolean { ... }
+```
+
+### 7.3 大小限制 + 跳过清单（第一版就有）
+```ts
+MAX_ANALYZABLE_FILE_BYTES = 1_000_000;   // 1MB
+SKIP_GLOBS = ["*.lock","*.log","checkpoints/**","weights/**","outputs/**","wandb/**","data/**","datasets/**","node_modules/**",".git/**"];
+SECRET_DENYLIST = [".env","*.pem","*.key","credentials*","*.p12","id_rsa*"];
+```
+
+### 7.4 输出 Repository Snapshot
+扫描 README/requirements/env.yml/pyproject/Dockerfile/configs/**/train*/eval*/dataset*/model* →
+`entrypoints / training / evaluation / datasets / configs / dependencies(依赖图) / checkpoints / scripts / repoUrl+commit`。
+snapshot 落进 `facts`（side:"repo"，带 file+line+commit）。
+
+**验收**：任意 repo 目录返回结构化 snapshot；Dockerfile/README（无扩展名）与 requirements*.txt（模式）可读；1MB 以上与 secret 文件被跳过且记录于 `omitted`。
+
+---
+
+## 8. Environment Resolver（评审点：放在 Task Compiler 前）
+
+现有 `/api/environments` 采样 Actual（保留为数据源）。
+新增 `src/lib/env-resolver.ts` + `/api/environments/plan`：
+```
+Desired（repoFacts/requirements/env.yml 解析）
+vs Actual（现有采样）
+→ Compatibility Diff（python/torch/CUDA/驱动逐项 ⚠✓）
+→ Environment Plan（Option A/B + 置信度 + 推荐；参考 NSR PR#637 实测）
+→ blockingIssues（评审点 7：env 的阻塞数计入 ready）
+→ Scientific impact（无/低/高）
+```
+修工程债：`CONDA` 硬编码 → PATH 探测 + `RA_CONDA_BIN` 覆盖 + 配置文件。
+**顺序依据**：Codex Task 的 `allowed_changes / stop_conditions / environment context` 受环境决策影响，故 Env 必须在 Task Compiler 之前（§13 顺序 7→8）。
+
+---
+
+## 9. Task Compiler（`/api/reproduction/tasks`）
+
+把 `/api/reproduction/prompt`（大 Prompt）降级为展示层；核心改为按任务编译（derived，带 revision 快照）：
+```ts
+CodexTask {
+  id: "R04",
+  goal: string,
+  scientificTarget?: string,        // 引用 target
+  inputs: { paper: string[]; code: CodeRef[] },
+  knownFacts: string[],             // 引用 fact ids
+  openQuestions: string[],
+  decisions: string[],              // 引用 ledger ids
+  allowedChanges: { level: 0|1|2 }, // Level 0 自做/1 记录/2 必须询问
+  forbidden: string[],
+  acceptance: string[],
+  stopConditions: string[],
+  compiledFromRevision: string,     // 评审点 7：task 快照绑定 spec revision
+  compiledAt: string
+}
+```
+例（沿用评审给出的 R04 结构）直接采用。
+
+---
+
+## 10. Context Router（`/api/context` 重做 + `/api/context-packet`）
+
+### 10.1 共享读取
+走 `code-reader.ts`（§7.1），不 HTTP 调自己。
+
+### 10.2 组装 Context Packet（derived，按 taskId 计算）
+```ts
+ContextPacket {
+  taskId: string;
+  paperFacts: string[];  codeExcerpts: string[];  decisions: string[];
+  knownRisks: string[];  acceptance: string[];    environment?: string;
+  contextStats: {                                 // 评审点：不追固定数字
+    estimatedTokens: number;
+    budget: number;                               // 默认 2000，允许任务按复杂度升降
+    included: string[];                           // 为什么纳入
+    omitted: string[];                            // 被裁掉的关键上下文（排障用）
+  }
+}
+```
+原则：只含 relevant context + 预算上限 + **可解释纳入/裁掉理由**；不追求固定 1500 token（核对 Eq.7 可能 1500 不够，检查一个 config 可能 600 就够）。
+
+### 10.3 Human Context 与 Agent Context 分离
 - Codex 默认只拿 **Agent Context**（目标/事实/决策/约束/代码文件/验收）。
-- **Human Context**（`profile.md`、`code-profile` 的 background/gaps/depth/mastered）只在任务类型是"解释给用户听"时追加。
+- **Human Context**（`profile.md`、`code-profile`）只在任务类型是"解释给用户听"时追加。
 - 改动点：`/api/reproduction/prompt`、`/api/context`、`/api/chat` 的 system 组装。
 
-**验收**：同一任务下 context-packet 输出 ≈1500 token 级（对比现状整份 markdown）；profile 不再默认进入 Codex 执行上下文。
+---
+
+## 11. Evidence 账本（P4 已写、代码没落实的部分；评审点：claim → observation）
+
+```ts
+Evidence {
+  id: string;
+  type: "paper" | "code" | "command" | "metric" | "artifact";
+  observation: string;              // "官方预处理使用 center crop"——证据证明了什么（评审点）
+  source: {
+    kind: "paper" | "code" | "command" | "metric" | "artifact";
+    ref?: string;                   // datasets/kitti.py:84-102 / 命令文本 / 指标值
+    commit?: string;                // 绑定 repoRevision（评审点 4）
+  };
+  supports: EntityRef[];            // [ {kind:"task"|"decision"|"fact"|"mapping", id} ]
+  createdAt: string;
+}
+```
+UI：步骤/结论旁可"挂证据"；报告/Prompt/交接从账本取，不重新解释。`code-read` 的 `chain` 结果可一键存为 Evidence。
 
 ---
 
-## 9. Evidence 账本（stages.ts P4 已写、代码没落实的部分）
+## 12. Ready Gate（评审点 7：blocking-aware，不存 readiness，GET 动态算）
 
-补 `Evidence` 到 spec（`/api/reproduction` POST `addEvidence`）：
+```ts
+ready =
+     target.complete
+  && acceptance.complete
+  && repo.resolved
+  && environment.blockingIssues === 0
+  && blockingGaps === 0        // 只有 required+missing / critical conflict 计入
+  && blockingDecisions === 0
+  && tasks.length > 0;
 ```
-Evidence { id, taskId, type:"paper"|"code"|"command"|"metric"|"artifact",
-           source, value, supports:[taskId|decisionId], createdAt }
-E031: claim="official preprocessing uses center crop"
-      evidence=datasets/kitti.py:84-102  commit=13e8fa  supports=Task R03 / Decision D08
-```
-UI：在步骤/结论旁可"挂证据"；报告/Prompt/交接从账本取，不重新解释。
-
-**验收**：P4 交付要求"结论可追溯到命令/文件/行号"在数据模型层成立；code-read 的 `chain` 结果可一键存为 Evidence。
+页面顶部唯一门控：以上全满足才亮 `READY FOR CODEX`（显示逐项状态 + 综合分）。
+- 不因 optional missing / 不影响实验的 pending decision 卡死（评审点 7）。
+- 但 Target/Environment/Acceptance 缺失也不能因为 gap=0 而放行（评审点 7 的"太宽"修正）。
 
 ---
 
-## 10. 页面重构（repro.tsx）：从 checklist → 编译流水线
+## 13. 开发顺序（评审调整：Target 提前、Mapping 补入、Env 在 Task 前）
 
-页面结构改为（顶部门控）：
-```
-论文 → TARGET → FACTS → PAPER↔CODE → GAPS&RISKS → DECISIONS → ENVIRONMENT → CODEX PLAN
-顶部常驻：Reproduction Readiness
-  Target ✓ / Paper facts ✓ / Repository ✓ / Environment ✓
-  Critical gaps 0 / Pending decisions 0 / Acceptance ✓ → 92%
-  [READY FOR CODEX]  ← Critical gaps=0 且 pendingDecisions=0 才亮
-```
-现有组件保留：路径步骤（path）、坑点（pitfalls）、复现商定 copilot、复盘 review——全部挂到新 spec 结构下。
-"生成整篇提示词到 GPT 那边拆"按钮**移除**，替换为"生成 CODEX PLAN"（调用 tasks + context-packet）。
+| 顺序 | 做什么 | 验收 |
+|---|---|---|
+| **1** | ReproductionSpec v2 + schemaVersion + `normalizeReproduction()` 迁移 | **旧 reproduction.json → normalize → v2 → 写回/读取，旧 UI/API 行为完全不坏；拿到稳定 schemaVersion:2 真相源**（评审指定验收） |
+| **2** | Target + Constraints + Acceptance（分家，metric 数组） | 新建记录必须先定义三者才能加步骤；字段落 spec |
+| **3** | Repo Analyzer v1（code-reader.ts 共享层 + 允许规则 + 大小/secret 限制 + snapshot） | 任意 repo 返回结构化 snapshot；Dockerfile/README/requirements 可读；secret/大文件跳过 |
+| **4** | PaperFacts + RepoFacts（provenance + normalization） | 每条事实带 status/confidence/importance + normalizedValue；归一化逐条测试 |
+| **5** | **Paper ↔ Code Mapping v1**（评审点 5） | AI 提议 → 用户确认 → status:confirmed；锚点进入后续模块 |
+| **6** | Gap Detector + Decision Ledger（blocking-aware） | conflict/missing 自动出 Gap；required+missing 阻塞；决策采纳写入 ledger |
+| **7** | Environment Resolver（Desired vs Actual vs Diff vs Plan + conda PATH 探测） | 一键算出项目要什么 vs 本机有什么 vs 差在哪 vs 怎么跑起来 |
+| **8** | Task Compiler + Context Router（prompt 降级；Human/Agent 分离；contextStats） | 每任务最小上下文包 + token 预算 + included/omitted |
+| **9** | Evidence + Ready Gate + 最终 UI 重组 | Ready 门控按 §12；Evidence 挂接；页面流水线完整 |
+
+每步独立可验收、可回退；Step 1 完成后其余在它之上叠加，不返工。
 
 ---
 
-## 11. 明确不做（避免横向膨胀）
+## 14. v0.1 → v0.2 修订记录（评审 7 点逐条对应）
+
+| # | 评审点 | 修订落点 |
+|---|---|---|
+| 1 | target 装了太多性质 → 拆 target/constraints/acceptance；metric 改数组 | §3 |
+| 2 | confidence:"missing" 混淆存在性与可信度 → status/confidence/importance 三分；required+missing 才阻塞 | §4、§6 |
+| 3 | Fact 需归一化避免假冲突 → value/normalizedValue/unit；Gap 比较 normalized | §4、§6.1 |
+| 4 | 版本锚点 → schemaVersion、paperRevision、repoRevision.commit；RepoFact/Mapping/Evidence/CodeRef 绑定 commit | §2、§4.1、§5、§11 |
+| 5 | 缺 Paper↔Code Mapping 实现步骤 → 新增 Step 5，半自动 AI 提议+用户确认 | §5、§13 |
+| 6 | Repo Analyzer 文件规则坑 → ALLOWED_EXTENSIONS+BASENAMES+PATTERNS 拆分；1MB 限制；secret denylist 第一版就有 | §7.2、§7.3 |
+| 7 | derived state 与 source-of-truth 分开 → readiness/gaps 动态算；tasks 快照带 compiledFromRevision；Ready Gate 改 blocking-aware（blockingIssues/blockingGaps/blockingDecisions） | §2、§6、§9、§12 |
+| + | Context Router 不 HTTP 调自己 → 抽 `code-reader.ts` 共享层 | §7.1、§10.1 |
+| + | Evidence claim → observation（证据证明了什么） | §11 |
+| + | 不追固定 1500 token → 默认 budget 2k + 按复杂度升降 + contextStats.included/omitted | §10.2 |
+
+---
+
+## 15. 明确不做
 
 - 不做内置 Terminal / IDE / Git UI / 自训练实验 / 完整实验云平台 / 自写代码 Agent。
 - Codex 已经会跑、会试错、会写代码；Research Atelier 占住的是 **Codex 前面那 10 分钟到 1 小时**。
 
 ---
 
-## 12. 开发顺序（按投入产出比）
+## 16. 验收总则
 
-| # | 步骤 | 涉及文件 | 依赖 |
-|---|---|---|---|
-| 1 | **重构 reproduction.ts 数据模型**（ReproductionSpec + 迁移兼容） | `src/lib/reproduction.ts`、`api/reproduction/route.ts` | 无（地基） |
-| 2 | **Repo Analyzer v1**（扩 code-read 可读类型 + snapshot） | `api/code-read/route.ts`、`src/lib/repo-analyzer.ts`、`api/repo-analyzer/route.ts` | 1 |
-| 3 | **目标定义器**（新建先定义目标，setTarget） | `api/reproduction/route.ts`、`repro.tsx` | 1 |
-| 4 | **Paper/Repo Facts**（addFact/updateFact + 参数表 UI） | `api/reproduction/route.ts`、`repro.tsx`、新 `repro-facts.tsx` | 1,2,3 |
-| 5 | **Gap Detector + Decision Center** | `api/reproduction/route.ts`、`repro.tsx`、新 `repro-decisions.tsx` | 4 |
-| 6 | **Task Compiler + Context Router**（prompt 降级；context 重做；Human/Agent 分离） | `api/reproduction/tasks/route.ts`、`api/context/route.ts`、`src/lib/context-router.ts`、`api/chat/route.ts` | 1–5 |
-| 7 | **Environment Resolver**（Desired vs Actual + Plan + conda PATH 探测） | `src/lib/env-resolver.ts`、`api/environments/route.ts` | 2,4 |
-| 8 | **Evidence 账本 + Ready gate + 页面重组** | `api/reproduction/route.ts`、`repro.tsx`、`stages.ts` 联动 | 1–7 |
-
-每步独立可验收、可回退；第 1 步完成后其余步骤在它之上叠加，不返工。
-
----
-
-## 13. 验收总则
-
-1. 旧 `reproduction.json` 数据迁移后不丢（path/pitfalls 保留）。
+1. 旧 `reproduction.json` 数据迁移后不丢（path/pitfalls 保留），旧 UI/API 行为不坏。
 2. 每个新字段必须有对应 UI 或 API；禁止只加 schema 不给入口。
-3. Missing/Conflict 必须显式分级并影响 readiness，**不靠 AI 假装知道**。
-4. Context Router 输出 token 预算，能对比"整份 markdown"前后的 token 差。
-5. 页面顶部唯一门控：`Critical gaps=0 且 Pending decisions=0` 才亮 `READY FOR CODEX`。
+3. Missing/Conflict 显式分级并**仅 required/critical 影响 readiness**，不靠 AI 假装知道。
+4. Context Packet 输出 token 预算 + included/omitted，可对比"整份 markdown"前后的 token 差。
+5. 页面顶部唯一门控：§12 的 blocking-aware ready 公式，Critical 不清零不放行。
 6. 全部改动 `tsc --noEmit` 通过、dev server 热重载验证；真实数据（NSR 记录）作为验收样本。
