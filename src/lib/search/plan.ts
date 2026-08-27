@@ -8,6 +8,8 @@
 import type { DatabaseStrategy, SearchPlan, SearchIntent, ResearchSession, NextStep, SearchGoal } from "./types.ts";
 import { compileWosQuery } from "./compile-wos.ts";
 import { landingUrlFor, hasDeepLink } from "./gs-link.ts";
+import { normalizeConceptMap, normalizeLadder } from "./terms.ts";
+import type { AcademicConceptMap, QueryLadder } from "./types.ts";
 
 const DB_IDS = ["google-scholar", "web-of-science", "semantic-scholar", "arxiv", "openalex"];
 const PRIORITIES = ["primary", "secondary", "later"];
@@ -136,6 +138,10 @@ export function normalizeSearchPlan(raw: unknown): SearchPlan {
     dbs.forEach((d, i) => { if (i !== first) d.recommendedNow = false; });
   }
   const returnPath = strArr(o.returnPath);
+  let conceptMap: AcademicConceptMap | undefined;
+  try { if (o.conceptMap) conceptMap = normalizeConceptMap(o.conceptMap); } catch { conceptMap = undefined; }
+  let ladder: QueryLadder | undefined;
+  try { if (o.ladder) ladder = normalizeLadder(o.ladder); } catch { ladder = undefined; }
   return {
     intent,
     stage: "plan-ready",
@@ -144,6 +150,8 @@ export function normalizeSearchPlan(raw: unknown): SearchPlan {
     returnPath: returnPath.length ? returnPath : DEFAULT_RETURN_PATH,
     warnings: strArr(o.warnings),
     createdAt: str(o.createdAt),
+    ...(conceptMap ? { conceptMap } : {}),
+    ...(ladder ? { ladder } : {}),
   };
 }
 
@@ -188,8 +196,13 @@ export function gsQueriesFromIntent(intent: SearchIntent): string[] {
   return [...new Set(queries)];
 }
 
-/** 由 intent 确定性生成 SearchPlan（LLM 只产 intent；不读任何 LLM 字符串） */
-export function planFromIntent(intent: SearchIntent, now?: number): SearchPlan {
+/** 由 intent 确定性生成 SearchPlan（LLM 只产 intent；不读任何 LLM 字符串）。
+ *  v1.4：可附带 conceptMap + QueryLadder（UI「系统如何理解你的问题」与多层指引）。 */
+export function planFromIntent(
+  intent: SearchIntent,
+  now?: number,
+  opts?: { conceptMap?: AcademicConceptMap; ladder?: QueryLadder },
+): SearchPlan {
   const resolved = resolveYearRange(intent, now ?? new Date().getFullYear());
   const gsQueries = gsQueriesFromIntent(resolved);
   const q1 = gsQueries[0] ?? "";
@@ -242,6 +255,8 @@ export function planFromIntent(intent: SearchIntent, now?: number): SearchPlan {
     returnPath: DEFAULT_RETURN_PATH,
     warnings: wos.note ? [wos.note] : [],
     createdAt: new Date().toISOString(),
+    ...(opts?.conceptMap ? { conceptMap: opts.conceptMap } : {}),
+    ...(opts?.ladder ? { ladder: opts.ladder } : {}),
   };
   return normalizeSearchPlan(plan); // 保证不变量：恰好一个 recommendedNow
 }

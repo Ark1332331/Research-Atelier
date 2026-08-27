@@ -309,6 +309,8 @@ export interface SearchPlan {
   returnPath: string[];     // v1.1：这一轮任务 ①–④（由代码生成，Return Path）
   warnings: string[];       // 如 WoS 年份跨度提示
   createdAt: string;
+  conceptMap?: AcademicConceptMap;  // v1.4：学术术语映射（UI「系统如何理解你的问题」）
+  ladder?: QueryLadder;             // v1.4：broad → method → application 三层（一次只推一层）
 }
 
 export interface DatabaseAction {
@@ -368,6 +370,7 @@ export interface ResearchSession {
   databaseActions: DatabaseAction[];
   importBatch?: { raw: string; importedAt: string };  // v1.2：最近一次粘贴的原始文本（可重解析）
   importStats?: { rawItems: number; recognized: number; unknown: number; merged: number; unique: number };  // v1.2：导入统计（刷新可恢复）
+  termCalibration?: TermCalibration;  // v1.4：基于真实候选的术语校准（建议，不改研究目标）
   candidates: CanonicalPaper[];
   triage: PaperTriage[];
   seedPapers: string[];
@@ -410,5 +413,52 @@ export interface EnrichmentProvenance {
   doi: string[];
   oa: string[];
   citations: Partial<Record<CitationSourceKey, number>>;
+}
+
+
+
+/* ================ Phase A.5：Academic Term Mapper + Query Ladder（v1.4） ================ */
+
+export type ConceptRole = "coreTask" | "method" | "broaderField" | "application" | "adjacent" | "ambiguous";
+
+export interface AcademicConcept {
+  canonical: string;         // 学术界标准术语
+  role: ConceptRole;
+  alternatives: string[];    // 用户表达/同义变体
+  confidence: "high" | "medium" | "low";
+  sourceTerm: string;        // 来自用户的哪个原词
+  note?: string;             // 如「robotic fencing 是具体应用，第一轮不锁死」
+}
+
+export interface AcademicConceptMap {
+  coreTasks: AcademicConcept[];
+  methods: AcademicConcept[];
+  broaderFields: AcademicConcept[];
+  applicationTerms: AcademicConcept[];
+  adjacentTerms: AcademicConcept[];
+  ambiguousTerms: { term: string; note: string; suggestedCanonical?: string }[];
+  rawTerms: string[];        // 用户原词/短语（必须逐条落位，不可静默丢弃）
+}
+
+export type LadderTier = "broad-domain" | "method-task" | "application-narrow";
+
+export interface QueryLadderTier {
+  tier: LadderTier;
+  label: string;
+  conceptGroups: string[][];   // 该层 conceptGroups（组内 OR、组间 AND）
+  why: string;                 // 为什么这一层
+}
+
+export interface QueryLadder {
+  tiers: QueryLadderTier[];
+  activeTier: number;          // 当前推荐层（0-based；一次只推一层）
+}
+
+export interface TermCalibration {
+  termsConfirmed: { term: string; count: number }[];
+  termsSuggested: { term: string; count: number }[];
+  termsWeakOrRare: { term: string; count: number; note: string }[];
+  basedOn: number;             // 参与统计的候选数
+  computedAt: string;
 }
 

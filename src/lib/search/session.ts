@@ -46,6 +46,7 @@ export function normalizeSession(raw: unknown): ResearchSession {
     databaseActions: Array.isArray(o.databaseActions) ? (o.databaseActions as DatabaseAction[]) : [],
     ...(o.importBatch && typeof o.importBatch === "object" ? { importBatch: o.importBatch as ResearchSession["importBatch"] } : {}),
     ...(o.importStats && typeof o.importStats === "object" ? { importStats: o.importStats as ResearchSession["importStats"] } : {}),
+    ...(o.termCalibration && typeof o.termCalibration === "object" ? { termCalibration: o.termCalibration as ResearchSession["termCalibration"] } : {}),
     candidates: Array.isArray(o.candidates) ? o.candidates : [],
     triage: Array.isArray(o.triage) ? o.triage : [],
     seedPapers: Array.isArray(o.seedPapers) ? o.seedPapers.map(String) : [],

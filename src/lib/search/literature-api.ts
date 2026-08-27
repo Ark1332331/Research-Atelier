@@ -6,8 +6,9 @@
  * 存储：data/research-sessions/<id>.json（store 适配器；session 持久化，刷新不丢）
  * LLM 边界：plannerIntent 只产结构化 intent；WoS 串 / GS/arXiv URL 由代码确定性生成。
  */
-import { plannerIntent } from "./planner.ts";
+import { plannerIntent, conceptMapper } from "./planner.ts";
 import { planFromIntent, deriveNextStep } from "./plan.ts";
+import { buildLadderFromMap, intentForTier, calibrateTerms } from "./terms.ts";
 import { createSession, withPlan, transitionStage, recordDatabaseAction, withImport } from "./session.ts";
 import { loadSession, saveSession } from "./session-storage.ts";
 import { parseCandidateBlob } from "./importer.ts";
@@ -21,8 +22,19 @@ export async function handlePlan(body: Record<string, unknown>): Promise<Respons
   let session = body.sessionId ? await loadSession(String(body.sessionId)) : null;
   if (!session) session = createSession(question);
   try {
-    const intent = await plannerIntent(question);
-    const plan = planFromIntent(intent);
+    // v1.4：RA_PLANNER_MOCK 走旧快捷路径；否则 用户问题 → 术语映射 → Query Ladder → 活跃层 intent → plan。
+    // 非 mock 路径绝不把用户原词直接放进 intent.conceptGroups（A.5 核心约束）。
+    let intent;
+    let plan;
+    if (process.env.RA_PLANNER_MOCK) {
+      intent = await plannerIntent(question);
+      plan = planFromIntent(intent);
+    } else {
+      const map = await conceptMapper(question);
+      const ladder = buildLadderFromMap(map);
+      intent = intentForTier(map, ladder.activeTier);
+      plan = planFromIntent(intent, undefined, { conceptMap: map, ladder });
+    }
     session = withPlan(session, intent, plan);
     await saveSession(session);
     return Response.json({ session, nextStep: deriveNextStep(session) });
@@ -79,6 +91,13 @@ export async function handleImport(body: Record<string, unknown>): Promise<Respo
   // v1.3：candidates/evidence 变化后，旧 triage/seeds 一律清空（防止旧筛选伪装成当前结果）
   updated.triage = [];
   updated.seedPapers = [];
+  // v1.4：基于真实候选 title/abstract 的术语校准（只建议，不改研究目标）
+  const conceptMap = updated.plan?.conceptMap;
+  if (conceptMap && papers.length > 0) {
+    updated.termCalibration = calibrateTerms(papers, conceptMap);
+  } else {
+    updated.termCalibration = undefined;
+  }
   await saveSession(updated);
   return Response.json({
     session: updated,

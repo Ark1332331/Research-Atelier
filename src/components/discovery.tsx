@@ -150,6 +150,20 @@ export default function Discovery() {
           {/* A 部分：搜索指引（ready-to-search / external-opened） */}
           {(stage === "ready-to-search" || stage === "external-opened") && primary && (
             <>
+              {plan?.conceptMap && <ConceptMapView map={plan.conceptMap} />}
+
+              {plan?.ladder && (
+                <div style={{ padding: "0.6rem 0.8rem", border: "1px solid var(--border)", borderRadius: 6, fontSize: "0.8rem" }}>
+                  <p className="mono-label" style={{ margin: 0, color: "var(--muted-foreground)" }}>
+                    检索阶梯：第 {Math.min(plan.ladder.activeTier + 1, plan.ladder.tiers.length)} / {plan.ladder.tiers.length} 层
+                    — {plan.ladder.tiers[plan.ladder.activeTier]?.label ?? ""}
+                  </p>
+                  <p style={{ margin: "0.3rem 0 0", color: "var(--muted-foreground)" }}>
+                    {plan.ladder.tiers[plan.ladder.activeTier]?.why ?? ""}
+                  </p>
+                </div>
+              )}
+
               <div style={{ padding: "1rem", border: "1px solid var(--border)", borderRadius: 8 }}>
                 <p style={{ margin: 0, fontWeight: 600 }}>第一步 · {dbName(primary.id)}（推荐现在做）</p>
                 <p className="mono-label" style={{ marginTop: "0.5rem" }}>{primary.recommendedFirst ?? primary.queries?.[0]}</p>
@@ -171,10 +185,18 @@ export default function Discovery() {
                 </ol>
               </div>
 
-              {others.length > 0 && (
+              {(others.length > 0 || plan?.ladder?.tiers.length > 1) && (
                 <details style={{ fontSize: "0.82rem" }}>
                   <summary className="mono-label" style={{ cursor: "pointer", color: "var(--muted-foreground)" }}>之后可以（折叠）</summary>
                   <ul style={{ margin: "0.5rem 0 0 1.1rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                    {plan?.ladder?.tiers.slice(plan.ladder.activeTier + 1).map((t: any, i: number) => (
+                      <li key={i}>
+                        <strong>第 {plan.ladder.activeTier + 2 + i} 层 · {t.label}</strong> — {t.why}
+                        <div className="mono-label" style={{ color: "var(--muted-foreground)" }}>
+                          {t.conceptGroups.map((g: string[]) => g.join(" OR ")).join(" AND ")}
+                        </div>
+                      </li>
+                    ))}
                     {others.map((db: any) => (
                       <li key={db.id}>
                         <strong>{dbName(db.id)}</strong> — {db.why}
@@ -266,6 +288,25 @@ export default function Discovery() {
                 </div>
               )}
 
+              {session?.termCalibration && (
+                <div style={{ fontSize: "0.82rem", border: "1px dashed var(--border)", borderRadius: 6, padding: "0.6rem 0.8rem" }}>
+                  <p className="mono-label" style={{ margin: 0, color: "var(--muted-foreground)" }}>
+                    术语校准（基于 {session.termCalibration.basedOn} 篇真实候选，仅建议，不改你的研究目标）
+                  </p>
+                  {session.termCalibration.termsConfirmed.length > 0 && (
+                    <p style={{ margin: "0.3rem 0 0" }}>候选集中被使用（confirmed）：{session.termCalibration.termsConfirmed.map((t: any) => t.term).join("、")}</p>
+                  )}
+                  {session.termCalibration.termsSuggested.length > 0 && (
+                    <p style={{ margin: "0.2rem 0 0", color: "var(--muted-foreground)" }}>候选集中高频出现、你尚未使用的术语（suggested）：{session.termCalibration.termsSuggested.map((t: any) => t.term).join("、")}</p>
+                  )}
+                  {session.termCalibration.termsWeakOrRare.length > 0 && (
+                    <p style={{ margin: "0.2rem 0 0", color: "#c0392b" }}>
+                      候选集中弱/罕见（weakOrRare，建议下一轮换词）：{session.termCalibration.termsWeakOrRare.map((t: any) => t.term + (t.note ? "（" + t.note + "）" : "")).join("、")}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {triage.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.8rem" }}>
                   <p className="mono-label" style={{ color: "var(--muted-foreground)" }}>筛选结果（角色 · 深度 · 为什么 — 无总分）</p>
@@ -292,6 +333,36 @@ export default function Discovery() {
             </>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+function ConceptMapView({ map }: { map: any }) {
+  const bucket = (key: string, label: string) =>
+    (map[key] ?? []).length > 0 ? (
+      <p style={{ margin: "0.15rem 0" }}>
+        <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>{label}　</span>
+        {(map[key] ?? []).map((c: any) => c.canonical ?? c.term).join("、")}
+      </p>
+    ) : null;
+  return (
+    <div style={{ padding: "0.6rem 0.8rem", border: "1px solid var(--border)", borderRadius: 6, fontSize: "0.8rem" }}>
+      <p className="mono-label" style={{ margin: 0, color: "var(--muted-foreground)" }}>系统如何理解你的问题（学术术语映射）</p>
+      {bucket("coreTasks", "核心任务")}
+      {bucket("methods", "方法")}
+      {bucket("broaderFields", "上位领域")}
+      {bucket("applicationTerms", "应用场景")}
+      {bucket("adjacentTerms", "邻近概念")}
+      {(map.ambiguousTerms ?? []).length > 0 && (
+        <p style={{ margin: "0.2rem 0 0", color: "#c0392b" }}>
+          歧义/非标准表达（第一轮不锁定）：{(map.ambiguousTerms ?? []).map((a: any) => a.term + (a.suggestedCanonical ? " → " + a.suggestedCanonical : "")).join("、")}
+        </p>
+      )}
+      {(map.applicationTerms ?? []).length > 0 && (
+        <p style={{ margin: "0.2rem 0 0", color: "var(--muted-foreground)" }}>
+          应用场景（如 {(map.applicationTerms ?? []).map((a: any) => a.canonical).join("、")}）第一轮不直接锁死——先建立上位领域/核心任务的候选池，再逐层收窄。
+        </p>
       )}
     </div>
   );

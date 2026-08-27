@@ -712,6 +712,24 @@ v1.3（2026-08-27）B-lite identity/grounding hardening：
 - roleEvidence 与真实 provenance 对齐：fulltext 一律剔除；citation-graph 仅当有分源引用数；
   abstract 仅当有摘要且来源匹配 enrichment；metadata 仅当来源在 provenance 或 import 中（虚构剔除）
 - 测试：importer 20 + enrich/triage 28 + hardening（handler 级）14 + B-lite e2e 24 + 回归 68+42+30+23+59+15 全绿；tsc 干净
+
+v1.4（2026-08-27）Phase A.5：Academic Term Mapper + Query Ladder（Phase C 前插入，实机暴露的术语对齐缺口）：
+- AcademicConceptMap：coreTasks / methods / broaderFields / applicationTerms / adjacentTerms / ambiguousTerms，
+  每 canonical 带 alternatives + confidence；normalizeConceptMap 强制「用户原词逐条落位」，未映射原词自动进
+  ambiguous（显式标注，不可静默当标准术语）
+- planner 流程：用户问题 → conceptMapper（LLM 语义判断）→ buildLadderFromMap → intentForTier → plan；
+  非 mock 路径绝不把用户原词直接放进 conceptGroups；LLM 绝不产出最终 query（仍由确定性 compiler 编译）
+- Query Ladder 三层：broad-domain（上位领域+核心任务）→ method-task（方法+核心任务）→ application-narrow
+  （应用场景）；每层只有一组 conceptGroups，仍满足「一次只一个 recommendedNow=true」；
+  ambiguous 词即使出现在 alternatives 也被确定性剔除（stripAmbiguous）
+- UI：显示「系统如何理解你的问题」（核心任务/方法/上位领域/应用场景/歧义），并解释应用场景第一轮不锁死；
+  「之后可以」折叠显示第 2/3 层 query 预览
+- B-lite term calibration：基于真实候选 title/abstract 统计（termsConfirmed / termsSuggested / termsWeakOrRare），
+  ambiguous 用户表达在候选集中罕见也提示换词；只建议，不改研究目标
+- 回归案例（机器人大击剑）：robotic fencing → application；human motion recognition → ambiguous；
+  第一轮 query 为 HRI AND human intention/action recognition（canonical），不再生成
+  "robotic fencing" "human motion recognition"；第三层才加入 fencing（test-term-mapper 25 项）
+- 测试：term-mapper 25 + 全量 68/42/20/28/14/30/23/59 + live 15/24 全绿；tsc 干净
 ~~~
 
 
