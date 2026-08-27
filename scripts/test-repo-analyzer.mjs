@@ -57,6 +57,14 @@ await writeFile(path.join(tmp, "train.py"), "import torch\ndef main(): pass", "u
 await writeFile(path.join(tmp, "credentials.yml"), "aws: secret", "utf-8");
 await writeFile(path.join(tmp, "README.md"), "# t", "utf-8");
 await writeFile(path.join(tmp, "package-lock.json"), "{}", "utf-8");
+// hardening：data/datasets 下的代码必须可扫；大数据资产子目录跳过；symlink 不跟随
+await mkdir(path.join(tmp, "datasets"), { recursive: true });
+await mkdir(path.join(tmp, "datasets/raw"), { recursive: true });
+await writeFile(path.join(tmp, "datasets/kitti.py"), "import torch\nclass Dataset:\n  def __init__(self): pass", "utf-8");
+await writeFile(path.join(tmp, "datasets/raw/samples.bin"), "binarydata", "utf-8");
+await writeFile(path.join(tmp, "link.txt"), "", "utf-8");
+try { await fs.unlink(path.join(tmp, "link.txt")); } catch { /* */ }
+try { await fs.symlink("/etc/hostname", path.join(tmp, "link.txt")); } catch { /* */ }
 
 const { files, omitted } = await scanTree(tmp);
 const oPaths = omitted.map((o) => o.path);
@@ -66,10 +74,15 @@ ok(oPaths.includes(".env"), ".env 跳过且记录");
 ok(oPaths.includes("big.json"), ">1MB 跳过且记录");
 ok(oPaths.includes("credentials.yml"), "credentials* 跳过（读取层拦截）");
 ok(oPaths.includes("package-lock.json"), "package-lock.json 跳过（generated）");
+ok(oPaths.includes("datasets/raw"), "datasets/raw 大数据资产子目录跳过（data_asset）");
+ok(oPaths.includes("link.txt") || !files.some((f) => f.path === "link.txt"), "symlink 不跟随（omitted 或未进入 files）");
 ok(files.some((f) => f.path === "train.py"), "train.py 保留");
 ok(files.some((f) => f.path === "README.md"), "README.md 保留");
+ok(files.some((f) => f.path === "datasets/kitti.py"), "datasets/ 下的代码文件照常扫描（不整目录砍）");
+ok(!files.some((f) => f.path.includes("datasets/raw/")), "datasets/raw 下的大数据本体未进入 files");
+ok(omitted.every((o) => o.path !== "datasets/kitti.py"), "datasets 代码未被误记为 omitted");
 const reasons = new Set(omitted.map((o) => o.reason));
-ok(reasons.has("secret") && reasons.has("too_large") && reasons.has("skipped_dir") && reasons.has("generated"), "跳过原因分类齐全（secret/too_large/skipped_dir/generated）");
+ok(reasons.has("secret") && reasons.has("too_large") && reasons.has("skipped_dir") && reasons.has("generated") && reasons.has("data_asset"), "跳过原因分类齐全（secret/too_large/skipped_dir/generated/data_asset）");
 await fs.rm(tmp, { recursive: true, force: true });
 
 console.log("== 5. 真实 repo 验收 ==");
@@ -98,6 +111,27 @@ ok(Array.isArray(il.datasets) && il.datasets.length >= 1, `datasets=${il.dataset
 ok(Array.isArray(il.scripts) && il.scripts.length >= 1, `scripts=${il.scripts.length}`);
 ok(typeof il.totalFiles === "number" && il.totalFiles > 50, `totalFiles=${il.totalFiles}（真实大仓）`);
 ok(Array.isArray(il.omitted) && il.omitted.length > 0, `omitted=${il.omitted.length}（跳过目录/大文件被记录）`);
+
+console.log("== 6. 截断透明 + 证据排序 + dirty 标记 ==");
+ok(il.categoryStats && typeof il.categoryStats.training === "object", "categoryStats.training 存在");
+ok(typeof il.categoryStats.training.total === "number" && typeof il.categoryStats.training.returned === "number", "categoryStats total/returned");
+ok(typeof il.categoryStats.training.truncated === "boolean", "categoryStats truncated boolean");
+ok(il.categoryStats.training.total >= il.training.length, `training total=${il.categoryStats.training.total} >= returned=${il.training.length}`);
+// 证据排序：训练 candidates 里，有训练调用证据的应该排在纯文件名匹配的前面
+const ilTraining = il.training;
+if (ilTraining.length >= 2) {
+  const scores = ilTraining.map((f) => (f.evidence || []).length);
+  ok(scores[0] >= scores[scores.length - 1], "training 按证据强度排序（首个证据数 ≥ 末个）");
+}
+ok(typeof il.training[0]?.workingTreeDirty === "boolean", "SnapshotFile.workingTreeDirty 标记存在");
+// RA repo：dirty=true（有未提交修改），configs 文件应带 workingTreeDirty=true
+const raDirtyCount = ra.configs.filter((f) => f.workingTreeDirty === true).length;
+ok(raDirtyCount > 0, `RA configs 带 workingTreeDirty=true（dirty 仓库如实标记，${raDirtyCount}/${ra.configs.length}）`);
+
+console.log("== 7. 共享层 revision 一致性（一次 snapshot 一个 revision） ==");
+const revConsistency = await scanTree("/media/ark/Data/devpy/projects/allinone/workflow-app", ra.repoRevision);
+ok(revConsistency.files.every((f) => f.commit === ra.repoRevision.commit), "scanTree 传入固定 revision：所有文件 commit 与顶层一致");
+ok(revConsistency.files.every((f) => f.workingTreeDirty === Boolean(ra.repoRevision.dirty)), "workingTreeDirty 与顶层 dirty 一致");
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
