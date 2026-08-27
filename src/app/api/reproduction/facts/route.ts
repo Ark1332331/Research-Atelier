@@ -76,8 +76,8 @@ export async function POST(request: Request) {
       } catch { /* 下一个候选目录 */ }
     }
     if (!pages.length) return Response.json({ error: `未找到论文正文页（data/papers/<slug>）`, hint: "请先导入论文 PDF" }, { status: 404 });
-    const { facts, coveredPages, droppedChunks } = await extractPaperFacts(pages);
-    return Response.json({ facts, coveredPages, droppedChunks });
+    const { facts, coverage } = await extractPaperFacts(pages);
+    return Response.json({ facts, coverage });
   }
 
   if (action === "save") {

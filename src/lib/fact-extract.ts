@@ -295,68 +295,129 @@ export function sortPages(names: string[]): string[] {
   });
 }
 
-const CHUNK_MAX_CHARS = 20000; // 每 chunk 约 2 万字符（约 5-6 页）
+const MAX_PAGE_CHARS = 20000;   // 单页最大可扫描字符；超出部分不静默截断（拆 fragment）
+const CHUNK_MAX_CHARS = 20000;  // 每 chunk 约 2 万字符
+const MAX_CHUNKS = 3;           // 最多扫描 3 个 chunk（保护 token）；超出 → 未扫描
 
-/** DeepSeek 抽取论文事实：整篇 chunk 覆盖 + quote 验证 + missing 仅在聚合后判定。
- *  返回 { facts, coveredPages, droppedChunks } */
-export async function extractPaperFacts(
-  pageTexts: string[],
-): Promise<{ facts: Fact[]; coveredPages: number; droppedChunks: boolean }> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) return { facts: [], coveredPages: 0, droppedChunks: false };
+export interface PaperCoverage {
+  complete: boolean;            // 全部 chunk 成功扫描 且 无 fragment 被丢弃 → 才允许 not_found
+  totalPages: number;
+  coveredPages: number;         // 真实被成功扫描覆盖的页数（去重；按 fragment 是否进入成功 chunk）
+  totalChunks: number;
+  scannedChunks: number;
+  failedChunks: { index: number; reason: string }[];
+  droppedFragments: number;     // 因预算被丢弃的 fragment 数
+}
 
-  // 按页分 chunk（每 chunk ≤ CHUNK_MAX_CHARS）
-  const chunks: string[][] = [];
-  let cur: string[] = [];
+interface PageFragment { page: number; text: string }
+interface ChunkResult { scanned: boolean; reason?: string; raws: PaperExtractRaw[] }
+
+/** 把每页拆成 ≤ MAX_PAGE_CHARS 的 fragment（长页拆 sub-chunk，不静默截断）。
+ *  返回 [fragments, dropped 的页是否因超单页上限] */
+function pageFragments(pages: string[]): { frags: PageFragment[]; oversizePages: number[] } {
+  const frags: PageFragment[] = [];
+  const oversize: number[] = [];
+  pages.forEach((p, i) => {
+    if (p.length <= MAX_PAGE_CHARS) {
+      frags.push({ page: i + 1, text: p });
+    } else {
+      // 单页超上限：拆成多个 fragment（每片 ≤ MAX_PAGE_CHARS），保证整页内容都被送入（不 slice 截断）
+      oversize.push(i + 1);
+      for (let s = 0; s < p.length; s += MAX_PAGE_CHARS) {
+        frags.push({ page: i + 1, text: p.slice(s, s + MAX_PAGE_CHARS) });
+      }
+    }
+  });
+  return { frags, oversizePages: oversize };
+}
+
+/** 组装 chunk：按字符预算顺序聚合 fragment（同一页的多 fragment 可跨 chunk） */
+function makeChunks(frags: PageFragment[]): PageFragment[][] {
+  const chunks: PageFragment[][] = [];
+  let cur: PageFragment[] = [];
   let curChars = 0;
-  for (const p of pageTexts) {
-    if (curChars + p.length > CHUNK_MAX_CHARS && cur.length) {
+  for (const fr of frags) {
+    if (curChars + fr.text.length > CHUNK_MAX_CHARS && cur.length) {
       chunks.push(cur); cur = []; curChars = 0;
     }
-    cur.push(p); curChars += p.length;
+    cur.push(fr); curChars += fr.text.length;
   }
   if (cur.length) chunks.push(cur);
+  return chunks;
+}
+
+/** 单个 chunk：成功请求 + 成功解析才算 scanned；否则返回 reason */
+async function scanChunk(chunk: PageFragment[], apiKey: string, idx: number): Promise<ChunkResult> {
+  const text = chunk.map((fr) => `【第 ${fr.page} 页】\n${fr.text}`).join("\n\n");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
+    try {
+      const res = await fetch("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [
+            { role: "system", content: PAPER_EXTRACT_SYSTEM(taxonomyPrompt()) },
+            { role: "user", content: text },
+          ],
+          stream: false,
+          max_tokens: 4000,
+        }),
+        signal: AbortSignal.timeout(90000),
+      });
+      if (!res.ok) continue; // HTTP 失败 → 重试
+      const d = await res.json();
+      const c = d?.choices?.[0]?.message?.content ?? "";
+      const start = c.indexOf("[");
+      const end = c.lastIndexOf("]");
+      if (start >= 0 && end > start) {
+        try {
+          const arr = JSON.parse(c.slice(start, end + 1));
+          if (Array.isArray(arr)) return { scanned: true, raws: arr };
+        } catch { /* 坏 JSON → 重试 */ }
+      }
+    } catch { /* 网络失败 → 重试 */ }
+  }
+  return { scanned: false, reason: `chunk ${idx + 1} 三次请求/解析失败`, raws: [] };
+}
+
+/** DeepSeek 抽取论文事实：整篇 chunk 覆盖 + quote 验证 + missing 仅在 coverage.complete 后判定。
+ *  覆盖记录真实：页不静默截断（长页拆 fragment）；每 chunk 只有成功请求+成功解析才算 scanned；
+ *  失败/被丢弃 → coverage.complete=false → 缺失 key 只能 not_scanned，绝不 not_found。 */
+export async function extractPaperFacts(
+  pageTexts: string[],
+): Promise<{ facts: Fact[]; coverage: PaperCoverage }> {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) return { facts: [], coverage: { complete: false, totalPages: pageTexts.length, coveredPages: 0, totalChunks: 0, scannedChunks: 0, failedChunks: [], droppedFragments: 0 } };
+
+  const { frags, oversizePages } = pageFragments(pageTexts);
+  const chunks = makeChunks(frags);
 
   const allRaw: PaperExtractRaw[] = [];
-  let dropped = false;
-  const budget = 3; // 最多 3 个 chunk（保护 token）；超出的 chunk 标记 dropped → not_scanned
-  const usedChunks = chunks.slice(0, budget);
-  if (chunks.length > budget) dropped = true;
+  const failedChunks: { index: number; reason: string }[] = [];
+  let scannedChunks = 0;
 
-  for (const chunk of usedChunks) {
-    const text = chunk.map((p, i) => `【第 ${pageIndexOf(pageTexts, p) + 1} 页】\n${p.slice(0, 4000)}`).join("\n\n");
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
-      try {
-        const res = await fetch("https://api.deepseek.com/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: "deepseek-chat",
-            messages: [
-              { role: "system", content: PAPER_EXTRACT_SYSTEM(taxonomyPrompt()) },
-              { role: "user", content: text },
-            ],
-            stream: false,
-            max_tokens: 4000,
-          }),
-          signal: AbortSignal.timeout(90000),
-        });
-        if (res.ok) {
-          const d = await res.json();
-          const c = d?.choices?.[0]?.message?.content ?? "";
-          const start = c.indexOf("[");
-          const end = c.lastIndexOf("]");
-          if (start >= 0 && end > start) {
-            try {
-              const arr = JSON.parse(c.slice(start, end + 1));
-              if (Array.isArray(arr)) { allRaw.push(...arr); break; }
-            } catch { /* 坏 JSON → 重试 */ }
-          }
-        }
-      } catch { /* 重试 */ }
-    }
+  // 按预算扫描前 MAX_CHUNKS 个 chunk；其余 fragment 标记 dropped（未扫描）
+  const used = chunks.slice(0, MAX_CHUNKS);
+  const droppedCount = chunks.slice(MAX_CHUNKS).reduce((n, c) => n + c.length, 0);
+  const results: ChunkResult[] = [];
+  for (let i = 0; i < used.length; i++) {
+    const r = await scanChunk(used[i], apiKey, i);
+    results.push(r);
+    if (r.scanned) { scannedChunks++; allRaw.push(...r.raws); }
+    else failedChunks.push({ index: i, reason: r.reason ?? "失败" });
   }
+  // 失败 chunk 里的 fragment 也算未扫描（dropped）
+  const failedFragCount = used.reduce((n, c, i) => n + (results[i]?.scanned ? 0 : c.length), 0);
+
+  // 真实覆盖：被成功扫描 fragment 覆盖的页号集合
+  const coveredPagesSet = new Set<number>();
+  used.forEach((chunk, i) => {
+    if (results[i]?.scanned) for (const fr of chunk) coveredPagesSet.add(fr.page);
+  });
+
+  const complete = scannedChunks === used.length && chunks.length <= MAX_CHUNKS && failedChunks.length === 0;
 
   // quote 验证：quote 必须存在于对应页；不存在 → 去 quote、confidence 压到 medium
   const facts = normalizeFacts(allRaw.map((r) => {
@@ -369,7 +430,7 @@ export async function extractPaperFacts(
       const norm = (s: string) => s.replace(/\s+/g, " ").trim();
       if (!norm(pageText).includes(norm(quote.slice(0, 40)))) {
         finalQuote = undefined;
-        if (conf === "high") conf = "medium"; // quote 对不上 → 降可信度
+        if (conf === "high") conf = "medium";
       }
     }
     return {
@@ -382,24 +443,31 @@ export async function extractPaperFacts(
     };
   }));
 
-  // 聚合后判定 genuinely missing：全部 chunk 都扫过、且 taxonomy 里 required 级 paper key 没出现 → not_found；
-  // 有 chunk 被丢 → 这些 key 判 not_scanned（不能假装没写）
-  const coveredAll = !dropped;
+  // 聚合后判定 genuinely missing：只有 coverage.complete=true 才允许 not_found；
+  // 否则（失败 chunk / 预算丢弃 / 单页超限未扫完）→ not_scanned
   const seenKeys = new Set(facts.map((f) => f.key));
   for (const def of KNOWN_FACTS) {
     if (def.importance !== "required" || !def.sides.includes("paper")) continue;
     if (seenKeys.has(def.key)) continue;
     facts.push(normalizeFact({
       key: def.key, side: "paper", status: "missing",
-      missingType: coveredAll ? "not_found" : "not_scanned",
-      missingReason: coveredAll ? "完整论文已扫描，未找到该事实" : "部分论文章节未扫描（超出预算），不能判定为未找到",
+      missingType: complete ? "not_found" : "not_scanned",
+      missingReason: complete
+        ? "完整论文已扫描，未找到该事实"
+        : (failedChunks.length ? `部分 chunk 扫描失败（${failedChunks.map((f) => `#${f.index + 1}`).join(",")}）` : "部分论文章节未扫描（超出预算/单页超限），不能判定为未找到"),
     })!);
   }
 
-  return { facts, coveredPages: pageTexts.length, droppedChunks: dropped };
-}
-
-function pageIndexOf(all: string[], p: string): number {
-  const i = all.indexOf(p);
-  return i >= 0 ? i : 0;
+  return {
+    facts,
+    coverage: {
+      complete,
+      totalPages: pageTexts.length,
+      coveredPages: coveredPagesSet.size,
+      totalChunks: chunks.length,
+      scannedChunks,
+      failedChunks,
+      droppedFragments: droppedCount + failedFragCount,
+    },
+  };
 }

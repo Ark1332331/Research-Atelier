@@ -132,5 +132,53 @@ if (!process.env.DEEPSEEK_API_KEY) {
   }
 }
 
+console.log("== 9. Paper coverage 真实性（回归） ==");
+import { extractPaperFacts as realExtract } from "../src/lib/fact-extract.ts";
+process.env.DEEPSEEK_API_KEY = "test-key-for-mock"; // 触发走网络路径（fetch 被 mock）
+
+// 9a. 长页 > MAX_PAGE_CHARS：拆 fragment 不静默截断；预算不足 → complete=false + not_scanned
+{
+  const bigPage = "LONG_PAGE_MARKER_" + "y".repeat(65000); // 单页 65k → 拆 4 fragment（20k×3 + 5k）
+  const pages = ["small page one content".repeat(50), bigPage]; // 共 5 fragment → 至少 4 chunk > MAX_CHUNKS=3
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    return { ok: true, json: async () => ({ choices: [{ message: { content: `[{"key":"data.input_format","value":"point cloud","status":"observed","page":1,"quote":"small page one content"}]` } }] }) };
+  };
+  const r1 = await realExtract(pages);
+  globalThis.fetch = realFetch;
+  ok(r1.coverage.complete === false, "9a: fragment 数超出 chunk 预算 → complete=false（不假装全扫）");
+  ok(r1.coverage.totalPages === 2 && r1.coverage.coveredPages === 2, `9a: coveredPages=${r1.coverage.coveredPages}/${r1.coverage.totalPages}（按成功 fragment 去重——长页前部已扫，故计 2）`);
+  ok(r1.coverage.droppedFragments > 0, `9a: droppedFragments=${r1.coverage.droppedFragments} 记录未扫描的 fragment（长页后部未扫，诚实报告）`);
+  const miss = r1.facts.filter((f) => f.status === "missing");
+  ok(miss.length > 0 && miss.every((f) => f.missingType === "not_scanned"), "9a: 缺失 key 全部 not_scanned（绝无 not_found）");
+}
+
+// 9b. chunk 三次失败：failedChunks 记录 + complete=false + 缺失全 not_scanned
+{
+  const pages = ["p1 ".repeat(3000), "p2 ".repeat(3000)];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 500, json: async () => ({}) }); // 永远失败
+  const r2 = await realExtract(pages);
+  globalThis.fetch = realFetch;
+  ok(r2.coverage.complete === false, "9b: chunk 失败 → complete=false");
+  ok(r2.coverage.scannedChunks === 0 && r2.coverage.failedChunks.length > 0, `9b: failedChunks=${r2.coverage.failedChunks.length} 记录原因`);
+  ok(r2.coverage.coveredPages === 0, "9b: coveredPages=0（无成功扫描）");
+  const miss2 = r2.facts.filter((f) => f.status === "missing");
+  ok(miss2.length > 0 && miss2.every((f) => f.missingType === "not_scanned"), "9b: 缺失 key 全部 not_scanned（chunk 失败≠论文没写）");
+}
+
+// 9c. 全部 chunk 成功 → complete=true → 才允许 not_found
+{
+  const pages = ["c1 content ".repeat(100), "c2 content ".repeat(100)];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "[]" } }] }) });
+  const r3 = await realExtract(pages);
+  globalThis.fetch = realFetch;
+  ok(r3.coverage.complete === true && r3.coverage.coveredPages === 2, `9c: 全扫成功 → complete=true, coveredPages=2/${r3.coverage.totalPages}`);
+  const miss3 = r3.facts.filter((f) => f.status === "missing");
+  ok(miss3.length > 0 && miss3.every((f) => f.missingType === "not_found"), "9c: 全扫后缺失才允许 not_found");
+}
+delete process.env.DEEPSEEK_API_KEY;
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
