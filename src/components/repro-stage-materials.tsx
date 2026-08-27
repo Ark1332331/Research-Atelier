@@ -7,6 +7,7 @@ interface RepoArtifact { repoRootId: string; repoPath: string; commit?: string; 
 interface LibPaper { id: string; title: string; slug?: string | null }
 
 import path from "node:path";
+import DirPicker from "@/components/dir-picker";
 
 export default function ReproStageMaterials({
   paperArtifact, repoArtifact, onBind,
@@ -21,6 +22,7 @@ export default function ReproStageMaterials({
   const [paperPick, setPaperPick] = useState(paperArtifact?.paperId ?? "");
   const [repoPick, setRepoPick] = useState(repoArtifact?.repoRootId ?? "");
   const [manualRepo, setManualRepo] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -130,11 +132,20 @@ export default function ReproStageMaterials({
           </select>
         </label>
         <div className="mono-label" style={{ opacity: 0.7, marginTop: "0.2rem" }}>或手动输入本地目录路径（任意位置 / 非 git 均可）：</div>
-        <input className="field field--mini" placeholder="/home/ark/projects/IsaacLab（绝对路径）" value={manualRepo} onChange={(e) => setManualRepo(e.target.value)} />
+        <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", width: "100%" }}>
+          <input className="field field--mini" style={{ flex: 1 }} placeholder="/home/ark/projects/IsaacLab（绝对路径）" value={manualRepo} onChange={(e) => setManualRepo(e.target.value)} />
+          <button className="btn btn--ghost btn--quiet" onClick={() => setPickerOpen(true)}>浏览…</button>
+        </div>
         <button className="btn btn--primary" disabled={busy || !paperPick || (!repoPick && !manualRepo.trim())} onClick={() => void bind()}>
           {busy ? "绑定中…" : ready ? "更新绑定" : "绑定论文与仓库"}
         </button>
       </div>
+      {pickerOpen && (
+        <DirPicker
+          onPick={(p) => { setManualRepo(p); setRepoPick(""); setPickerOpen(false); }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }

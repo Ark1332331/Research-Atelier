@@ -3667,6 +3667,18 @@ input, textarea, select {
 .repro-binding-form { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; }
 .repro-binding-form label { display: flex; align-items: center; gap: 0.5rem; width: 100%; }
 .repro-binding-form select { flex: 1; }
+
+/* 本机目录选择器 */
+.dirpicker-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.dirpicker { width: 560px; max-width: 92vw; max-height: 70vh; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 0.8rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.dirpicker-head { display: flex; align-items: center; justify-content: space-between; }
+.dirpicker-crumbs { display: flex; gap: 0.2rem; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+.dirpicker-list { overflow: auto; flex: 1; min-height: 200px; max-height: 40vh; background: var(--bg-soft, #fbfaf7); border: 1px solid var(--border); border-radius: 8px; padding: 0.3rem; }
+.dirpicker-item { display: flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.5rem; cursor: pointer; border-radius: 6px; font-size: 0.82rem; }
+.dirpicker-item:hover { background: var(--accent-soft, #f5efdd); }
+.dirpicker-item.is-git { font-weight: 600; }
+.dirpicker-up { color: var(--muted-foreground); }
+.dirpicker-foot { display: flex; align-items: center; gap: 0.4rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
 .repro-analysis-summary { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.8rem; align-items: flex-start; }
 .repro-analysis-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; width: 100%; }
 .repro-analysis-item { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.6rem; background: var(--bg); display: flex; flex-direction: column; gap: 0.2rem; }
