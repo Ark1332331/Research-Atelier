@@ -1,35 +1,16 @@
 /**
- * 复现记录（复现工作台数据层）：data/reproduction.json —— { records: Reproduction[] }
- * Reproduction:
- *   { slug, title, sourceUrl?, repoUrl?, note?,
- *     path: Step[] (复现路径分层步骤，AI 草案→用户调整→勾状态),
- *     pitfalls: Pitfall[] (坑点：文本/是否环境相关/关联阶段/关联论文与线程/时间),
- *     createdAt, updatedAt }
- * Step:   { id, title, status: "todo"|"doing"|"done", note? }
- * Pitfall:{ id, text, env: boolean, stage?, papers?: string[], threads?: string[], createdAt }
+ * 复现记录存储层（复现工作台数据层）：data/reproduction.json —— { records: ReproductionSpec[] }
+ * 纯 spec 类型与幂等迁移 normalizeReproduction 在 ./reproduction-spec.ts（无副作用，可单测）。
+ * 本文件负责：读写 JSON、摘要列表、增删改查——全部经过 normalize 保证 v2 结构。
  */
 import { readStore, writeStore } from "@/lib/store";
+import { normalizeReproduction, SPEC_VERSION, type ReproductionSpec } from "@/lib/reproduction-spec";
+
+export * from "@/lib/reproduction-spec";
 
 const FILE = "reproduction.json";
 
-export interface ReproductionStep { id: string; title: string; status: "todo" | "doing" | "done"; note?: string }
-export interface ReproductionPitfall {
-  id: string; text: string; env: boolean; stage?: string;
-  papers?: string[]; threads?: string[]; createdAt: string;
-}
-export interface Reproduction {
-  slug: string;
-  title: string;
-  sourceUrl?: string;
-  repoUrl?: string;
-  note?: string;
-  path: ReproductionStep[];
-  pitfalls: ReproductionPitfall[];
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-interface Store { records: Reproduction[] }
+interface Store { records: ReproductionSpec[] }
 
 async function readStore2(): Promise<Store> {
   const raw = await readStore(FILE);
@@ -65,17 +46,22 @@ export async function listReproductions(): Promise<{ slug: string; title: string
   }));
 }
 
-export async function getReproduction(slug: string): Promise<Reproduction | null> {
+export async function getReproduction(slug: string): Promise<ReproductionSpec | null> {
   const s = await readStore2();
-  return s.records.find((x) => x.slug === slug) ?? null;
+  const r = s.records.find((x) => x.slug === slug);
+  return r ? normalizeReproduction(r) : null;
 }
 
-export async function upsertReproduction(r: Reproduction): Promise<Store> {
+/** 宽松输入：允许 v1/部分字段（create 等旧调用路径），内部 normalize 补全 */
+export type ReproductionInput = Partial<ReproductionSpec> & { slug: string; title?: string };
+
+export async function upsertReproduction(r: ReproductionInput): Promise<Store> {
   const s = await readStore2();
-  const i = s.records.findIndex((x) => x.slug === r.slug);
-  r.updatedAt = new Date().toISOString();
-  if (i >= 0) s.records[i] = r;
-  else s.records.push(r);
+  const normalized = normalizeReproduction(r);
+  normalized.updatedAt = new Date().toISOString();
+  const i = s.records.findIndex((x) => x.slug === normalized.slug);
+  if (i >= 0) s.records[i] = normalized;
+  else s.records.push(normalized);
   await writeStore2(s);
   return s;
 }
