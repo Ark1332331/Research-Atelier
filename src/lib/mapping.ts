@@ -131,6 +131,7 @@ export interface NormalizeMappingInput {
   evidenceIds?: string[];
   paperFactIds?: string[];
   codeAnchorIds?: string[];
+  legacy?: boolean;
 }
 
 export function normalizeMapping(input: NormalizeMappingInput): Mapping | null {
@@ -156,7 +157,14 @@ export function normalizeMapping(input: NormalizeMappingInput): Mapping | null {
     evidenceIds: Array.isArray(input.evidenceIds) ? input.evidenceIds.map(String) : [],
     paperFactIds: Array.isArray(input.paperFactIds) ? input.paperFactIds.map(String) : [],
     codeAnchorIds: Array.isArray(input.codeAnchorIds) ? input.codeAnchorIds.map(String) : [],
+    // legacy：无 paperFactIds/codeAnchorIds 的旧 mapping 标记为 ungrounded，不参与 Step 6/Ready
+    legacy: Boolean(input.legacy) || !Array.isArray(input.paperFactIds) || !Array.isArray(input.codeAnchorIds) || input.paperFactIds.length === 0 || input.codeAnchorIds.length === 0,
   };
+}
+
+/** mapping 是否 grounded（有真实 fact id + anchor id；legacy ungrounded 不参与 Step 6/Ready） */
+export function isMappingGrounded(m: Mapping): boolean {
+  return !m.legacy && m.paperFactIds.length > 0 && m.codeAnchorIds.length > 0;
 }
 
 /** 稳定 identity：排序后的 paperFactIds + relation + 排序后的 canonical codeAnchorIds */
@@ -188,8 +196,8 @@ export function mergeMappings(existing: Mapping[], incoming: Mapping[]): Mapping
     const idn = mappingIdentity(m);
     const i = out.findIndex((x) => mappingIdentity(x) === idn);
     if (i >= 0) {
-      // 已存在：保留状态（confirmed 不被降级）；非状态字段用 incoming 更新
-      out[i] = { ...m, status: out[i].status };
+      // 已存在：保留 existing 的 id 与 status（confirmed 不降级、id 不因 re-propose 更换），非状态字段用 incoming 更新
+      out[i] = { ...m, id: out[i].id, status: out[i].status };
     } else {
       out.push(m);
     }
@@ -232,42 +240,57 @@ export function routeFactCandidates(
     .map(([file, score]) => ({ file, score }));
 }
 
-/** 为一批 paper facts 构建候选 anchors（每 fact 路由 top 文件 → anchor），上限 15 */
+/** 为一批 paper facts 构建候选 anchors + 每 fact 的 allowed anchor set（5–15 个/ fact）。 */
 export async function buildAnchorsForFacts(
   facts: Fact[],
   snapshot: Record<string, any>,
   baseRoot: string,
-): Promise<CodeAnchor[]> {
-  // 收集被路由到的文件集合（按 fact 去重）
+): Promise<{ anchors: CodeAnchor[]; factAllowed: Map<string, Set<string>> }> {
+  // 收集被路由到的文件集合（按 fact 去重），并记录每个 fact 允许的文件
   const wanted = new Set<string>();
+  const factFiles = new Map<string, Set<string>>(); // fact.id -> allowed files
   for (const f of facts) {
-    for (const c of routeFactCandidates(f, snapshot)) wanted.add(c.file);
+    const files = routeFactCandidates(f, snapshot).map((c) => c.file);
+    factFiles.set(f.id, new Set(files));
+    for (const file of files) wanted.add(file);
   }
-  const scopeFiles = [...wanted];
-  // 只构建这些文件的 anchors（限制文件数防爆炸）
   const limitedSnapshot: Record<string, any> = {};
   for (const sc of ["entrypoints", "training", "evaluation", "datasets", "configs", "dependencies"]) {
     const items = ((snapshot[sc] ?? []) as { path?: string }[]).filter((it) => it.path && wanted.has(it.path));
     if (items.length) limitedSnapshot[sc] = items;
   }
-  return buildCodeAnchors(limitedSnapshot, baseRoot, { categories: Object.keys(limitedSnapshot), maxPerFact: 15 });
+  const anchors = await buildCodeAnchors(limitedSnapshot, baseRoot, { categories: Object.keys(limitedSnapshot), maxPerFact: 15 });
+
+  // 每 fact 的 allowed anchor set：该 fact 允许的文件里构建出的 anchor id
+  const factAllowed = new Map<string, Set<string>>();
+  for (const f of facts) {
+    const allowedFiles = factFiles.get(f.id) ?? new Set<string>();
+    const ids = new Set(anchors.filter((a) => allowedFiles.has(a.file)).map((a) => a.id));
+    factAllowed.set(f.id, ids);
+  }
+  return { anchors, factAllowed };
 }
 
 /* ================= 3. AI 提议（LLM 只选 id） ================= */
 
+/** LLM 用临时 alias（fact#i）；持久化时转换为真实 Fact.id */
 function paperFactLines(facts: Fact[]): string {
   return facts.map((f, i) => `- fact#${i} [${f.key}] = ${JSON.stringify(f.value)}${f.source?.kind === "paper" && f.source.section ? ` @ ${f.source.section}${f.source.page ? ` p${f.source.page}` : ""}` : ""}`).join("\n");
 }
 
+/** 给模型真实的短 snippet（多行，≤5 行），不是仅第一行 */
 function anchorLines(anchors: CodeAnchor[]): string {
-  return anchors.map((a) => `- anchor#${a.id} ${a.file}${a.symbol ? ` :: ${a.symbol}` : ""} L${a.lineStart}-${a.lineEnd} | ${a.snippet.split("\n")[0] ?? ""}`).join("\n");
+  return anchors.map((a) => {
+    const snippet = a.snippet.split("\n").slice(0, 5).join(" | ");
+    return `- anchor#${a.id} ${a.file}${a.symbol ? ` :: ${a.symbol}` : ""} L${a.lineStart}-${a.lineEnd} | ${snippet}`;
+  }).join("\n");
 }
 
 const MAP_SYSTEM =
   "你是论文↔代码对应关系提议器。给定论文事实（paperFact#…）和系统预构建的代码锚点（anchor#…），为论文里的复现概念提议对应关系。\n" +
   "规则：\n" +
   "1. **只能引用上面给出的 fact# 与 anchor# 的 id**；禁止发明文件路径、符号、行号；\n" +
-  "2. 每个 mapping 输出：paperFactIds（1–2 个 fact id）、codeAnchorIds（1–3 个 anchor id）、relation（implements=实现 / configures=配置 / preprocesses=预处理 / trains=训练 / evaluates=评估）、confidence（high/medium/low）；\n" +
+  "2. 每个 mapping 输出：paperFactIds（1–2 个 fact id）、codeAnchorIds（1–3 个 anchor id，且必须与所选 fact 属于同一概念域）、relation（implements=实现 / configures=配置 / preprocesses=预处理 / trains=训练 / evaluates=评估）、confidence（high/medium/low）；\n" +
   "3. 只提议你有依据的对应；没有把握的不输出；\n" +
   "4. 只输出 JSON 数组：[{\"paperFactIds\":[\"fact#0\"],\"codeAnchorIds\":[\"anchor-xxx\"],\"relation\":\"...\",\"confidence\":\"...\"}]。不要输出 JSON 以外内容。";
 
@@ -275,7 +298,7 @@ interface RawProposal {
   paperFactIds?: string[]; codeAnchorIds?: string[]; relation?: string; confidence?: string;
 }
 
-/** DeepSeek 提议（LLM 只选 id；refs 由 anchor/fact 确定性恢复） */
+/** DeepSeek 提议（LLM 只选临时 alias id；持久化转真实 Fact.id + anchor id；per-fact allowed set 最终校验） */
 export async function proposeMappings({
   facts, snapshot, root,
 }: {
@@ -286,7 +309,7 @@ export async function proposeMappings({
   const relevant = facts.filter((f) => f.status === "observed" || f.status === "inferred");
   if (!relevant.length) return [];
 
-  const anchors = await buildAnchorsForFacts(relevant, snapshot, root);
+  const { anchors, factAllowed } = await buildAnchorsForFacts(relevant, snapshot, root);
   if (!anchors.length) return [];
   const anchorById = new Map(anchors.map((a) => [a.id, a]));
 
@@ -301,7 +324,7 @@ export async function proposeMappings({
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model: "deepseek-chat",
-          messages: [{ role: "system", content: MAP_SYSTEM }, { role: "user", content: user.slice(0, 20000) }],
+          messages: [{ role: "system", content: MAP_SYSTEM }, { role: "user", content: user.slice(0, 24000) }],
           stream: false,
           max_tokens: 3000,
         }),
@@ -322,14 +345,19 @@ export async function proposeMappings({
     } catch { /* 重试 */ }
   }
 
-  // 确定性恢复：paperFactIds → 真实 fact（refs/概念从 fact 恢复）；codeAnchorIds → 真实 anchor（codeRef 从 anchor 恢复）
-  const factById = new Map(relevant.map((f, i) => [`fact#${i}`, f]));
+  // alias → 真实 fact；anchor id 校验 per-fact allowed set（每个选中 anchor 必须属于所选 fact 的 allowed set）
+  const factByAlias = new Map(relevant.map((f, i) => [`fact#${i}`, f]));
   const out: Mapping[] = [];
   for (const r of rawArr) {
-    const pids = (r.paperFactIds ?? []).filter((id) => factById.has(id)).slice(0, 2);
-    const aids = (r.codeAnchorIds ?? []).filter((id) => anchorById.has(id)).slice(0, 3);
-    if (!pids.length || !aids.length) continue;
-    const factsUsed = pids.map((id) => factById.get(id)!);
+    const pids = (r.paperFactIds ?? []).filter((id) => factByAlias.has(id)).slice(0, 2);
+    if (!pids.length) continue;
+    const factsUsed = pids.map((id) => factByAlias.get(id)!);
+    // per-fact allowed set：anchor 必须属于任一所选 fact 的 allowed set
+    const allowed = new Set<string>();
+    for (const f of factsUsed) for (const id of factAllowed.get(f.id) ?? []) allowed.add(id);
+    const aids = (r.codeAnchorIds ?? []).filter((id) => allowed.has(id) && anchorById.has(id)).slice(0, 3);
+    if (!aids.length) continue;
+
     const anchorsUsed = aids.map((id) => anchorById.get(id)!);
     const codeRefs: CodeRef[] = anchorsUsed.map((a) => ({
       file: a.file, symbol: a.symbol, lineStart: a.lineStart, lineEnd: a.lineEnd, commit: a.commit, dirty: a.dirty,
@@ -343,11 +371,14 @@ export async function proposeMappings({
     const concept = factsUsed.map((f) => factDef(f.key)?.label ?? f.key).join(" + ");
     const m = normalizeMapping({
       concept, paperRefs, codeRefs, relation: r.relation, confidence: r.confidence,
-      paperFactIds: pids, codeAnchorIds: aids, status: "proposed",
+      // 持久化用真实 Fact.id（不是 fact#i 别名）；identity 基于真实稳定 id
+      paperFactIds: factsUsed.map((f) => f.id),
+      codeAnchorIds: aids,
+      status: "proposed",
     });
     if (m) out.push(m);
   }
-  // 按稳定 identity 去重 + 总量上限 15（保持"约 5–15 个有依据 mapping"）
+  // 按稳定 identity（真实 id）去重 + 总量上限 15
   const seen = new Set<string>();
   const uniq = out.filter((m) => {
     const idn = mappingIdentity(m);
@@ -355,7 +386,6 @@ export async function proposeMappings({
     seen.add(idn);
     return true;
   });
-  // 置信度排序（high > medium > low）后取前 15
   const order: Record<FactConfidence, number> = { high: 0, medium: 1, low: 2 };
   return uniq.sort((a, b) => (order[a.confidence] - order[b.confidence]) || a.concept.localeCompare(b.concept)).slice(0, 15);
 }

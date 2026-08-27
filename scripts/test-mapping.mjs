@@ -6,7 +6,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
-import { normalizeMapping, normalizeMappings, mergeMappings, mappingIdentity, confirmMapping, rejectMapping, proposeMappings, buildCodeAnchors, routeFactCandidates } from "../src/lib/mapping.ts";
+import { normalizeMapping, normalizeMappings, mergeMappings, mappingIdentity, confirmMapping, rejectMapping, proposeMappings, buildCodeAnchors, buildAnchorsForFacts, routeFactCandidates, isMappingGrounded } from "../src/lib/mapping.ts";
 import { normalizeFacts } from "../src/lib/fact-extract.ts";
 
 let pass = 0, fail = 0;
@@ -97,7 +97,7 @@ process.env.DEEPSEEK_API_KEY = "mock-key";
 const realFetch = globalThis.fetch;
 // 用 model.architecture fact（路由到 training → train.py anchor 会被构建）
 const factArch = normalizeFacts([{ key: "model.architecture", side: "paper", value: "4D U-Net", status: "observed" }]);
-const probeAnchors = await buildCodeAnchors(snap, tmp, { categories: ["training", "entrypoint", "configs"], maxPerFact: 15 });
+const probeAnchors = await buildCodeAnchors(snap, tmp, { categories: ["training", "entrypoints", "configs"], maxPerFact: 15 });
 const validAnchorId = probeAnchors.find((a) => a.file === "train.py" && a.symbol === "train_model")?.id;
 ok(Boolean(validAnchorId), "probe: train.py::train_model anchor id 存在");
 // mock LLM：一个引用有效 anchor + 一个假 anchor + 一个带自由字段
@@ -137,12 +137,74 @@ if (!process.env.DEEPSEEK_API_KEY) {
   ok(ms.length >= 0 && ms.length <= 15, `有依据 mapping ≤15（实际 ${ms.length}；网络波动可致少/0）`);
   if (ms.length) {
     ok(ms.every((m) => m.paperFactIds.length >= 1 && m.codeAnchorIds.length >= 1), "每条都绑定 fact id + anchor id");
+    ok(ms.every((m) => m.paperFactIds.every((id) => id.startsWith("f-") || id.startsWith("fact-") || !id.startsWith("fact#"))), "paperFactIds 是真实 Fact.id（不是 fact# 临时别名）");
     ok(ms.every((m) => m.codeRefs.every((c) => c.file && typeof c.lineStart === "number")), "codeRef 全部从真实 anchor 恢复（file+行号）");
     for (const m of ms.slice(0, 5)) console.log(`   - ${m.concept} [${m.relation}/${m.confidence}] → ${m.codeRefs.map((c) => `${c.file}${c.symbol ? "::" + c.symbol : ""}@L${c.lineStart}`).join(", ")}`);
   } else {
     console.log("  （DeepSeek 未返回——网络波动，非逻辑失败）");
     ok(true, "无提议时跳过数量断言（网络相关）");
   }
+}
+
+console.log("== 7. 持久化 paperFactIds 用真实 Fact.id（LLM 别名→真实 id） ==");
+process.env.DEEPSEEK_API_KEY = "mock-key";
+const facts7 = normalizeFacts([
+  { key: "model.architecture", side: "paper", value: "4D U-Net", status: "observed" },
+  { key: "training.optimizer", side: "paper", value: "Adam", status: "observed" },
+]);
+const factId7 = facts7[0].id; // 真实 id
+ok(factId7 && !factId7.startsWith("fact#"), "真实 Fact.id 存在（非别名）");
+{
+  const realFetch = globalThis.fetch;
+  // LLM 返回别名 fact#0；系统应存真实 id
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: `[{"paperFactIds":["fact#0"],"codeAnchorIds":["${validAnchorId}"],"relation":"implements","confidence":"high"}]` } }] }) });
+  const p = await proposeMappings({ facts: facts7, snapshot: snap, root: tmp });
+  globalThis.fetch = realFetch;
+  ok(p.length === 1 && p[0].paperFactIds[0] === factId7, "持久化 paperFactIds = 真实 Fact.id（fact#0 → 真实 id）");
+  ok(p[0].paperFactIds[0] !== "fact#0", "不再存 fact# 别名");
+  ok(isMappingGrounded(p[0]), "grounded mapping 通过 isMappingGrounded");
+}
+
+console.log("== 8. merge 同 identity 保留 existing id + status（re-propose 不换 record id） ==");
+{
+  const base = normalizeMapping({
+    concept: "模型架构", codeRefs: [{ file: "train.py", lineStart: 3, symbol: "train_model" }], relation: "implements", confidence: "high",
+    paperFactIds: ["fact-real-1"], codeAnchorIds: ["anchor-a"],
+  });
+  const confirmed1 = { ...base, id: "m-fixed-001", status: "confirmed" };
+  // re-propose 生成的新对象（新随机 id，同 identity）
+  const reproposed = normalizeMapping({
+    concept: "模型架构", codeRefs: [{ file: "train.py", lineStart: 3, symbol: "train_model" }], relation: "implements", confidence: "low",
+    paperFactIds: ["fact-real-1"], codeAnchorIds: ["anchor-a"],
+  });
+  const merged = mergeMappings([confirmed1], [reproposed]);
+  ok(merged.length === 1, "同 identity 不新增");
+  ok(merged[0].id === "m-fixed-001", "existing id 保留（re-propose 不换 record id）");
+  ok(merged[0].status === "confirmed", "confirmed 保留");
+  ok(merged[0].confidence === "low", "非状态字段更新");
+}
+
+console.log("== 9. per-fact allowed set 约束 + legacy 标记 ==");
+{
+  // fact 路由到 train.py（model.architecture → training），allowed set 只含 train.py anchors
+  const realFetch = globalThis.fetch;
+  // LLM 恶意选 loss.py 的 anchor（不在该 fact 的 allowed set）
+  const lossId = anchors.find((a) => a.file === "loss.py")?.id;
+  ok(Boolean(lossId), "loss.py anchor 存在");
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: `[{"paperFactIds":["fact#0"],"codeAnchorIds":["${lossId}","${validAnchorId}"],"relation":"implements","confidence":"high"}]` } }] }) });
+  const p = await proposeMappings({ facts: factArch, snapshot: snap, root: tmp });
+  globalThis.fetch = realFetch;
+  delete process.env.DEEPSEEK_API_KEY;
+  // loss.py 不在 model.architecture 的 allowed set → 被剔除，只留 train.py anchor
+  ok(p.length === 1 && p[0].codeRefs.every((c) => c.file !== "loss.py"), "per-fact allowed set：非允许文件 anchor 被剔除");
+  ok(p[0].codeRefs.every((c) => c.file === "train.py"), "只保留该 fact allowed 的 anchor");
+}
+// legacy 标记：无 paperFactIds/codeAnchorIds 的旧 mapping
+{
+  const legacy = normalizeMapping({ concept: "旧映射", codeRefs: [{ file: "a.py" }], relation: "implements" });
+  ok(legacy?.legacy === true && isMappingGrounded(legacy) === false, "无锚点旧 mapping 标记 legacy（ungrounded，不参与 Step 6/Ready）");
+  const grounded = normalizeMapping({ concept: "x", codeRefs: [{ file: "a.py" }], relation: "implements", paperFactIds: ["f-1"], codeAnchorIds: ["anchor-a"] });
+  ok(grounded?.legacy === false && isMappingGrounded(grounded) === true, "有锚点 mapping grounded");
 }
 
 await fs.rm(tmp, { recursive: true, force: true });

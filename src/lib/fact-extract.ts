@@ -160,7 +160,7 @@ export function saveFacts(existing: Fact[], incoming: Fact[], mode: "merge" | "r
 export const CATEGORY_SNAPSHOT: Record<FactCategory, string[]> = {
   data: ["datasets", "configs"],
   preprocessing: ["datasets", "configs"],
-  model: ["training", "entrypoint", "configs"],
+  model: ["training", "entrypoints", "configs"],
   training: ["training", "configs"],
   evaluation: ["evaluation", "configs"],
   runtime: ["dependencies", "configs"],

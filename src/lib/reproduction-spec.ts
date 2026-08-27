@@ -69,6 +69,8 @@ export interface Mapping {
   /** 稳定 identity 锚点（Step 5 grounding）：LLM 只选这些 id，refs 由 anchor/fact 确定性恢复 */
   paperFactIds: string[];
   codeAnchorIds: string[];
+  /** 旧数据/无锚点标记：legacy ungrounded mapping 不参与 Step 6/Ready */
+  legacy?: boolean;
 }
 
 /** Decision Ledger（§6.2） */
@@ -290,7 +292,7 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           id: typeof m.id === "string" ? m.id : `m-${Math.random().toString(36).slice(2, 8)}`,
           concept: String(m.concept ?? ""),
           paperRefs: Array.isArray(m.paperRefs) ? m.paperRefs.map((p: any) => isObj(p) ? { section: typeof p.section === "string" ? p.section : undefined, page: typeof p.page === "number" ? p.page : undefined, quote: typeof p.quote === "string" ? p.quote : undefined } : null).filter(notNull) : [],
-          codeRefs: Array.isArray(m.codeRefs) ? m.codeRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined } : null).filter(notNull) : [],
+          codeRefs: Array.isArray(m.codeRefs) ? m.codeRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined, dirty: typeof c.dirty === "boolean" ? c.dirty : undefined } : null).filter(notNull) : [],
           configRefs: Array.isArray(m.configRefs) ? m.configRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined } : null).filter(notNull) : undefined,
           relation: (["implements", "configures", "preprocesses", "trains", "evaluates"] as const).includes(m.relation) ? m.relation : "implements",
           status: (m.status === "confirmed" ? "confirmed" : "proposed") as "proposed" | "confirmed",
@@ -298,6 +300,7 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           evidenceIds: Array.isArray(m.evidenceIds) ? m.evidenceIds.map(String) : [],
           paperFactIds: Array.isArray(m.paperFactIds) ? m.paperFactIds.map(String) : [],
           codeAnchorIds: Array.isArray(m.codeAnchorIds) ? m.codeAnchorIds.map(String) : [],
+          legacy: Boolean(m.legacy) || (!Array.isArray(m.paperFactIds) && !Array.isArray(m.codeAnchorIds)),
         } : null).filter(notNull)
       : [],
     decisions: Array.isArray(r.decisions)
