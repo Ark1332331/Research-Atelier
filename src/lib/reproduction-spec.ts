@@ -73,18 +73,46 @@ export interface Mapping {
   legacy?: boolean;
 }
 
-/** Decision Ledger（§6.2） */
+/** Decision Ledger（§6.2）：必须引用 gapId + paperFactIds/repoFactIds，不存裸值 */
 export interface Decision {
   id: string;
+  gapId?: string;               // 关联的 Gap（必须是可消解的 gap：value_conflict / not_found / uncomparable）
   key: string;
-  paperValue?: unknown;
-  repoValue?: unknown;
+  paperFactIds: string[];       // 参与冲突的 paper fact id（真实 id）
+  repoFactIds: string[];        // 参与冲突的 repo fact id（真实 id）
   chosen?: unknown;
   rationale?: string;
   impact?: string;
   status: "accepted" | "pending";
   blocksReady: boolean;
   resolvedAt?: string;
+}
+
+/** Gap（derived，GET 动态算；完全确定性，LLM 不参与是否冲突的判定） */
+export type GapType =
+  | "value_conflict"     // 跨侧（paper vs repo）同 key normalizedValue 不同
+  | "source_conflict"    // 同侧（paper 内或 repo 内）不同来源值不同
+  | "not_found"          // 一侧 required missing（missingType=not_found）
+  | "not_scanned"        // 一侧 missing 但 missingType=not_scanned（未扫描，不可消解）
+  | "uncomparable"       // 一侧有值但无 normalizedValue（无法比较）
+  | "missing_required";  // 该 key 在两侧都无 observed 且 required
+
+export type GapCategory = "data" | "preprocessing" | "model" | "training" | "evaluation" | "runtime";
+
+export interface Gap {
+  id: string;
+  key: string;
+  category: GapCategory;
+  type: GapType;
+  severity: "critical" | "high" | "medium" | "low";
+  blocksReady: boolean;         // required + (value_conflict | source_conflict | not_found | missing_required)
+  paperFacts: Fact[];
+  repoFacts: Fact[];
+  paperValue?: unknown;         // 显示用
+  repoValue?: unknown;
+  paperNormalized?: unknown;    // 比较用
+  repoNormalized?: unknown;
+  description: string;
 }
 
 /** 目标/约束/验收（§3 分家） */
@@ -293,22 +321,23 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           concept: String(m.concept ?? ""),
           paperRefs: Array.isArray(m.paperRefs) ? m.paperRefs.map((p: any) => isObj(p) ? { section: typeof p.section === "string" ? p.section : undefined, page: typeof p.page === "number" ? p.page : undefined, quote: typeof p.quote === "string" ? p.quote : undefined } : null).filter(notNull) : [],
           codeRefs: Array.isArray(m.codeRefs) ? m.codeRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined, dirty: typeof c.dirty === "boolean" ? c.dirty : undefined } : null).filter(notNull) : [],
-          configRefs: Array.isArray(m.configRefs) ? m.configRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined } : null).filter(notNull) : undefined,
+          configRefs: Array.isArray(m.configRefs) ? m.configRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined, dirty: typeof c.dirty === "boolean" ? c.dirty : undefined } : null).filter(notNull) : undefined,
           relation: (["implements", "configures", "preprocesses", "trains", "evaluates"] as const).includes(m.relation) ? m.relation : "implements",
           status: (m.status === "confirmed" ? "confirmed" : "proposed") as "proposed" | "confirmed",
           confidence: (["high", "medium", "low"] as const).includes(m.confidence) ? m.confidence : "medium",
           evidenceIds: Array.isArray(m.evidenceIds) ? m.evidenceIds.map(String) : [],
           paperFactIds: Array.isArray(m.paperFactIds) ? m.paperFactIds.map(String) : [],
           codeAnchorIds: Array.isArray(m.codeAnchorIds) ? m.codeAnchorIds.map(String) : [],
-          legacy: Boolean(m.legacy) || (!Array.isArray(m.paperFactIds) && !Array.isArray(m.codeAnchorIds)),
+          legacy: Boolean(m.legacy) || !Array.isArray(m.paperFactIds) || !Array.isArray(m.codeAnchorIds) || m.paperFactIds.length === 0 || m.codeAnchorIds.length === 0,
         } : null).filter(notNull)
       : [],
     decisions: Array.isArray(r.decisions)
       ? r.decisions.map((d: any) => isObj(d) ? {
           id: typeof d.id === "string" ? d.id : `d-${Math.random().toString(36).slice(2, 8)}`,
+          gapId: typeof d.gapId === "string" ? d.gapId : undefined,
           key: String(d.key ?? ""),
-          paperValue: d.paperValue,
-          repoValue: d.repoValue,
+          paperFactIds: Array.isArray(d.paperFactIds) ? d.paperFactIds.map(String) : [],
+          repoFactIds: Array.isArray(d.repoFactIds) ? d.repoFactIds.map(String) : [],
           chosen: d.chosen,
           rationale: typeof d.rationale === "string" ? d.rationale : undefined,
           impact: typeof d.impact === "string" ? d.impact : undefined,
