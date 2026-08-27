@@ -276,9 +276,6 @@ export async function discoverLocalRepos(extraDirs: string[] = []): Promise<Repo
   const seen = new Set<string>();
   const home = process.env.HOME ?? "/home/ark";
   const bases = (extraDirs.length ? extraDirs : [
-    // 当前项目根（allinone）及其子目录——NSR 的 reproduction/、workflow-app 等在这里才能被发现
-    path.resolve(process.cwd(), ".."),
-    path.resolve(process.cwd()),
     path.join(home, "projects"),
     path.join(home, "repos"),
     path.join(home, "code"),
@@ -293,19 +290,10 @@ export async function discoverLocalRepos(extraDirs: string[] = []): Promise<Repo
       return false;
     }
   };
-  const SKIP_NAMES = new Set([".next", "node_modules", ".obsidian", ".git", "dist", "out", "build", "target", "__pycache__", ".vercel", ".build-cache", "data", "src", "docs", "tmp", "release", "venv", ".venv"]);
   const looksCode = async (dir: string) => {
     try {
       const entries = await fs.readdir(dir);
-      // 信号文件名（README/requirements/pyproject/package.json/Makefile 等）→ 强信号
-      if (entries.some((e) => /^(README|requirements|environment|pyproject|setup.py|setup.cfg|package.json|Makefile|Dockerfile|CMakeLists)/i.test(e))) return true;
-      // 否则数真实代码文件数（.py/.js/.ts/.c/.cpp/.java/.go/.rs/.sh 等 ≥3 个）
-      let codeFiles = 0;
-      for (const e of entries) {
-        if (SKIP_NAMES.has(e)) continue;
-        if (/\.(py|js|jsx|ts|tsx|c|cc|cpp|h|java|go|rs|sh|m|rb)$/i.test(e)) { codeFiles++; if (codeFiles >= 3) return true; }
-      }
-      return codeFiles >= 3;
+      return entries.some((e) => /^(src|app|scripts|tests|setup.py|pyproject.toml|package.json|requirements|environment|Makefile|README|include|CMakeLists)/i.test(e));
     } catch {
       return false;
     }
@@ -318,7 +306,6 @@ export async function discoverLocalRepos(extraDirs: string[] = []): Promise<Repo
       let st;
       try { st = await fs.stat(full); } catch { continue; }
       if (!st.isDirectory() || seen.has(full)) continue;
-      if (SKIP_NAMES.has(e)) continue;
       seen.add(full);
       const git = await isGit(full);
       if (git || await looksCode(full)) {
