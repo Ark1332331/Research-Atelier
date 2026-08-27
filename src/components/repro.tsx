@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import PageHead from "@/components/page-head";
 import EnvironmentsPanel from "@/components/environments-panel";
 import SystemPanel from "@/components/system-panel";
+import ReproCopilot from "@/components/repro-copilot";
 
 type Stat = "todo" | "doing" | "done";
 interface Step { id: string; title: string; status: Stat; note?: string }
@@ -87,6 +88,11 @@ export default function Repro() {
   }
 
   async function addStep(title: string) { if (!slug || !title.trim()) return; await act({ action: "addStep", slug, title: title.trim() }); await reopen(slug); }
+  const writeStepsFromCopilot = async (steps: { title: string; note?: string; status: "todo" | "done" | "doing" }[]) => {
+    if (!slug) return;
+    for (const s of steps) await act({ action: "addStep", slug, title: s.title, status: s.status, note: s.note });
+    await reopen(slug);
+  };
   async function setStepStatus(id: string, status: Stat) { if (!slug) return; await act({ action: "setStepStatus", slug, id, status }); await reopen(slug); }
   async function delStep(id: string) { if (!slug) return; await act({ action: "deleteStep", slug, id }); await reopen(slug); }
   async function setField(field: "sourceUrl" | "repoUrl", value: string) { if (!slug) return; await act({ action: field === "sourceUrl" ? "setSource" : "setRepo", slug, [field]: value }); await reopen(slug); }
@@ -168,8 +174,10 @@ export default function Repro() {
                   ))}
                 </ul>
                 <AddStepLine onAdd={addStep} />
-                <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt()}>让 AI 帮我拆路径（生成整篇提示词后到 GPT 那边拆）</button>
+                <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt()}>生成整篇提示词（到 GPT 那边拆，或直接在下面商定）</button>
               </div>
+
+              {slug && <ReproCopilot slug={slug} writeSteps={writeStepsFromCopilot} />}
 
               <div className="repro-review">
                 <div className="repro-sec-head"><span className="mono-label">实验复盘（读本机 Codex/DSH 对话 → 提炼坑点）</span></div>

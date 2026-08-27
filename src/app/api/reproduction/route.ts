@@ -64,7 +64,8 @@ export async function POST(request: Request) {
     case "setRepo": { if (typeof body.repoUrl === "string") r.repoUrl = body.repoUrl; break; }
     case "setNote": { if (typeof body.note === "string") r.note = body.note; break; }
     case "addStep": {
-      r.path.push({ id: idFor("st"), title: String(body.title ?? "未命名步骤"), status: "todo", note: body.note ?? "" });
+      const status = ["todo", "doing", "done"].includes(body.status) ? body.status : "todo";
+      r.path.push({ id: idFor("st"), title: String(body.title ?? "未命名步骤"), status, note: body.note ?? "" });
       break;
     }
     case "updateStep": {
