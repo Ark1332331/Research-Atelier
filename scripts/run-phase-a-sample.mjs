@@ -1,7 +1,6 @@
 /**
- * Phase A 真实流程样例（world model in robotics）：
+ * Phase A 真实流程样例（world model in robotics，v1.1.1 组语义版）：
  * 真实 DeepSeek planner → 确定性 planFromIntent → session 持久化 + 状态机 + 刷新恢复。
- * 运行：RA_DATA_DIR=/tmp/ra-phase-a-sample bash -c 'set -a; . ./.env.local; set +a; node scripts/run-phase-a-sample.mjs'
  */
 import { plannerIntent } from "../src/lib/search/planner.ts";
 import { planFromIntent, deriveNextStep } from "../src/lib/search/plan.ts";
@@ -12,7 +11,7 @@ const question = "我想学习 robotics 中的 world model，最近三年为主�
 let intent;
 try {
   intent = await plannerIntent(question);
-  console.log("== intent（LLM 产出，已 normalize） ==");
+  console.log("== intent（LLM 产出，已 normalize + 年份解析） ==");
   console.log(JSON.stringify(intent, null, 2));
 } catch (e) {
   console.log("== plannerIntent 失败（网络/key）：" + (e instanceof Error ? e.message : String(e)));
@@ -33,12 +32,12 @@ console.log(JSON.stringify({
 const s0 = createSession(question);
 const s1 = withPlan(s0, intent, plan);
 await saveSession(s1);
-const s2 = await loadSession(s1.id);              // 模拟刷新：从磁盘恢复
-const s3 = transitionStage(s2, "external-opened"); // 用户点了「复制并打开 Scholar」
+const s2 = await loadSession(s1.id);
+const s3 = transitionStage(s2, "external-opened");
 await saveSession(s3);
-const s4 = transitionStage(s3, "awaiting-import"); // 用户回来说「我搜完了」
+const s4 = transitionStage(s3, "awaiting-import");
 await saveSession(s4);
-const restored = await loadSession(s1.id);         // 再次刷新：应显示 awaiting-import，不重新生成计划
+const restored = await loadSession(s1.id);
 console.log("== session 状态机（持久化 + 刷新恢复） ==");
 console.log(JSON.stringify({
   id: s1.id,

@@ -32,10 +32,12 @@ export type SearchGoal =
   | "reproducible"
   | "follow_paper";
 
-/** 检索意图：Query Planner 的输出（用户不需要学习检索语法） */
+/** 检索意图：Query Planner 的输出（用户不需要学习检索语法）。
+ *  v1.1.1 hardening：conceptGroups（组内 OR、组间 AND）取代扁平 concepts——
+ *  「world model」与「robotics」必须是不同组（组间 AND），组内放同义词（组内 OR）。 */
 export interface SearchIntent {
   goal: SearchGoal;
-  concepts: string[];
+  conceptGroups: string[][];
   context: string[];
   exclude: string[];
   preferredTypes?: string[];

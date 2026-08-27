@@ -67,7 +67,7 @@ Research Atelier 不替代学术检索平台，而是负责用户最困难的部
 
 | Step 1 内容 | 处理 | 说明 |
 |---|---|---|
-| SearchIntent（goal/concepts/context/exclude/preferredTypes/yearRange/seedPaper） | **保留** | 语义不变；Phase A 在其上产出 SearchPlan（§5） |
+| SearchIntent（goal/**conceptGroups**/context/exclude/preferredTypes/yearRange/seedPaper） | **保留（v1.1.1 字段升级）** | concepts 升级为 conceptGroups（组内 OR、组间 AND：world model 与 robotics 必须是不同组）；Phase A 在其上产出 SearchPlan（§5） |
 | ProviderPaper（sourceProvider/accessProvider 分源） | **保留** | provenance 从「证明接了多少 API」改为「让所有科研判断可核实」（DI §19） |
 | CanonicalPaper + canonicalIdFor + normalizeDoi/ArxivId/normalizedTitle | **保留** | Candidate Inbox 去重的核心（DI §7）；多版本链呈现（§7.2） |
 | PaperHitV2 | **保留** | Quick Discovery 的返回形态；字段名兼容 download_paper |
@@ -664,5 +664,13 @@ v1.1（2026-08-27）hardening patch（用户四角度审核后锁定，产品方
 - 成本原则精确为「核心工作流不依赖额外付费 Search API」（§1/§16）
 - 第一版范围锁定 MVP 1 = Phase A + Phase B-lite；C/D/E 保留设计不进入第一版（§14）
 - 新增 MVP 1 成功标准（8 步闭环，world model in robotics）（§15）
+
+v1.1.1（2026-08-27）Phase A hardening patch（进入 B-lite 前）：
+- 路由修复：/api/literature 拆为真实子路由 plan / action / session（原单 route.ts 只匹配 /api/literature，
+  子路径请求不会命中）；新增真实 HTTP 集成测试 scripts/test-literature-http.mjs（dev server 实测 14 项全过）
+- SearchIntent 语义修正：concepts → conceptGroups（组内 OR、组间 AND）；WoS 与 GS query 均由结构化 groups 编译
+- 年份注入：planner 显式注入当前年份；resolveYearRange 相对时间稳定（2026 最近三年 → [2024,2026]，clamp 未来年份）
+- goal → primary 数据库确定性规则（recent→arXiv、foundational→WoS、其余→Scholar）；支持 RA_PLANNER_MOCK 确定性集成测试
 ~~~
+
 
