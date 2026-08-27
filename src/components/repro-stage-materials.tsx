@@ -6,6 +6,8 @@ interface PaperArtifact { paperId: string; parsedPages: number; paperRevision?: 
 interface RepoArtifact { repoRootId: string; repoPath: string; commit?: string; dirty?: boolean }
 interface LibPaper { id: string; title: string; slug?: string | null }
 
+import path from "node:path";
+
 export default function ReproStageMaterials({
   paperArtifact, repoArtifact, onBind,
 }: {
@@ -18,6 +20,7 @@ export default function ReproStageMaterials({
   const [discovered, setDiscovered] = useState<{ id: string; root: string; name: string; git: boolean }[]>([]);
   const [paperPick, setPaperPick] = useState(paperArtifact?.paperId ?? "");
   const [repoPick, setRepoPick] = useState(repoArtifact?.repoRootId ?? "");
+  const [manualRepo, setManualRepo] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -39,7 +42,19 @@ export default function ReproStageMaterials({
   const ra = repoArtifact;
 
   async function bind() {
-    if (!paperPick || !repoPick) return;
+    if (!paperPick) return;
+    // 优先手动路径（任意绝对路径，含非 git / 任意位置）
+    if (manualRepo.trim()) {
+      const rp = manualRepo.trim();
+      setBusy(true);
+      try {
+        const rr = await (await fetch("/api/code-read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "registerRoot", root: rp, name: path.basename(rp) }) })).json();
+        if (!rr.ok) { alert(rr.error ?? "路径无效"); return; }
+        const reg = (rr.roots ?? []).find((x: { root: string }) => x.root === rp);
+        if (reg) { setRoots((rr.roots ?? []).map((x: { id: string; root: string; name?: string }) => ({ id: x.id, root: x.root, name: x.name }))); await onBind(paperPick, reg.id, reg.root); }
+      } finally { setBusy(false); }
+      return;
+    }
     const root = roots.find((r) => r.id === repoPick) ?? discovered.find((r) => r.id === repoPick);
     if (!root) return;
     setBusy(true);
@@ -114,7 +129,9 @@ export default function ReproStageMaterials({
             )}
           </select>
         </label>
-        <button className="btn btn--primary" disabled={busy || !paperPick || !repoPick} onClick={() => void bind()}>
+        <div className="mono-label" style={{ opacity: 0.7, marginTop: "0.2rem" }}>或手动输入本地目录路径（任意位置 / 非 git 均可）：</div>
+        <input className="field field--mini" placeholder="/home/ark/projects/IsaacLab（绝对路径）" value={manualRepo} onChange={(e) => setManualRepo(e.target.value)} />
+        <button className="btn btn--primary" disabled={busy || !paperPick || (!repoPick && !manualRepo.trim())} onClick={() => void bind()}>
           {busy ? "绑定中…" : ready ? "更新绑定" : "绑定论文与仓库"}
         </button>
       </div>
