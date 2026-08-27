@@ -1,0 +1,122 @@
+/**
+ * Paper Search Phase A 验收测试（v1.1 guardrail #1/#2/#4 + schemaVersion #3）。
+ * 运行：node scripts/test-search-plan.mjs   （Node ≥ 22.6 直接跑 TS）
+ * 覆盖：compileWosQuery / googleScholarUrl / normalizeSearchPlan（恰好一个 recommendedNow）/
+ *       planFromIntent（确定性）/ session 状态机 / deriveNextStep / normalizeSession 幂等
+ */
+import {
+  compileWosQuery, topicGroup, excludeGroup, yearClause, MAX_YEAR_SPAN,
+} from "../src/lib/search/compile-wos.ts";
+import { googleScholarUrl } from "../src/lib/search/gs-link.ts";
+import {
+  normalizeSearchPlan, normalizeIntent, planFromIntent, deriveNextStep, displayDbName,
+} from "../src/lib/search/plan.ts";
+import {
+  createSession, normalizeSession, transitionStage, SESSION_SCHEMA_VERSION,
+} from "../src/lib/search/session.ts";
+
+let pass = 0, fail = 0;
+function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }
+function same(a, b, name) { ok(JSON.stringify(a) === JSON.stringify(b), name); }
+
+const intent = {
+  goal: "explore",
+  concepts: ["world model", "world models"],
+  context: ["robotics", "embodied agent"],
+  exclude: ["mental health"],
+  yearRange: [2022, 2026],
+};
+
+console.log("== 1. compileWosQuery（guardrail #2：确定性编译） ==");
+const wos = compileWosQuery(intent);
+ok(wos.query.includes('TS=("world model" OR "world models")'), "概念组短语加引号");
+ok(wos.query.includes("TS=(robotics OR \"embodied agent\")"), "语境组");
+ok(wos.query.includes('NOT TS=("mental health")'), "排除组 NOT");
+ok(wos.query.includes("PY=(2022-2026)"), "年份区间");
+ok(wos.note === null, "五年内无提示");
+const wide = compileWosQuery({ ...intent, yearRange: [2010, 2026] });
+ok(wide.query.includes("PY=") === false && wide.note !== null, ">5 年不生成 PY 并给提示");
+const empty = compileWosQuery({ concepts: [], context: [], exclude: [], yearRange: undefined });
+ok(empty.query === "" && empty.note === null, "空 intent → 空串");
+ok(topicGroup(["cell growth", "robot*"]) === 'TS=("cell growth" OR robot*)', "带通配符不加引号");
+ok(excludeGroup(["a b"]) === 'NOT TS=("a b")', "排除组");
+const singleYear = yearClause([2022, 2022]);
+ok(singleYear.clause === "PY=2022", "单年");
+ok(MAX_YEAR_SPAN === 5, "MAX_YEAR_SPAN=5");
+
+console.log("== 2. Google Scholar URL builder（guardrail #2） ==");
+ok(googleScholarUrl('"world model" robotics') === "https://scholar.google.com/scholar?q=%22world%20model%22%20robotics", "URL 编码正确");
+ok(googleScholarUrl("  ") === "https://scholar.google.com/", "空查询回退主页");
+ok(googleScholarUrl("x").startsWith("https://scholar.google.com/"), "前缀固定");
+
+console.log("== 3. normalizeSearchPlan（guardrail #1：运行时强制恰好一个 recommendedNow） ==");
+const basePlan = {
+  intent,
+  stage: "plan-ready",
+  databases: [
+    { id: "google-scholar", purpose: "p", queries: ["a"], priority: "primary", recommendedNow: false, nextActions: [], why: "w" },
+    { id: "web-of-science", purpose: "p", queries: ["b"], priority: "secondary", recommendedNow: false, nextActions: [], why: "w" },
+  ],
+};
+const promoted = normalizeSearchPlan(basePlan);
+ok(promoted.databases.filter((d) => d.recommendedNow).length === 1, "0 个 true → 恰好提升 1 个");
+ok(promoted.databases[0].recommendedNow === true, "提升的是第一个 primary");
+const twoTrue = normalizeSearchPlan({ ...basePlan, databases: basePlan.databases.map((d) => ({ ...d, recommendedNow: true })) });
+ok(twoTrue.databases.filter((d) => d.recommendedNow).length === 1, "2 个 true → 收敛为 1 个");
+ok(twoTrue.databases[0].recommendedNow === true, "保留第一个 true");
+const withBad = normalizeSearchPlan({ ...basePlan, databases: [...basePlan.databases, { id: "unknown-db", queries: ["x"] }] });
+ok(withBad.databases.length === 2, "非法数据库被剔除");
+let threw = false;
+try { normalizeSearchPlan({ intent, databases: [] }); } catch { threw = true; }
+ok(threw, "无有效数据库 → 抛错");
+same(normalizeSearchPlan(promoted), promoted, "幂等：normalize(normalize(x)) 不变");
+
+console.log("== 4. planFromIntent（LLM 只产 intent，计划全确定性） ==");
+const plan = planFromIntent(intent);
+ok(plan.databases.filter((d) => d.recommendedNow).length === 1, "恰好一个 recommendedNow");
+ok(plan.databases[0].id === "google-scholar" && plan.databases[0].priority === "primary", "主推 Google Scholar");
+ok(plan.databases[0].deepLinkUrl.startsWith("https://scholar.google.com/scholar?q="), "GS 深链由 builder 生成");
+const wosDb = plan.databases.find((d) => d.id === "web-of-science");
+ok(wosDb && wosDb.queries[0].includes("TS=(") && wosDb.queries[0].includes("PY=(2022-2026)"), "WoS 由 compileWosQuery 编译");
+ok(plan.databases[0].queries.length === 3, "GS 三条短 query");
+ok(plan.returnPath.length === 4, "Return Path 四步");
+ok(plan.warnings.length === 0, "五年内无警告");
+same(normalizeSearchPlan(plan), plan, "planFromIntent 产物已满足不变量（幂等）");
+
+console.log("== 5. normalizeIntent ==");
+const bad = normalizeIntent({ goal: "hack", concepts: "x", context: ["a", 2, null], exclude: [], yearRange: [2030, 2020] });
+ok(bad.goal === "explore", "坏 goal 回退 explore");
+ok(Array.isArray(bad.concepts) && bad.concepts.length === 0, "非数组 concepts 回退空");
+ok(Array.isArray(bad.context) && bad.context.length === 1 && bad.context[0] === "a", "数组元素字符串化过滤");
+ok(bad.yearRange === undefined, "倒置年份丢弃");
+ok("preferredTypes" in bad === false, "空 preferredTypes 省略（幂等）");
+
+console.log("== 6. session 状态机 + schemaVersion（guardrail #3/#4） ==");
+const s = createSession("world model in robotics");
+ok(s.schemaVersion === SESSION_SCHEMA_VERSION && s.schemaVersion === 1, "schemaVersion=1 一开始就带");
+ok(s.stage === "planning", "初始 planning");
+const s1 = transitionStage(s, "ready-to-search");
+ok(s1.stage === "ready-to-search" && s.stage === "planning", "planning → ready-to-search（原对象不变）");
+const s2 = transitionStage(s1, "external-opened");
+ok(s2.stage === "external-opened", "ready-to-search → external-opened");
+const s3 = transitionStage(s2, "awaiting-import");
+ok(s3.stage === "awaiting-import", "external-opened → awaiting-import");
+let direct = false;
+try { transitionStage(s1, "awaiting-import"); } catch { direct = true; }
+ok(direct === false, "ready-to-search → awaiting-import 合法（用户直接回来说搜完了）");
+let illegal = false;
+try { transitionStage(s, "external-opened"); } catch { illegal = true; }
+ok(illegal, "planning → external-opened 非法（必须先有计划）");
+same(normalizeSession(s3), s3, "session 幂等归一化");
+const ns = normalizeSession({ id: "x", question: 123 });
+ok(ns.schemaVersion === 1 && ns.stage === "planning" && ns.question === "", "坏字段回退默认");
+
+console.log("== 7. deriveNextStep（derived state，不持久化） ==");
+ok(deriveNextStep({ stage: "ready-to-search", plan }).action.includes("Google Scholar"), "ready-to-search → 打开推荐库");
+ok(deriveNextStep({ stage: "external-opened", plan }).action.includes("我搜完了"), "external-opened → 回来导入");
+ok(deriveNextStep({ stage: "awaiting-import", plan }).action.includes("带回来"), "awaiting-import → 带回来");
+ok(displayDbName("google-scholar") === "Google Scholar", "展示名");
+
+console.log("\n结果：" + pass + " 通过 / " + fail + " 失败");
+process.exit(fail ? 1 : 0);
+

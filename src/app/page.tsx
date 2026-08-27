@@ -8,10 +8,11 @@ import Repro from "@/components/repro";
 import ChatPanel from "@/components/chat-panel";
 import PageHead from "@/components/page-head";
 import CodeReading from "@/components/code-reading";
+import Discovery from "@/components/discovery";
 import { papers as papersRaw, researchPhases } from "@/lib/data-atelier";
 import type { Term } from "@/app/api/terms/route";
 
-type Page = "overview" | "screen" | "explain" | "terms" | "repro" | "code";
+type Page = "overview" | "discovery" | "screen" | "explain" | "terms" | "repro" | "code";
 
 type Paper = Omit<(typeof papersRaw)[number], "connections"> & { connections: string[] };
 const papers = papersRaw as Paper[];
@@ -19,6 +20,7 @@ const papers = papersRaw as Paper[];
 /** 左栏视图（图标为线性 path，同 stroke 风格） */
 const VIEWS: { id: Page; label: string; num: string | null; icon: string }[] = [
   { id: "overview", label: "论文库", num: null, icon: "M2.5 2.5h4.5v4.5H2.5zM9 2.5h4.5v4.5H9zM2.5 9h4.5v4.5H2.5zM9 9h4.5v4.5H9z" },
+  { id: "discovery", label: "文献发现", num: "00", icon: "M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM8 4.6 9.3 7.1 11.5 8 9.3 8.9 8 11.4 6.7 8.9 4.5 8 6.7 7.1z" },
   { id: "screen", label: "论文筛选", num: "01", icon: "M2 3.5h12M4.5 8h7M6.5 12.5h3" },
   { id: "explain", label: "精读讲解", num: "02", icon: "M4 2.5c2.7-.6 5.3 0 5.3 0v11s-2.4-.8-5.3 0zM12 2.5c-2.7-.6-2.7 0-2.7 0v11s2.4-.8 5.3 0" },
   { id: "terms", label: "术语卡", num: "03", icon: "M2.5 3h8v8h-8zM13.5 5.5v8h-8" },
@@ -158,6 +160,18 @@ export default function App() {
           {page === "overview" && <PaperLibrary onNavigate={(p) => (p === "explain" ? openReader() : go(p as Page))} />}
 
           {page === "code" && <CodeReading />}
+
+          {page === "discovery" && (
+            <>
+              <PageHead
+                num="00" name="文献发现"
+                title="文献发现"
+                desc="不会搜？先告诉我你的研究问题——我给你检索策略，再陪你去真实数据库；搜完回来我帮你筛。"
+                meta="Phase A · Search Guide · Research Session 持久化"
+              />
+              <Discovery />
+            </>
+          )}
 
           {page === "screen" && (
             <>

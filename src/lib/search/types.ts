@@ -262,3 +262,105 @@ export function canonicalIdFor(paper: {
   return title ? "title:" + title : "";
 }
 
+
+
+/* ================ Phase A：Search Guide / Research Session（v1.1 封板 schema） ================ */
+
+/** SearchPlan 阶段状态机（v1.1 guardrail #4：Return Path 落到状态机，不只 UI 文案） */
+export type SearchPlanStage =
+  | "planning"          // 尚未生成计划
+  | "ready-to-search"   // 计划已生成，推荐当前动作，等待用户去真实网站
+  | "external-opened"   // 用户已点击打开外部数据库
+  | "awaiting-import";  // 用户声称搜完回来，等待导入（Phase B-lite）
+
+export interface DatabaseStrategy {
+  id: "google-scholar" | "web-of-science" | "semantic-scholar" | "arxiv" | "openalex";
+  purpose: string;
+  queries: string[];
+  recommendedFirst?: string;
+  priority: "primary" | "secondary" | "later";
+  recommendedNow: boolean;  // v1.1：一个 SearchPlan 只允许恰好一个 true（代码强制，见 normalizeSearchPlan）
+  deepLinkUrl?: string;     // 只由确定性 builder 生成（gs-link.ts），LLM 返回的 URL 一律不可信
+  nextActions: string[];
+  why: string;
+}
+
+export interface SearchPlan {
+  intent: SearchIntent;
+  stage: "plan-ready";
+  databases: DatabaseStrategy[];
+  suggestedFirstAction: string;
+  returnPath: string[];     // v1.1：这一轮任务 ①–④（由代码生成，Return Path）
+  warnings: string[];       // 如 WoS 年份跨度提示
+  createdAt: string;
+}
+
+export interface DatabaseAction {
+  database: string;
+  action: "query-generated" | "opened" | "results-imported";  // 只记录系统可确认的动作
+  at: string;
+}
+
+export interface NextStep { action: string; reason: string; }
+
+/* ---- Phase B/C schema（随 ResearchSession 一并落位；逻辑 Phase B/C 实现） ---- */
+
+export type PaperRole =
+  | "survey" | "foundational" | "core" | "follow-up"
+  | "competing" | "recent" | "applied" | "peripheral";
+export type ReadingDepth = "skip" | "skim" | "targeted" | "deep";
+export type EvidenceLevel = "metadata" | "abstract" | "fulltext" | "citation-graph";
+
+export interface EvidenceRef { kind: EvidenceLevel; source: string; detail?: string; }
+
+export interface PaperTriage {
+  paperId: string;
+  role: PaperRole;
+  roleReason: string;
+  roleConfidence: "high" | "medium" | "low";
+  roleEvidence: EvidenceRef[];
+  worthReading: string;
+  relationToQuestion: "high" | "medium" | "low" | "unknown";
+  depth: ReadingDepth;
+  evidenceLevel: EvidenceLevel;
+  keySections: string[];    // 仅 evidenceLevel=fulltext 时允许填写，否则必须为空（v1.1）
+  skipSections: string[];
+  d: { d1: string; d2: string; d3: string; d4: string; d5: string; d6: string; };
+  verdict: "读" | "扫读" | "跳过" | "待定";
+}
+
+export type MapRelation = "cites" | "related" | "author-continuity";
+
+export interface MapNode { paperId: string; title: string; year?: number; role?: PaperRole; cluster?: string; }
+export interface MapEdge {
+  from: string; to: string;
+  relation: MapRelation;
+  explanation: string;
+  evidence: string;
+}
+export interface ReadingPath { id: string; nodes: string[]; audience: "beginner" | "recent-3y" | "custom"; rationale: string; }
+
+/* ---- ResearchSession（v1.1：schemaVersion 一开始就带） ---- */
+
+export interface ResearchSession {
+  schemaVersion: number;
+  id: string;
+  question: string;
+  stage: SearchPlanStage;
+  intent?: SearchIntent;
+  plan?: SearchPlan;
+  databaseActions: DatabaseAction[];
+  candidates: CanonicalPaper[];
+  triage: PaperTriage[];
+  seedPapers: string[];
+  map?: { nodes: MapNode[]; edges: MapEdge[] };
+  readingPaths: ReadingPath[];
+  openQuestions: string[];
+  nextStepHistory: NextStep[];  // derived 建议的 history（备查，不作为当前真相）
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** LLM 只产结构化意图（guardrail #2）；计划/URL/查询串由代码确定性生成 */
+export interface RawPlannerOutput { intent: SearchIntent; }
+
