@@ -5,7 +5,8 @@ import PageHead from "@/components/page-head";
 import EnvironmentsPanel from "@/components/environments-panel";
 import SystemPanel from "@/components/system-panel";
 import ReproCopilot from "@/components/repro-copilot";
-import ReproTarget, { type Target, type Constraints, type Acceptance } from "@/components/repro-target";
+import ReproTarget from "@/components/repro-target";
+import { isDefinitionComplete, type Target, type Constraints, type Acceptance } from "@/lib/reproduction-spec";
 
 type Stat = "todo" | "doing" | "done";
 interface Step { id: string; title: string; status: Stat; note?: string }
@@ -103,14 +104,13 @@ export default function Repro() {
 
   const saveTarget = async (t: Target, c: Constraints, a: Acceptance) => {
     if (!slug) return;
-    await act({ action: "setTarget", slug, target: t });
-    await act({ action: "setConstraints", slug, constraints: c });
-    await act({ action: "setAcceptance", slug, acceptance: a });
+    // 单动作原子写入（对应「保存目标与验收」；后端一次 upsert，避免三次 POST 中途形成部分状态）
+    await act({ action: "setDefinition", slug, target: t, constraints: c, acceptance: a });
     await reopen(slug);
   };
 
-  // 门控：目标/约束/验收未定义时，不允许拆路径/加步骤/商定（§13 目标定义器）
-  const targetReady = Boolean(rec?.target?.name && rec.constraints && rec.acceptance && rec.acceptance.criteria.length > 0);
+  // 门控：目标/约束/验收未定义时，不允许拆路径/加步骤/商定（共享 helper，与后端同一判断）
+  const targetReady = isDefinitionComplete(rec ?? undefined);
 
   return (
     <section>

@@ -16,7 +16,7 @@
  *   delete {slug}                          删整篇
  * 数据：data/reproduction.json（见 src/lib/reproduction.ts）
  */
-import { listReproductions, getReproduction, upsertReproduction, deleteReproduction, idFor, type Reproduction, type ReproductionStep } from "@/lib/reproduction";
+import { listReproductions, getReproduction, upsertReproduction, deleteReproduction, idFor, isDefinitionComplete, type Reproduction, type ReproductionStep } from "@/lib/reproduction";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -63,6 +63,13 @@ export async function POST(request: Request) {
     case "setSource": { if (typeof body.sourceUrl === "string") r.sourceUrl = body.sourceUrl; break; }
     case "setRepo": { if (typeof body.repoUrl === "string") r.repoUrl = body.repoUrl; break; }
     case "setNote": { if (typeof body.note === "string") r.note = body.note; break; }
+    case "setDefinition": {
+      // 原子式一次写入 target/constraints/acceptance（对应 UI 的「保存目标与验收」单动作）
+      if (body.target && typeof body.target === "object") r.target = body.target;
+      if (body.constraints && typeof body.constraints === "object") r.constraints = body.constraints;
+      if (body.acceptance && typeof body.acceptance === "object") r.acceptance = body.acceptance;
+      break;
+    }
     case "setTarget": {
       if (body.target && typeof body.target === "object") r.target = body.target;
       break;
@@ -76,6 +83,10 @@ export async function POST(request: Request) {
       break;
     }
     case "addStep": {
+      // 业务门控：未完成「你想复现什么」前禁止拆路径（与 UI 门控同一 helper）
+      if (!isDefinitionComplete(r)) {
+        return Response.json({ error: "先完成“你想复现什么”（目标 + 约束 + 验收），再添加复现步骤。" }, { status: 400 });
+      }
       const status = ["todo", "doing", "done"].includes(body.status) ? body.status : "todo";
       r.path.push({ id: idFor("st"), title: String(body.title ?? "未命名步骤"), status, note: body.note ?? "" });
       break;

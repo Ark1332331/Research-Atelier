@@ -333,4 +333,30 @@ export function specsEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * 复现目标定义是否完整（Step 2 门控 + 未来 Ready Gate 共用）。
+ * 完整 = target 有名字 + constraints 有修改政策 + acceptance 至少一条标准。
+ * 注意：不要求 metrics 非空——「先把官方代码跑起来」这类 preset 允许 0 指标。
+ */
+export function isDefinitionComplete(spec: Partial<ReproductionSpec> | null | undefined): boolean {
+  if (!spec) return false;
+  const t = spec.target;
+  const c = spec.constraints;
+  const a = spec.acceptance;
+  if (!t || typeof t.name !== "string" || !t.name.trim()) return false;
+  if (!c || !["none", "minimal", "allowed"].includes(c.modificationPolicy)) return false;
+  if (!a || !Array.isArray(a.criteria) || a.criteria.length === 0) return false;
+  return true;
+}
+
+/** 人类可读的「未定义完成」原因（给 UI/API 提示用） */
+export function definitionGaps(spec: Partial<ReproductionSpec> | null | undefined): string[] {
+  if (!spec) return ["还没有复现记录"];
+  const gaps: string[] = [];
+  if (!spec.target || !spec.target.name?.trim()) gaps.push("未定义复现目标");
+  if (!spec.constraints || !["none", "minimal", "allowed"].includes(spec.constraints.modificationPolicy)) gaps.push("未确认修改政策");
+  if (!spec.acceptance || !spec.acceptance.criteria?.length) gaps.push("未确认验收标准");
+  return gaps;
+}
+
 /* ================= 存储层在 reproduction.ts（本文件为纯逻辑，可被迁移测试直接 import） ================= */

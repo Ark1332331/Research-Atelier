@@ -5,6 +5,7 @@
  * 指定 stepId：改为聚焦这一步。
  */
 import { getReproduction } from "@/lib/reproduction";
+import { isDefinitionComplete } from "@/lib/reproduction";
 import { readStore } from "@/lib/store";
 
 const STAT = { todo: "待办", doing: "进行中", done: "已完成" } as const;
@@ -27,6 +28,11 @@ export async function POST(request: Request) {
   if (!slug) return Response.json({ error: "slug 必填" }, { status: 400 });
   const r = await getReproduction(slug);
   if (!r) return Response.json({ error: "记录不存在" }, { status: 404 });
+
+  // 门控：未完成「你想复现什么」前禁止生成复现计划（与 UI/addStep 同一 helper）
+  if (!isDefinitionComplete(r)) {
+    return Response.json({ error: "先完成“你想复现什么”（目标 + 约束 + 验收），再生成复现计划。" }, { status: 400 });
+  }
 
   const profile = await profileSummary();
   const pathText = r.path.length
