@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-interface Env { name: string; python: string; torch: string; pkgCount: number; purpose: string; stage: string }
+interface Env { name: string; python: string; torch: string; pkgCount: number; purpose: string; stage: string; keyPkgs?: { name: string; version: string }[] }
 interface Pkg { name: string; version: string; build: string }
 
-/** 这个环境"独特/关键"的特征包：核心版本 + 明显指示用途的库（不列 conda 共有基础包） */
+/** 无基线时本地"独特/关键"特征包：核心版本 + 明显指示用途的库（不列 conda 共有基础包） */
 const KEY_RE = /^(python|torch|torchvision|torchaudio|pytorch|cudatoolkit|cuda|nvidia-|numpy|numba|scipy|minkowski|isaac|omni|pxr|stable-worldmodel|gymnasium|mujoco|rsl_rl|rsl-rl|rl_games|robosuite|unitree|legged)/i;
 
 export default function EnvironmentsPanel() {
@@ -16,17 +16,17 @@ export default function EnvironmentsPanel() {
   const [stage, setStage] = useState("");
   const [loadPkgs, setLoadPkgs] = useState(false);
   const [showAll, setShowAll] = useState(false);
-  const [system, setSystem] = useState<Record<string, string>>({});
+  const [baseline, setBaseline] = useState(""); // 基线环境名；空=不启用对比
 
   async function load() {
     try {
-      const r = await fetch("/api/environments");
+      const q = baseline ? `?baseline=${encodeURIComponent(baseline)}` : "";
+      const r = await fetch(`/api/environments${q}`);
       const d = await r.json();
       setEnvs(d.envs ?? []);
-      setSystem(d.system ?? {});
     } catch { /* */ }
   }
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [baseline]);
 
   async function openEnv(name: string) {
     setOpen(name);
@@ -54,7 +54,15 @@ export default function EnvironmentsPanel() {
     } catch { /* */ }
   }
 
-  const keyPkgs = useMemo(() => pkgs.filter((p) => KEY_RE.test(p.name)).slice(0, 40), [pkgs]);
+  // 特征包来源：启用基线 → 用后端对比结果（相对基线的独有包/版本不同）；否则本地 KEY_RE。
+  const keyPkgs = useMemo(() => {
+    if (baseline) {
+      const cur = envs.find((e) => e.name === open);
+      return cur?.keyPkgs ?? [];
+    }
+    return pkgs.filter((p) => KEY_RE.test(p.name)).slice(0, 40);
+  }, [baseline, envs, open, pkgs]);
+
   const shown = showAll ? pkgs : keyPkgs;
 
   return (
@@ -63,19 +71,19 @@ export default function EnvironmentsPanel() {
         <span className="mono-label">conda 环境卡</span>
         <button className="btn btn--ghost btn--quiet" onClick={() => void load()}>刷新</button>
       </div>
-      {Object.keys(system).length > 0 && (
-        <div className="env-system">
-          <div className="env-system-title"><span className="mono-label">全局环境</span></div>
-          <div className="env-system-grid">
-            {system.os && <span>系统 <b>{system.os}</b></span>}
-            {system.kernel && <span>内核 <b>{system.kernel}</b></span>}
-            {system.arch && <span>架构 <b>{system.arch}</b></span>}
-            {system.gpu && <span>GPU <b>{system.gpu}</b></span>}
-            {system.driver && <span>驱动 <b>{system.driver}</b></span>}
-            {system.python && <span>系统 Python <b>{system.python}</b></span>}
-          </div>
-        </div>
-      )}
+
+      {/* 基线环境选择（对比式特征包） */}
+      <div className="env-baseline">
+        <span className="mono-label">基线（对比）</span>
+        <select className="field field--mini" value={baseline} onChange={(e) => { setBaseline(e.target.value); setOpen(null); }}>
+          <option value="">不启用对比</option>
+          {envs.map((e) => (
+            <option key={e.name} value={e.name}>{e.name === "miniconda3" ? "base（miniconda 裸环境，推荐基线）" : e.name}</option>
+          ))}
+        </select>
+        {baseline && <span className="mono-label">特征包 = 相对「{baseline === "miniconda3" ? "base" : baseline}」多装/版本不同</span>}
+      </div>
+
       {envs.length === 0 && <p className="mono-label">未读到环境（非本机或需 ra_conda_bin）</p>}
       <ul className="env-list">
         {envs.map((e) => (
@@ -94,9 +102,8 @@ export default function EnvironmentsPanel() {
                 </div>
                 <div className="env-pkgs">
                   <span className="mono-label">
-                    {showAll ? `全部包 ${pkgs.length}` : `特征包 ${keyPkgs.length}`}
-                    {showAll && keyPkgs.length ? <button className="btn btn--ghost btn--quiet" style={{ marginLeft: "0.4rem" }} onClick={() => setShowAll(false)}>只看特征</button> : null}
-                    {!showAll && pkgs.length > keyPkgs.length ? <button className="btn btn--ghost btn--quiet" style={{ marginLeft: "0.4rem" }} onClick={() => setShowAll(true)}>展开全部 {pkgs.length}</button> : null}
+                    {showAll ? `全部包 ${pkgs.length}` : `特征包 ${keyPkgs.length}${baseline ? " · 对比基线" : ""}`}
+                    {shown.length > 40 && <button className="btn btn--ghost btn--quiet" style={{ marginLeft: "0.4rem" }} onClick={() => setShowAll(!showAll)}>{showAll ? "只看特征" : `展开全部 ${pkgs.length}`}</button>}
                   </span>
                   {loadPkgs && <span className="mono-label">采样中…</span>}
                   <ul>

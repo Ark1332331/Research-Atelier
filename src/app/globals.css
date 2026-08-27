@@ -3543,10 +3543,10 @@ input, textarea, select {
 
 /* 复现工作台 */
 .repro-layout { display: flex; gap: 1rem; align-items: flex-start; }
-.repro-list, .repro-main, .repro-env { background: var(--bg-soft, #fbfaf7); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem; }
+.repro-list, .repro-main, .repro-right { background: var(--bg-soft, #fbfaf7); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem; }
 .repro-list { flex: 0 0 250px; max-height: 78vh; overflow: auto; }
 .repro-main { flex: 1; min-width: 0; }
-.repro-env { flex: 0 0 260px; max-height: 78vh; overflow: auto; }
+.repro-right { flex: 0 0 270px; max-height: 78vh; overflow: auto; display: flex; flex-direction: column; gap: 0.9rem; }
 .repro-list-head, .repro-sec-head, .env-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.6rem; }
 .repro-add { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; }
 .repro-row { display: flex; flex-direction: column; gap: 0.2rem; text-align: left; width: 100%; padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); cursor: pointer; margin-bottom: 0.35rem; }
@@ -3586,3 +3586,9 @@ input, textarea, select {
 .env-system-grid { display: flex; flex-wrap: wrap; gap: 0.6rem 0.9rem; margin-top: 0.3rem; }
 .env-system-grid span { font-family: var(--font-dm-mono); font-size: 0.6rem; color: var(--muted-foreground); }
 .env-system-grid b { color: var(--fg); font-weight: 600; }
+
+/* 环境卡 · 基线（对比式特征包） */
+.env-baseline { display: flex; flex-direction: column; gap: 0.3rem; border: 1px dashed var(--border); border-radius: 8px; padding: 0.5rem 0.6rem; margin-bottom: 0.6rem; }
+.env-baseline select { width: 100%; }
+.env-baseline .mono-label { color: var(--muted-foreground); }
+.sys-panel .env-system-grid { margin-top: 0; }

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import PageHead from "@/components/page-head";
 import EnvironmentsPanel from "@/components/environments-panel";
+import SystemPanel from "@/components/system-panel";
 
 type Stat = "todo" | "doing" | "done";
 interface Step { id: string; title: string; status: Stat; note?: string }
@@ -166,8 +167,9 @@ export default function Repro() {
           )}
         </div>
 
-        {/* 右：环境卡（内嵌） */}
-        <div className="repro-env">
+        {/* 右：全局环境 + conda 环境卡（两张独立卡片） */}
+        <div className="repro-right">
+          <SystemPanel />
           <EnvironmentsPanel />
         </div>
       </div>
