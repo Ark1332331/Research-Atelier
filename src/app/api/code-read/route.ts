@@ -12,7 +12,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { readStore } from "@/lib/store";
+import { readStore, writeStore } from "@/lib/store";
 import { isAllowedFile, checkReadable, scanTree } from "@/lib/code-reader";
 
 interface RootConfig { id: string; name: string; root: string }
@@ -59,6 +59,13 @@ export async function GET(request: Request) {
   const rootId = url.searchParams.get("root") ?? "project";
   const rel = url.searchParams.get("file");
 
+  // discover=1：返回本机自动发现的代码库（repo 绑定用；不登记 code-roots.json）
+  if (url.searchParams.get("discover") === "1") {
+    const { discoverLocalRepos } = await import("@/lib/code-reader");
+    const discovered = await discoverLocalRepos();
+    return Response.json({ registered: await readRoots(), discovered });
+  }
+
   const roots = await readRoots();
   const rootCfg = roots.find((r) => r.id === rootId) ?? roots[0];
   if (!rootCfg) return Response.json({ roots: [], currentRoot: null, files: [] });
@@ -101,4 +108,26 @@ export async function GET(request: Request) {
   }
 
   return Response.json(resp);
+}
+
+/** POST /api/code-read { action: "registerRoot", root, name? } → 把本地仓库登记进 code-roots.json
+ *  （供材料绑定阶段把自动发现的仓库持久化；幂等：同 root 不重复登记）。 */
+export async function POST(request: Request) {
+  let body: { action?: string; root?: string; name?: string };
+  try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
+  if (body.action !== "registerRoot") return Response.json({ error: `未知 action：${body.action}` }, { status: 400 });
+  const root = (body.root ?? "").trim();
+  if (!root) return Response.json({ error: "root 必填" }, { status: 400 });
+  let st;
+  try { st = await fs.stat(root); } catch { return Response.json({ error: "路径不存在" }, { status: 404 }); }
+  if (!st.isDirectory()) return Response.json({ error: "不是目录" }, { status: 400 });
+  const roots = (JSON.parse((await readStore("code-roots.json")) ?? '{"roots":[]}').roots ?? []) as RootConfig[];
+  const resolved = path.resolve(root);
+  const existing = roots.find((r) => path.resolve(r.root) === resolved);
+  if (!existing) {
+    const id = body.name ? `repo-${body.name.replace(/[^a-z0-9-]+/gi, "-").toLowerCase().slice(0, 24)}` : `repo-${Date.now().toString(36)}`;
+    roots.push({ id, name: body.name ?? path.basename(root), root: resolved });
+    await writeStore("code-roots.json", JSON.stringify({ roots }, null, 2));
+  }
+  return Response.json({ ok: true, roots });
 }

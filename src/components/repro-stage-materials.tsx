@@ -15,6 +15,7 @@ export default function ReproStageMaterials({
 }) {
   const [libPapers, setLibPapers] = useState<LibPaper[]>([]);
   const [roots, setRoots] = useState<{ id: string; root: string; name?: string }[]>([]);
+  const [discovered, setDiscovered] = useState<{ id: string; root: string; name: string; git: boolean }[]>([]);
   const [paperPick, setPaperPick] = useState(paperArtifact?.paperId ?? "");
   const [repoPick, setRepoPick] = useState(repoArtifact?.repoRootId ?? "");
   const [busy, setBusy] = useState(false);
@@ -24,8 +25,9 @@ export default function ReproStageMaterials({
       try {
         const d = await (await fetch("/api/library")).json();
         setLibPapers((d.papers ?? []).filter((p: LibPaper) => p.title && p.slug));
-        const r = await (await fetch("/api/code-read")).json();
-        setRoots((r.roots ?? []).map((x: { id: string; root: string; name?: string }) => ({ id: x.id, root: x.root, name: x.name })));
+        const r = await (await fetch("/api/code-read?discover=1")).json();
+        setRoots((r.registered ?? []).map((x: { id: string; root: string; name?: string }) => ({ id: x.id, root: x.root, name: x.name })));
+        setDiscovered((r.discovered ?? []).map((x: { id: string; root: string; name: string; git: boolean }) => ({ id: x.id, root: x.root, name: x.name, git: x.git })));
       } catch { /* */ }
     })();
   }, []);
@@ -38,10 +40,22 @@ export default function ReproStageMaterials({
 
   async function bind() {
     if (!paperPick || !repoPick) return;
-    const root = roots.find((r) => r.id === repoPick);
+    const root = roots.find((r) => r.id === repoPick) ?? discovered.find((r) => r.id === repoPick);
     if (!root) return;
     setBusy(true);
-    try { await onBind(paperPick, repoPick, root.root); } finally { setBusy(false); }
+    try {
+      let rootId = repoPick;
+      // 若选的是自动发现的仓库（未在 code-roots.json）→ 先登记成持久 root
+      if (repoPick.startsWith("discover-")) {
+        const rr = await (await fetch("/api/code-read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "registerRoot", root: root.root, name: root.name }) })).json();
+        if (rr.ok && rr.roots?.length) {
+          const reg = rr.roots.find((x: { root: string }) => x.root === root.root);
+          rootId = reg?.id ?? repoPick;
+          setRoots((rr.roots ?? []).map((x: { id: string; root: string; name?: string }) => ({ id: x.id, root: x.root, name: x.name })));
+        }
+      }
+      await onBind(paperPick, rootId, root.root);
+    } finally { setBusy(false); }
   }
 
   return (
@@ -86,9 +100,18 @@ export default function ReproStageMaterials({
           本地代码仓库
           <select className="field field--mini" value={repoPick} onChange={(e) => setRepoPick(e.target.value)}>
             <option value="">选择仓库…</option>
-            {roots.map((r) => (
-              <option key={r.id} value={r.id}>{r.name ?? r.id} · {r.root}</option>
-            ))}
+            <optgroup label="已登记">
+              {roots.map((r) => (
+                <option key={r.id} value={r.id}>{r.name ?? r.id} · {r.root}</option>
+              ))}
+            </optgroup>
+            {discovered.length > 0 && (
+              <optgroup label="本机发现（选择后将登记）">
+                {discovered.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}{r.git ? " · git" : ""} · {r.root}</option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </label>
         <button className="btn btn--primary" disabled={busy || !paperPick || !repoPick} onClick={() => void bind()}>

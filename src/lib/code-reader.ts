@@ -11,6 +11,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 /* ================= 1. 允许规则（三类分开） ================= */
 
@@ -262,4 +263,56 @@ export async function buildRepositorySnapshot(root: string): Promise<Record<stri
     totalFiles: files.length,
     omitted,
   };
+}
+
+/* ================= 5. 本机代码库发现（repo 绑定用） ================= */
+
+export interface RepoDiscover { id: string; name: string; root: string; git: boolean }
+
+/** 扫描常见本机代码库位置（~/projects/*、~/repos/*、~/code/*、~/workspace/*、~/Documents/*），
+ *  返回可作为 repo root 的候选目录（有代码文件或 .git 的；不登记进 code-roots.json，只做发现）。 */
+export async function discoverLocalRepos(extraDirs: string[] = []): Promise<RepoDiscover[]> {
+  const out: RepoDiscover[] = [];
+  const seen = new Set<string>();
+  const home = process.env.HOME ?? "/home/ark";
+  const bases = (extraDirs.length ? extraDirs : [
+    path.join(home, "projects"),
+    path.join(home, "repos"),
+    path.join(home, "code"),
+    path.join(home, "workspace"),
+    path.join(home, "Documents"),
+  ]);
+  const isGit = async (dir: string) => {
+    try {
+      await fs.stat(path.join(dir, ".git"));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const looksCode = async (dir: string) => {
+    try {
+      const entries = await fs.readdir(dir);
+      return entries.some((e) => /^(src|app|scripts|tests|setup.py|pyproject.toml|package.json|requirements|environment|Makefile|README|include|CMakeLists)/i.test(e));
+    } catch {
+      return false;
+    }
+  };
+  for (const base of bases) {
+    let entries: string[];
+    try { entries = await fs.readdir(base); } catch { continue; }
+    for (const e of entries) {
+      const full = path.join(base, e);
+      let st;
+      try { st = await fs.stat(full); } catch { continue; }
+      if (!st.isDirectory() || seen.has(full)) continue;
+      seen.add(full);
+      const git = await isGit(full);
+      if (git || await looksCode(full)) {
+        out.push({ id: `discover-${createHash("sha1").update(full).digest("hex").slice(0, 8)}`, name: e, root: full, git });
+      }
+    }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
