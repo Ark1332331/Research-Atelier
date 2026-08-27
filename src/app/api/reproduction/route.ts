@@ -63,6 +63,18 @@ export async function POST(request: Request) {
     case "setSource": { if (typeof body.sourceUrl === "string") r.sourceUrl = body.sourceUrl; break; }
     case "setRepo": { if (typeof body.repoUrl === "string") r.repoUrl = body.repoUrl; break; }
     case "setNote": { if (typeof body.note === "string") r.note = body.note; break; }
+    case "setTarget": {
+      if (body.target && typeof body.target === "object") r.target = body.target;
+      break;
+    }
+    case "setConstraints": {
+      if (body.constraints && typeof body.constraints === "object") r.constraints = body.constraints;
+      break;
+    }
+    case "setAcceptance": {
+      if (body.acceptance && typeof body.acceptance === "object") r.acceptance = body.acceptance;
+      break;
+    }
     case "addStep": {
       const status = ["todo", "doing", "done"].includes(body.status) ? body.status : "todo";
       r.path.push({ id: idFor("st"), title: String(body.title ?? "未命名步骤"), status, note: body.note ?? "" });

@@ -3611,3 +3611,31 @@ input, textarea, select {
 .copilot-done { font-family: var(--font-dm-mono); font-size: 0.62rem; color: var(--accent); margin-bottom: 0.35rem; }
 .copilot-input { display: flex; gap: 0.4rem; align-items: flex-end; }
 .copilot-input .field { flex: 1; }
+
+/* 目标定义器（Step 2） */
+.repro-target { margin-bottom: 0.9rem; border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem; background: var(--bg); }
+.repro-target.is-done { border-color: var(--border); }
+.repro-target-summary { display: flex; flex-direction: column; gap: 0.3rem; }
+.repro-target-form { display: flex; flex-direction: column; gap: 0.8rem; }
+.repro-target-q { display: flex; flex-direction: column; gap: 0.4rem; }
+.repro-target-scopes { display: flex; flex-direction: column; gap: 0.35rem; }
+.repro-target-opt { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.repro-target-opt.is-on { border-color: var(--accent); background: var(--accent-soft, #f5efdd); }
+.repro-target-opt span { display: flex; flex-direction: column; }
+.repro-target-opt small { opacity: 0.65; }
+.repro-target-cands { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.repro-target-cands .chip { cursor: pointer; }
+.repro-target-cands .chip--on { border-color: var(--accent); background: var(--accent-soft, #f5efdd); }
+.repro-target-metrics { display: flex; flex-direction: column; gap: 0.35rem; }
+.repro-target-metric { display: flex; gap: 0.35rem; align-items: center; }
+.repro-target-cons { display: flex; flex-direction: column; gap: 0.45rem; }
+.repro-target-cons label { display: flex; align-items: center; gap: 0.5rem; }
+.repro-target-cons .field { flex: 1; }
+.repro-inline { display: flex; gap: 0.35rem; align-items: center; flex: 1; }
+.repro-inline .field { flex: 1; }
+.repro-target-accept ul { list-style: none; padding: 0; margin: 0 0 0.4rem; }
+.repro-target-accept li { padding: 0.2rem 0; }
+.repro-target-accept-edit { display: flex; flex-direction: column; gap: 0.35rem; }
+.repro-target-accept-row { display: flex; gap: 0.35rem; align-items: center; }
+.repro-target-accept-row .field:first-child { flex: 1; }
+.repro-gate { border: 1px dashed var(--accent); border-radius: 8px; padding: 0.5rem 0.7rem; margin-bottom: 0.9rem; background: var(--accent-soft, #f5efdd); }

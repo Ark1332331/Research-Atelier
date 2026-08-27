@@ -5,11 +5,12 @@ import PageHead from "@/components/page-head";
 import EnvironmentsPanel from "@/components/environments-panel";
 import SystemPanel from "@/components/system-panel";
 import ReproCopilot from "@/components/repro-copilot";
+import ReproTarget, { type Target, type Constraints, type Acceptance } from "@/components/repro-target";
 
 type Stat = "todo" | "doing" | "done";
 interface Step { id: string; title: string; status: Stat; note?: string }
 interface Pit { id: string; text: string; env: boolean; stage?: string; papers?: string[]; createdAt: string }
-interface Repr { slug: string; title: string; sourceUrl?: string; repoUrl?: string; note?: string; path: Step[]; pitfalls: Pit[]; updatedAt?: string }
+interface Repr { slug: string; title: string; sourceUrl?: string; repoUrl?: string; note?: string; path: Step[]; pitfalls: Pit[]; target?: Target; constraints?: Constraints; acceptance?: Acceptance; updatedAt?: string }
 interface Sum { slug: string; title: string; sourceUrl?: string; repoUrl?: string; pathCount: number; doneCount: number; pitfallCount: number }
 
 interface LibPaper { id: string; title: string; slug?: string | null; status?: string; group?: string | null }
@@ -100,6 +101,17 @@ export default function Repro() {
   async function delPitfall(id: string) { if (!slug) return; await act({ action: "deletePitfall", slug, id }); await reopen(slug); await refreshList(); }
   async function delRecord() { if (!slug) return; if (!confirm("删除这篇复现记录？")) return; await act({ action: "delete", slug }); setSlug(null); setRec(null); await refreshList(); }
 
+  const saveTarget = async (t: Target, c: Constraints, a: Acceptance) => {
+    if (!slug) return;
+    await act({ action: "setTarget", slug, target: t });
+    await act({ action: "setConstraints", slug, constraints: c });
+    await act({ action: "setAcceptance", slug, acceptance: a });
+    await reopen(slug);
+  };
+
+  // 门控：目标/约束/验收未定义时，不允许拆路径/加步骤/商定（§13 目标定义器）
+  const targetReady = Boolean(rec?.target?.name && rec.constraints && rec.acceptance && rec.acceptance.criteria.length > 0);
+
   return (
     <section>
       <PageHead num="05" name="复现工作台" title="复现板块" desc="多论文复现：选论文、给源码地址、一起明确复现路径、一键复制给 GPT 的提示词、复盘实验对话并归档坑点（环境坑点进环境卡）。" meta="本地复现记录 + conda 环境卡" />
@@ -158,7 +170,21 @@ export default function Repro() {
                 )}
               </div>
 
-              <div className="repro-path">
+              {/* ① 目标定义器（Step 2；未定义时下方路径/商定被门控） */}
+              <ReproTarget
+                target={rec.target}
+                constraints={rec.constraints}
+                acceptance={rec.acceptance}
+                onSave={saveTarget}
+              />
+
+              {!targetReady && (
+                <div className="repro-gate">
+                  <span className="mono-label">⚠ 先完成上面的「你想复现什么」（目标 + 约束 + 验收），才能拆路径、加步骤、与 AI 商定。</span>
+                </div>
+              )}
+
+              <div className="repro-path" style={{ opacity: targetReady ? 1 : 0.55, pointerEvents: targetReady ? "auto" : "none" }}>
                 <div className="repro-sec-head"><span className="mono-label">复现路径（一起明确 · 可勾状态）</span></div>
                 <ul>
                   {rec.path.map((s) => (
@@ -177,7 +203,7 @@ export default function Repro() {
                 <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt()}>生成整篇提示词（到 GPT 那边拆，或直接在下面商定）</button>
               </div>
 
-              {slug && <ReproCopilot slug={slug} writeSteps={writeStepsFromCopilot} />}
+              {slug && targetReady && <ReproCopilot slug={slug} writeSteps={writeStepsFromCopilot} />}
 
               <div className="repro-review">
                 <div className="repro-sec-head"><span className="mono-label">实验复盘（读本机 Codex/DSH 对话 → 提炼坑点）</span></div>
