@@ -30,9 +30,12 @@ export interface ReproductionPitfall {
 export type FactStatus = "observed" | "inferred" | "missing";
 export type FactConfidence = "high" | "medium" | "low";
 export type FactImportance = "required" | "recommended" | "optional";
+/** Fact 的 missing 结构化原因：not_found=扫过没找到 / not_scanned=没扫到那部分（不得判 missing）/
+ *  ambiguous=来源有歧义 / not_applicable=该 key 不适用此侧 */
+export type FactMissingType = "not_found" | "not_scanned" | "ambiguous" | "not_applicable";
 export type FactSource =
   | { kind: "paper"; section?: string; page?: number; quote?: string }
-  | { kind: "repo"; file: string; lineStart?: number; lineEnd?: number; commit?: string }
+  | { kind: "repo"; file: string; lineStart?: number; lineEnd?: number; commit?: string; dirty?: boolean }
   | { kind: "user"; note?: string };
 export interface Fact {
   id: string;
@@ -45,6 +48,7 @@ export interface Fact {
   confidence: FactConfidence;
   importance: FactImportance;
   missingReason?: string;    // status=missing 时保留原因（如「论文未报告 / repo 未找到」）
+  missingType?: FactMissingType; // status=missing 时结构化原因（not_found/not_scanned/ambiguous/not_applicable）
   source?: FactSource;
 }
 
@@ -169,7 +173,7 @@ function normFactSource(s: any): FactSource | undefined {
   if (!isObj(s)) return undefined;
   if (s.kind === "paper") return { kind: "paper", section: typeof s.section === "string" ? s.section : undefined, page: typeof s.page === "number" ? s.page : undefined, quote: typeof s.quote === "string" ? s.quote : undefined };
   if (s.kind === "user") return { kind: "user", note: typeof s.note === "string" ? s.note : undefined };
-  return { kind: "repo", file: String(s.file ?? ""), lineStart: typeof s.lineStart === "number" ? s.lineStart : undefined, lineEnd: typeof s.lineEnd === "number" ? s.lineEnd : undefined, commit: typeof s.commit === "string" ? s.commit : undefined };
+  return { kind: "repo", file: String(s.file ?? ""), lineStart: typeof s.lineStart === "number" ? s.lineStart : undefined, lineEnd: typeof s.lineEnd === "number" ? s.lineEnd : undefined, commit: typeof s.commit === "string" ? s.commit : undefined, dirty: typeof s.dirty === "boolean" ? s.dirty : undefined };
 }
 
 /** Evidence.source 归一化 */
@@ -274,6 +278,7 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           confidence: (["high", "medium", "low"] as const).includes(f.confidence) ? f.confidence : "medium",
           importance: (["required", "recommended", "optional"] as const).includes(f.importance) ? f.importance : "recommended",
           missingReason: typeof f.missingReason === "string" ? f.missingReason : undefined,
+          missingType: (["not_found", "not_scanned", "ambiguous", "not_applicable"] as const).includes(f.missingType) ? f.missingType : undefined,
           source: normFactSource(f.source),
         } : null).filter(notNull)
       : [],

@@ -1,32 +1,42 @@
 /**
- * Fact 归一化 + 有来源抽取（Step 4）。
+ * Fact 归一化 + 有来源抽取（Step 4，hardening 版）。
  *
  * 一、normalizeFact / normalizeFacts：确定性归一化
  *   - key 必须来自 fact-taxonomy（有限注册表），未知 key 拒绝（不进入正式 Facts）；
  *   - status=observed|inferred|missing、confidence=high|medium|low、importance 按注册表；
- *   - missing 必须带 missingReason；
- *   - value 按注册表 valueType 归一化为 normalizedValue（number/string/bool/enum/array）。
+ *   - missing 必须带 missingReason + missingType（not_found/not_scanned/ambiguous/not_applicable）；
+ *   - enum 归一化只做 exact canonical / 显式 alias，禁止 substring 猜测（AdamW≠adam）；
+ *   - normalizeFacts **保留冲突**：同 key+side 不同值/不同来源的候选都保留，
+ *     只去掉真正重复（key+side+normalizedValue+source 全部相同）的记录。
  *
- * 二、extractRepoFacts：沿 Step 3 snapshot 候选文件做确定性抽取（不调 LLM）
- *   - 只读 dependencies/configs 分类的候选文件（小文件，已过安全边界）；
- *   - 用正则/简单解析识别已知 key（batch_size/lr/optimizer/python/torch/cuda/…）；
- *   - 每条带 file + lineStart + commit + workingTreeDirty（provenance）。
+ * 二、saveFacts(existing, incoming, mode)：merge（默认，不覆盖已有不同值）/ replace-side / replace-all。
  *
- * 三、extractPaperFacts：DeepSeek 按论文相关章节定向抽取（taxonomy 钉死 key）
- *   - 不解决冲突、不做 Gap——只把论文里能确认的写成 observed/inferred，找不到的写成 missing+原因。
+ * 三、extractRepoFacts：沿 Step 3 snapshot 候选文件做确定性抽取（不调 LLM）
+ *   - 按 taxonomy category → snapshot category 映射定向读（datasets/configs/training/evaluation/dependencies/…），
+ *     不只读 manifest/config；
+ *   - 每类都会记录是否扫描过：某 category 没扫描到 → 该类的 required key 生成 missingType=not_scanned
+ *     （不得假装 not_found）；
+ *   - 每条带 file + lineStart + commit + dirty（provenance 保到 Fact）。
+ *
+ * 四、extractPaperFacts：DeepSeek 完整论文 section/chunk 定向抽取
+ *   - 页码按数字排序（page_2 不会排在 page_10 后）；
+ *   - 整篇按 chunk 覆盖（不截前 24k 就完事）；只有全部 chunk 都扫描过的 key 才允许判
+ *     missingType=not_found；有 chunk 因超预算被丢 → 相关 key 判 not_scanned；
+ *   - 验证 quote 确实存在于对应页；不存在则去掉 quote、confidence 压到 medium。
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { KNOWN_FACTS, factDef, isKnownFactKey, type FactCategory } from "./fact-taxonomy.ts";
-import type { Fact, FactConfidence, FactImportance, FactStatus } from "@/lib/reproduction-spec";
+import { KNOWN_FACTS, factDef, isKnownFactKey, ENUM_ALIASES, type FactCategory } from "./fact-taxonomy.ts";
+import type { Fact, FactConfidence, FactImportance, FactMissingType, FactStatus } from "@/lib/reproduction-spec";
 
 /* ================= 1. 确定性归一化 ================= */
 
 const STATUSES: FactStatus[] = ["observed", "inferred", "missing"];
 const CONFIDENCES: FactConfidence[] = ["high", "medium", "low"];
+const MISSING_TYPES: FactMissingType[] = ["not_found", "not_scanned", "ambiguous", "not_applicable"];
 
-/** 按 valueType 归一化；无法归一化返回 undefined（保留原文 value，normalizedValue 缺省） */
-export function normalizeValue(raw: unknown, def: { valueType: string; enumValues?: string[] }): { value: unknown; normalizedValue?: unknown; unit?: string } {
+/** 按 valueType 归一化；enum 只做 exact/alias，无法归一化返回 undefined（保留原文） */
+export function normalizeValue(raw: unknown, def: { valueType: string; enumValues?: string[]; key?: string }): { value: unknown; normalizedValue?: unknown; unit?: string } {
   if (raw === undefined || raw === null || raw === "") return { value: undefined };
   const s = String(raw).trim();
   switch (def.valueType) {
@@ -38,9 +48,14 @@ export function normalizeValue(raw: unknown, def: { valueType: string; enumValue
     case "bool":
       return { value: raw, normalizedValue: /^(true|yes|1|是)$/i.test(s) };
     case "enum": {
-      const low = s.toLowerCase();
-      const hit = (def.enumValues ?? []).find((e) => low.includes(e) || e.includes(low));
-      return hit ? { value: raw, normalizedValue: hit } : { value: raw };
+      // exact canonical first
+      const low = s.toLowerCase().trim();
+      if ((def.enumValues ?? []).includes(low)) return { value: raw, normalizedValue: low };
+      // explicit alias (per-key short name, e.g. training.optimizer → optimizer), NO substring guessing
+      const aliasKey = (def.key ?? "").split(".").pop() ?? "";
+      const alias = ENUM_ALIASES[aliasKey]?.[low];
+      if (alias !== undefined) return { value: raw, normalizedValue: alias };
+      return { value: raw }; // 无法归一化 → normalizedValue 缺省（Step 6 不比较它）
     }
     case "array":
       return { value: raw, normalizedValue: s.split(/[,，\s]+/).filter(Boolean) };
@@ -57,25 +72,27 @@ export interface NormalizeFactInput {
   confidence?: FactConfidence;
   importance?: FactImportance;
   missingReason?: string;
+  missingType?: FactMissingType;
   source?: Fact["source"];
   id?: string;
 }
 
-/** 归一化单个 fact：未知 key 返回 null（拒绝）；已知 key 严格三分 + 保留 missing 原因 */
+/** 归一化单个 fact：未知 key 返回 null；严格三分 + missing 结构化原因 */
 export function normalizeFact(input: NormalizeFactInput): Fact | null {
   const def = factDef(input.key);
-  if (!def) return null; // 未知 key → 拒绝
+  if (!def) return null;
   if (input.side !== "paper" && input.side !== "repo") return null;
   const status: FactStatus = STATUSES.includes(input.status as FactStatus) ? (input.status as FactStatus) : "observed";
   const confidence: FactConfidence = CONFIDENCES.includes(input.confidence as FactConfidence) ? (input.confidence as FactConfidence) : "medium";
-  const importance: FactImportance = def.importance; // 以注册表为准，不接收外部覆盖
-  const { value, normalizedValue, unit } = normalizeValue(input.value, def);
+  const importance: FactImportance = def.importance;
+  const { value, normalizedValue, unit } = normalizeValue(input.value, { ...def, key: def.key });
 
   if (status === "missing") {
     return {
       id: input.id ?? `f-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
       key: def.key, side: input.side, status, confidence, importance,
       missingReason: input.missingReason ?? "未在来源中找到该事实",
+      missingType: MISSING_TYPES.includes(input.missingType as FactMissingType) ? (input.missingType as FactMissingType) : "not_found",
       source: input.source,
     };
   }
@@ -88,166 +105,301 @@ export function normalizeFact(input: NormalizeFactInput): Fact | null {
   };
 }
 
-/** 批量归一化：过滤未知 key；同一 key+side 只留一条（后到覆盖，确定性） */
+/** 真正重复判定：key + side + normalizedValue + source 锚点全部相同才算重复 */
+export function factIdentity(f: Fact): string {
+  const src = f.source;
+  let srcKey = "no-source";
+  if (src?.kind === "repo") srcKey = `repo:${src.file}:${src.lineStart ?? ""}`;
+  else if (src?.kind === "paper") srcKey = `paper:${src.section ?? ""}:${src.page ?? ""}`;
+  else if (src?.kind === "user") srcKey = "user";
+  return `${f.side}|${f.key}|${JSON.stringify(f.normalizedValue ?? f.value)}|${srcKey}`;
+}
+
+/** 批量归一化：过滤未知 key；**保留冲突**（不同值/不同来源都保留），只去真正重复 */
 export function normalizeFacts(inputs: NormalizeFactInput[]): Fact[] {
   const out: Fact[] = [];
   const seen = new Set<string>();
   for (const inp of inputs) {
     const f = normalizeFact(inp);
     if (!f) continue;
-    const dedupe = `${f.side}:${f.key}`;
-    if (seen.has(dedupe)) {
-      const i = out.findIndex((x) => `${x.side}:${x.key}` === dedupe);
+    const idn = factIdentity(f);
+    if (seen.has(idn)) {
+      // 真正重复 → 后者更新（同值同源，更新无副作用）
+      const i = out.findIndex((x) => factIdentity(x) === idn);
       if (i >= 0) out[i] = f;
       continue;
     }
-    seen.add(dedupe);
+    seen.add(idn);
     out.push(f);
   }
   return out;
 }
 
-/* ================= 2. Repo 侧确定性抽取（沿 Step 3 snapshot 候选） ================= */
+/** 合并保存语义：merge（默认，不覆盖已有不同值）/ replace-side / replace-all */
+export function saveFacts(existing: Fact[], incoming: Fact[], mode: "merge" | "replace-side" | "replace-all" = "merge"): Fact[] {
+  if (mode === "replace-all") return normalizeFacts(incoming as never[]);
+  if (mode === "replace-side") {
+    const sides = new Set(incoming.map((f) => f.side));
+    const kept = existing.filter((f) => !sides.has(f.side)); // 被替换的那一侧全部移除
+    return normalizeFacts([...kept, ...incoming] as never[]);
+  }
+  // merge：incoming 只覆盖「真正重复」的已有条目；不同值/不同源都保留
+  const out = [...existing];
+  for (const f of incoming) {
+    const idn = factIdentity(f);
+    const i = out.findIndex((x) => factIdentity(x) === idn);
+    if (i >= 0) out[i] = f;
+    else out.push(f);
+  }
+  return out;
+}
+
+/* ================= 2. Repo 侧确定性抽取（按 taxonomy→snapshot 映射定向） ================= */
+
+/** taxonomy category → snapshot category 映射（定向读取，明确每类扫没扫） */
+export const CATEGORY_SNAPSHOT: Record<FactCategory, string[]> = {
+  data: ["datasets", "configs"],
+  preprocessing: ["datasets", "configs"],
+  model: ["training", "entrypoint", "configs"],
+  training: ["training", "configs"],
+  evaluation: ["evaluation", "configs"],
+  runtime: ["dependencies", "configs"],
+};
+
+/** key 属于哪个 taxonomy category */
+export function keyCategory(key: string): FactCategory | undefined {
+  return factDef(key)?.category;
+}
 
 interface RepoFactHit { key: string; value: unknown; file: string; lineStart?: number; commit?: string; dirty?: boolean }
 
-/** 在单行文本里找已知 key 的简单值（config 风格：key: value / key = value） */
 const REPO_VALUE_RE = /([A-Za-z0-9_.-]+)\s*[:=]\s*(.+)$/;
 
-/** 从 snapshot 的 dependencies/configs 候选文件里确定性抽取 fact 命中。
- *  不调 LLM；只读小文件；文件内容与 commit/dirty 来自 snapshot（provenance）。 */
-export async function extractRepoFacts(files: { path: string; commit?: string; workingTreeDirty?: boolean }[], baseRoot: string): Promise<Fact[]> {
-  const hits: RepoFactHit[] = [];
-
-  for (const f of files) {
-    // 只处理依赖清单与配置文件（小文件，已过安全边界）；跳过生成的 egg-info 元数据
-    const low = f.path.toLowerCase();
-    if (low.includes(".egg-info") || low.includes("node_modules")) continue;
-    const isManifest = /requirements|environment|pyproject|setup|dockerfile/i.test(low);
-    const isConfig = /\.(ya?ml|toml|ini|cfg|json)$/.test(low) && /config|train|eval|default|base/.test(low);
-    if (!isManifest && !isConfig) continue;
-
-    let content = "";
-    try {
-      content = await readFile(path.join(baseRoot, f.path), "utf-8");
-    } catch { continue; }
-
-    const lines = content.split("\n");
-    lines.forEach((line, i) => {
-      // pip index-url / dependency_links：https://download.pytorch.org/whl/cu128 → cuda 变体
-      const cudaUrl = line.match(/whl\/(cu\d+(?:\.\d+)?)/i);
-      if (cudaUrl) {
-        const v = cudaUrl[1].toLowerCase();
-        hits.push({ key: "runtime.cuda_version", value: v, file: f.path, lineStart: i + 1, commit: f.commit, dirty: f.workingTreeDirty });
-        return;
-      }
-      const m = line.match(REPO_VALUE_RE);
-      if (!m) return;
-      const rawKey = m[1].toLowerCase().replace(/-/g, "_");
-      const rawVal = m[2].trim().replace(/^["']|["']$/g, "").replace(/#.*$/, "").trim();
-      if (!rawVal) return;
-
-      // key → taxonomy 映射（repo 侧常见写法）；必须精确匹配，避免 TORCH_CUDA_ARCH_LIST 这类复合名误判
-      let key: string | undefined;
-      if (/^(python|python_?version)$/.test(rawKey) && /version|python/.test(rawKey)) key = "runtime.python_version";
-      else if (/^(torch|pytorch|torch_?version)$/.test(rawKey)) key = "runtime.pytorch_version";
-      else if (/^(cuda|cuda_?version)$/.test(rawKey)) key = "runtime.cuda_version";
-      else if (/^batch_?size$/.test(rawKey)) key = "training.batch_size";
-      else if (/^(lr|learning_?rate)$/.test(rawKey)) key = "training.lr";
-      else if (/^(optimizer|opt)$/.test(rawKey)) key = "training.optimizer";
-      else if (/^(epochs?|max_?steps|num_?steps|max_?epochs)$/.test(rawKey)) key = "training.epochs";
-      else if (/^seed$/.test(rawKey)) key = "training.seed";
-      else if (/^(input_?size|image_?size|grid_?size|resolution)$/.test(rawKey)) key = "preprocessing.input_size";
-      else if (/^(voxel_?size|cell_?size|voxel_?resolution)$/.test(rawKey)) key = "preprocessing.voxel_resolution";
-      else if (/^(metric|metrics)$/.test(rawKey)) key = "evaluation.metric";
-      else if (/^(alpha|pruning_?alpha|prun_?alpha)$/.test(rawKey)) key = "model.pruning_alpha";
-
-      if (!key || !isKnownFactKey(key)) return;
-      // requirements 里的版本行：torch==2.9.1 之类
-      const verMatch = rawVal.match(/[0-9]+(?:\.[0-9]+){1,3}/);
-      const value = key.startsWith("runtime.") && verMatch ? verMatch[0] : rawVal;
-      hits.push({ key, value, file: f.path, lineStart: i + 1, commit: f.commit, dirty: f.workingTreeDirty });
-    });
-  }
-
-  // 确定性归一化（provenance 从 hit 来）
-  return normalizeFacts(hits.map((h) => ({
-    key: h.key, side: "repo" as const, value: h.value, status: "observed" as const, confidence: "high" as const,
-    source: { kind: "repo" as const, file: h.file, lineStart: h.lineStart, commit: h.commit },
-  })));
+function repoKeyFromToken(rawKey: string): string | undefined {
+  const k = rawKey.toLowerCase().replace(/-/g, "_");
+  if (/^(python|python_?version)$/.test(k)) return "runtime.python_version";
+  if (/^(torch|pytorch|torch_?version)$/.test(k)) return "runtime.pytorch_version";
+  if (/^(cuda|cuda_?version)$/.test(k)) return "runtime.cuda_version";
+  if (/^batch_?size$/.test(k)) return "training.batch_size";
+  if (/^(lr|learning_?rate)$/.test(k)) return "training.lr";
+  if (/^(optimizer|opt)$/.test(k)) return "training.optimizer";
+  if (/^epochs?$/.test(k)) return "training.epochs";
+  if (/^(steps?|max_?steps|num_?steps|iterations?|num_?iterations?)$/.test(k)) return "training.steps";
+  if (/^seed$/.test(k)) return "training.seed";
+  if (/^(input_?size|image_?size|grid_?size|resolution)$/.test(k)) return "preprocessing.input_size";
+  if (/^(voxel_?size|cell_?size|voxel_?resolution)$/.test(k)) return "preprocessing.voxel_resolution";
+  if (/^(metric|metrics)$/.test(k)) return "evaluation.metric";
+  if (/^(alpha|pruning_?alpha|prun_?alpha)$/.test(k)) return "model.pruning_alpha";
+  return undefined;
 }
 
-/* ================= 3. Paper 侧抽取（DeepSeek，taxonomy 钉死 key，定向章节） ================= */
+/** 从 snapshot 的候选文件里按 taxonomy→snapshot 映射确定性抽取 fact。
+ *  返回 { facts, scannedCategories }：没扫描到的 category 的 required key 会判 not_scanned。 */
+export async function extractRepoFacts(
+  snapshot: Record<string, any>,
+  baseRoot: string,
+): Promise<{ facts: Fact[]; scannedCategories: Set<FactCategory> }> {
+  const hits: RepoFactHit[] = [];
+  const scannedCategories = new Set<FactCategory>();
 
-/** 把 taxonomy 渲染成给 LLM 的 JSON schema 提示 */
+  // 遍历所有 taxonomy category，按映射找对应 snapshot 分类的文件
+  const allCategories = Object.keys(CATEGORY_SNAPSHOT) as FactCategory[];
+  for (const cat of allCategories) {
+    const snapCats = CATEGORY_SNAPSHOT[cat];
+    let foundAny = false;
+    for (const sc of snapCats) {
+      const files = (snapshot[sc] ?? []) as { path: string; commit?: string; workingTreeDirty?: boolean }[];
+      for (const f of files) {
+        if (typeof f.path !== "string") continue;
+        const low = f.path.toLowerCase();
+        if (low.includes(".egg-info") || low.includes("node_modules")) continue;
+        // .py 代码（datasets/model/training/eval）与 manifest/config 都读；data 资产目录由 Step 3 已排除
+        if (!/\.(py|ya?ml|toml|ini|cfg|json|txt|in)$/.test(low)) continue;
+        let content = "";
+        try { content = await readFile(path.join(baseRoot, f.path), "utf-8"); } catch { continue; }
+        foundAny = true;
+        const lines = content.split("\n");
+        lines.forEach((line, i) => {
+          const cudaUrl = line.match(/whl\/(cu\d+(?:\.\d+)?)/i);
+          if (cudaUrl) {
+            hits.push({ key: "runtime.cuda_version", value: cudaUrl[1].toLowerCase(), file: f.path, lineStart: i + 1, commit: f.commit, dirty: f.workingTreeDirty });
+            return;
+          }
+          const m = line.match(REPO_VALUE_RE);
+          if (!m) return;
+          const key = repoKeyFromToken(m[1]);
+          if (!key || !isKnownFactKey(key)) return;
+          let rawVal = m[2].trim().replace(/^["']|["']$/g, "").replace(/#.*$/, "").trim();
+          if (!rawVal) return;
+          // python 代码里 batch_size = 32 / optimizer = Adam(...)：剥掉函数调用
+          rawVal = rawVal.replace(/\(.*$/, "").trim();
+          const verMatch = rawVal.match(/[0-9]+(?:\.[0-9]+){1,3}/);
+          const value = key.startsWith("runtime.") && verMatch ? verMatch[0] : rawVal;
+          hits.push({ key, value, file: f.path, lineStart: i + 1, commit: f.commit, dirty: f.workingTreeDirty });
+        });
+      }
+    }
+    if (foundAny) scannedCategories.add(cat);
+  }
+
+  const facts = normalizeFacts(hits.map((h) => ({
+    key: h.key, side: "repo" as const, value: h.value, status: "observed" as const, confidence: "high" as const,
+    source: { kind: "repo" as const, file: h.file, lineStart: h.lineStart, commit: h.commit, dirty: h.dirty },
+  })));
+
+  // 未扫描到的 category：其中的 required key 生成 missingType=not_scanned（不是 not_found）
+  const scannedKeys = new Set(hits.map((h) => h.key));
+  for (const cat of allCategories) {
+    if (scannedCategories.has(cat)) continue;
+    for (const def of KNOWN_FACTS) {
+      if (def.category !== cat || def.importance !== "required") continue;
+      if (def.sides.includes("repo") && !scannedKeys.has(def.key)) {
+        facts.push(normalizeFact({
+          key: def.key, side: "repo", status: "missing", missingType: "not_scanned",
+          missingReason: `repo 的 ${cat} 类文件（${CATEGORY_SNAPSHOT[cat].join("/")}）未扫描到，不能判定为未找到`,
+        })!);
+      }
+    }
+  }
+  return { facts, scannedCategories };
+}
+
+/* ================= 3. Paper 侧抽取（DeepSeek，完整覆盖 + chunk 定向） ================= */
+
 export function taxonomyPrompt(): string {
   return KNOWN_FACTS.map((f) => `"${f.key}": { category: "${f.category}", label: "${f.label}", importance: "${f.importance}", valueType: "${f.valueType}"${f.hint ? `, hint: "${f.hint}"` : ""} }`).join("\n");
 }
 
 const PAPER_EXTRACT_SYSTEM = (taxonomy: string) =>
-  "你是论文复现事实抽取器。给定一篇论文的正文文本，按下面这份**封闭的 taxonomy** 抽取复现相关事实。\n" +
+  "你是论文复现事实抽取器。给定一篇论文的正文文本（按页分块），按下面这份**封闭的 taxonomy** 抽取复现相关事实。\n" +
   "规则：\n" +
   "1. key 只能从 taxonomy 里取，**禁止发明新 key**；\n" +
   "2. 论文明确写了 → status=observed，confidence 按明确程度 high/medium，source.section 填论文章节（如 III-B / 4.1），source.page 填页号，source.quote 填原句（≤80 字）；\n" +
   "3. 论文暗示但未明说（如从图/上下文推断）→ status=inferred，confidence=low/medium；\n" +
-  "4. 论文完全没提（required 级 key 尤其）→ status=missing，missingReason 写具体原因（如「论文未报告 batch size」）；\n" +
-  "5. 只输出一个 JSON 数组：[{\"key\":\"...\",\"value\":...,\"status\":\"observed|inferred|missing\",\"confidence\":\"high|medium|low\",\"section\":\"...\",\"page\":n,\"quote\":\"...\",\"missingReason\":\"...\"}]。不要输出 JSON 以外内容。\n\n" +
+  "4. 你**只能报告你在本块文本里实际看到的事实**；没看到的 key 不要输出 missing（missing 由系统在聚合时统一判定）；\n" +
+  "5. 只输出一个 JSON 数组：[{\"key\":\"...\",\"value\":...,\"status\":\"observed|inferred\",\"confidence\":\"high|medium|low\",\"section\":\"...\",\"page\":n,\"quote\":\"...\"}]。不要输出 JSON 以外内容。\n\n" +
   `Taxonomy：\n${taxonomy}`;
 
 interface PaperExtractRaw {
   key?: string; value?: unknown; status?: string; confidence?: string;
   section?: string; page?: number; quote?: string; missingReason?: string;
-  /** 兼容模型把 source 嵌套成对象的情况 */
   source?: { section?: string; page?: number; quote?: string };
 }
 
-/** DeepSeek 抽取论文事实（定向：把论文按页传入；返回归一化后的 Fact[]，仅 paper 侧） */
-export async function extractPaperFacts(pageTexts: string[]): Promise<Fact[]> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) return [];
-  const text = pageTexts.map((p, i) => `【第 ${i + 1} 页】\n${p.slice(0, 4000)}`).join("\n\n").slice(0, 24000);
+/** 页码数字排序：page_2 在 page_10 前 */
+export function sortPages(names: string[]): string[] {
+  return [...names].sort((a, b) => {
+    const na = Number((a.match(/page_(\d+)/) ?? [])[1] ?? 0);
+    const nb = Number((b.match(/page_(\d+)/) ?? [])[1] ?? 0);
+    return na - nb;
+  });
+}
 
-  let rawArr: PaperExtractRaw[] = [];
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
-    try {
-      const res = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            { role: "system", content: PAPER_EXTRACT_SYSTEM(taxonomyPrompt()) },
-            { role: "user", content: text },
-          ],
-          stream: false,
-          max_tokens: 4000,
-        }),
-        signal: AbortSignal.timeout(90000),
-      });
-      if (res.ok) {
-        const d = await res.json();
-        const c = d?.choices?.[0]?.message?.content ?? "";
-        const start = c.indexOf("[");
-        const end = c.lastIndexOf("]");
-        if (start >= 0 && end > start) {
-          try {
-            const arr = JSON.parse(c.slice(start, end + 1));
-            if (Array.isArray(arr)) { rawArr = arr; break; }
-          } catch { /* 截取坏 JSON → 重试 */ }
+const CHUNK_MAX_CHARS = 20000; // 每 chunk 约 2 万字符（约 5-6 页）
+
+/** DeepSeek 抽取论文事实：整篇 chunk 覆盖 + quote 验证 + missing 仅在聚合后判定。
+ *  返回 { facts, coveredPages, droppedChunks } */
+export async function extractPaperFacts(
+  pageTexts: string[],
+): Promise<{ facts: Fact[]; coveredPages: number; droppedChunks: boolean }> {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) return { facts: [], coveredPages: 0, droppedChunks: false };
+
+  // 按页分 chunk（每 chunk ≤ CHUNK_MAX_CHARS）
+  const chunks: string[][] = [];
+  let cur: string[] = [];
+  let curChars = 0;
+  for (const p of pageTexts) {
+    if (curChars + p.length > CHUNK_MAX_CHARS && cur.length) {
+      chunks.push(cur); cur = []; curChars = 0;
+    }
+    cur.push(p); curChars += p.length;
+  }
+  if (cur.length) chunks.push(cur);
+
+  const allRaw: PaperExtractRaw[] = [];
+  let dropped = false;
+  const budget = 3; // 最多 3 个 chunk（保护 token）；超出的 chunk 标记 dropped → not_scanned
+  const usedChunks = chunks.slice(0, budget);
+  if (chunks.length > budget) dropped = true;
+
+  for (const chunk of usedChunks) {
+    const text = chunk.map((p, i) => `【第 ${pageIndexOf(pageTexts, p) + 1} 页】\n${p.slice(0, 4000)}`).join("\n\n");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
+      try {
+        const res = await fetch("https://api.deepseek.com/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages: [
+              { role: "system", content: PAPER_EXTRACT_SYSTEM(taxonomyPrompt()) },
+              { role: "user", content: text },
+            ],
+            stream: false,
+            max_tokens: 4000,
+          }),
+          signal: AbortSignal.timeout(90000),
+        });
+        if (res.ok) {
+          const d = await res.json();
+          const c = d?.choices?.[0]?.message?.content ?? "";
+          const start = c.indexOf("[");
+          const end = c.lastIndexOf("]");
+          if (start >= 0 && end > start) {
+            try {
+              const arr = JSON.parse(c.slice(start, end + 1));
+              if (Array.isArray(arr)) { allRaw.push(...arr); break; }
+            } catch { /* 坏 JSON → 重试 */ }
+          }
         }
-      }
-    } catch { /* 重试 */ }
+      } catch { /* 重试 */ }
+    }
   }
 
-  return normalizeFacts(rawArr.map((r) => ({
-    key: r.key ?? "",
-    side: "paper" as const,
-    value: r.value,
-    status: (r.status as FactStatus) ?? "observed",
-    confidence: (r.confidence as FactConfidence) ?? "medium",
-    missingReason: r.missingReason,
-    // 兼容平铺与嵌套 source 两种模型输出
-    source: { kind: "paper" as const, section: r.section ?? r.source?.section, page: r.page ?? r.source?.page, quote: r.quote ?? r.source?.quote },
-  })));
+  // quote 验证：quote 必须存在于对应页；不存在 → 去 quote、confidence 压到 medium
+  const facts = normalizeFacts(allRaw.map((r) => {
+    const page = r.page ?? r.source?.page;
+    const quote = r.quote ?? r.source?.quote;
+    const pageText = page !== undefined && pageTexts[page - 1] ? pageTexts[page - 1] : undefined;
+    let conf = (r.confidence as FactConfidence) ?? "medium";
+    let finalQuote: string | undefined = quote;
+    if (quote && pageText) {
+      const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+      if (!norm(pageText).includes(norm(quote.slice(0, 40)))) {
+        finalQuote = undefined;
+        if (conf === "high") conf = "medium"; // quote 对不上 → 降可信度
+      }
+    }
+    return {
+      key: r.key ?? "",
+      side: "paper" as const,
+      value: r.value,
+      status: (r.status as FactStatus) ?? "observed",
+      confidence: conf,
+      source: { kind: "paper" as const, section: r.section ?? r.source?.section, page, quote: finalQuote },
+    };
+  }));
+
+  // 聚合后判定 genuinely missing：全部 chunk 都扫过、且 taxonomy 里 required 级 paper key 没出现 → not_found；
+  // 有 chunk 被丢 → 这些 key 判 not_scanned（不能假装没写）
+  const coveredAll = !dropped;
+  const seenKeys = new Set(facts.map((f) => f.key));
+  for (const def of KNOWN_FACTS) {
+    if (def.importance !== "required" || !def.sides.includes("paper")) continue;
+    if (seenKeys.has(def.key)) continue;
+    facts.push(normalizeFact({
+      key: def.key, side: "paper", status: "missing",
+      missingType: coveredAll ? "not_found" : "not_scanned",
+      missingReason: coveredAll ? "完整论文已扫描，未找到该事实" : "部分论文章节未扫描（超出预算），不能判定为未找到",
+    })!);
+  }
+
+  return { facts, coveredPages: pageTexts.length, droppedChunks: dropped };
+}
+
+function pageIndexOf(all: string[], p: string): number {
+  const i = all.indexOf(p);
+  return i >= 0 ? i : 0;
 }

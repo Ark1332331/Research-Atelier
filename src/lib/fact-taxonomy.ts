@@ -27,6 +27,23 @@ export interface FactDef {
   hint?: string;
 }
 
+/** enum 的显式别名表（valueType=enum 时用）：canonical → 实际归一化值。
+ *  只做精确映射，禁止 substring 猜测（AdamW 绝不能被猜成 adam）。 */
+export const ENUM_ALIASES: Record<string, Record<string, string>> = {
+  optimizer: {
+    "adam": "adam",
+    "adamw": "adamw",
+    "adam_w": "adamw",
+    "adam-w": "adamw",
+    "adam weight decay": "adamw",
+    "weight decay adam": "adamw",
+    "sgd": "sgd",
+    "momentum sgd": "sgd",
+    "rmsprop": "rmsprop",
+    "adamax": "adamax",
+  },
+};
+
 /** 有限 taxonomy：所有允许的 fact key。新增 key 必须在这里登记。 */
 export const KNOWN_FACTS: FactDef[] = [
   /* —— data（数据） —— */
@@ -55,7 +72,8 @@ export const KNOWN_FACTS: FactDef[] = [
   { key: "training.optimizer", category: "training", label: "优化器", importance: "required", sides: ["paper", "repo"], valueType: "enum", enumValues: ["adam", "adamw", "sgd", "rmsprop", "adamax"], hint: "归一化为小写：Adam→adam" },
   { key: "training.lr", category: "training", label: "学习率", importance: "required", sides: ["paper", "repo"], valueType: "number" },
   { key: "training.batch_size", category: "training", label: "Batch size", importance: "required", sides: ["paper", "repo"], valueType: "number" },
-  { key: "training.epochs", category: "training", label: "训练轮数/步数", importance: "recommended", sides: ["paper", "repo"], valueType: "number" },
+  { key: "training.epochs", category: "training", label: "训练轮数（epochs）", importance: "recommended", sides: ["paper", "repo"], valueType: "number" },
+  { key: "training.steps", category: "training", label: "训练步数（steps/iterations）", importance: "recommended", sides: ["paper", "repo"], valueType: "number" },
   { key: "training.lr_schedule", category: "training", label: "学习率调度", importance: "recommended", sides: ["paper", "repo"], valueType: "string" },
   { key: "training.seed", category: "training", label: "随机种子", importance: "recommended", sides: ["paper", "repo"], valueType: "number" },
 
