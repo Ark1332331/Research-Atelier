@@ -173,6 +173,21 @@ export interface RepoRevision {
   dirty?: boolean;
 }
 
+/** 粗粒度复现目标意图（阶段①，系统分析前用户唯一输入；不是 Target——Target 需分析后确认） */
+export type GoalIntent = "run_first" | "main_result" | "figure" | "full" | "unknown";
+
+/** 分析编排状态（阶段② analyze orchestrator 持久化；固定本轮 paper/repo revision） */
+export interface AnalysisState {
+  status: "running" | "done" | "failed";
+  ranAt: string;
+  paperRevision?: string;   // 本轮 paper 文件 hash
+  repoRevision?: RepoRevision;
+  error?: string;
+  summary?: {
+    paperFacts: number; repoFacts: number; mappings: number; gaps: number; blocking: number;
+  };
+}
+
 export interface ReproductionSpec {
   schemaVersion: typeof SPEC_VERSION;
   // —— v1 顶层字段（保留，向后兼容）——
@@ -188,6 +203,8 @@ export interface ReproductionSpec {
   // —— v2 新增 ——
   paperRevision?: PaperRevision;
   repoRevision?: RepoRevision;
+  goalIntent?: GoalIntent;    // 阶段①：粗粒度目标（"我不知道，让系统建议"=unknown，不写假 Target）
+  analysis?: AnalysisState;   // 阶段②：分析编排状态（persisted，防半新半旧）
   target?: Target;
   constraints?: Constraints;
   acceptance?: Acceptance;
@@ -267,6 +284,21 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           commit: typeof r.repoRevision.commit === "string" ? r.repoRevision.commit : undefined,
           branch: typeof r.repoRevision.branch === "string" ? r.repoRevision.branch : undefined,
           dirty: typeof r.repoRevision.dirty === "boolean" ? r.repoRevision.dirty : undefined,
+        }
+      : undefined,
+    goalIntent: (["run_first", "main_result", "figure", "full", "unknown"] as const).includes(r.goalIntent) ? r.goalIntent : undefined,
+    analysis: isObj(r.analysis)
+      ? {
+          status: (["running", "done", "failed"] as const).includes(r.analysis.status) ? r.analysis.status : "failed",
+          ranAt: typeof r.analysis.ranAt === "string" ? r.analysis.ranAt : new Date().toISOString(),
+          paperRevision: typeof r.analysis.paperRevision === "string" ? r.analysis.paperRevision : undefined,
+          repoRevision: isObj(r.analysis.repoRevision)
+            ? { root: String(r.analysis.repoRevision.root ?? ""), repoUrl: typeof r.analysis.repoRevision.repoUrl === "string" ? r.analysis.repoRevision.repoUrl : undefined, commit: typeof r.analysis.repoRevision.commit === "string" ? r.analysis.repoRevision.commit : undefined, branch: typeof r.analysis.repoRevision.branch === "string" ? r.analysis.repoRevision.branch : undefined, dirty: typeof r.analysis.repoRevision.dirty === "boolean" ? r.analysis.repoRevision.dirty : undefined }
+            : undefined,
+          error: typeof r.analysis.error === "string" ? r.analysis.error : undefined,
+          summary: isObj(r.analysis.summary)
+            ? { paperFacts: typeof r.analysis.summary.paperFacts === "number" ? r.analysis.summary.paperFacts : 0, repoFacts: typeof r.analysis.summary.repoFacts === "number" ? r.analysis.summary.repoFacts : 0, mappings: typeof r.analysis.summary.mappings === "number" ? r.analysis.summary.mappings : 0, gaps: typeof r.analysis.summary.gaps === "number" ? r.analysis.summary.gaps : 0, blocking: typeof r.analysis.summary.blocking === "number" ? r.analysis.summary.blocking : 0 }
+            : undefined,
         }
       : undefined,
     target: isObj(r.target)

@@ -63,6 +63,10 @@ export async function POST(request: Request) {
     case "setSource": { if (typeof body.sourceUrl === "string") r.sourceUrl = body.sourceUrl; break; }
     case "setRepo": { if (typeof body.repoUrl === "string") r.repoUrl = body.repoUrl; break; }
     case "setNote": { if (typeof body.note === "string") r.note = body.note; break; }
+    case "setGoalIntent": {
+      if (["run_first", "main_result", "figure", "full", "unknown"].includes(body.goalIntent)) r.goalIntent = body.goalIntent;
+      break;
+    }
     case "setDefinition": {
       // 原子式一次写入 target/constraints/acceptance（对应 UI 的「保存目标与验收」单动作）
       if (body.target && typeof body.target === "object") r.target = body.target;

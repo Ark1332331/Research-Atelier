@@ -3639,3 +3639,47 @@ input, textarea, select {
 .repro-target-accept-row { display: flex; gap: 0.35rem; align-items: center; }
 .repro-target-accept-row .field:first-child { flex: 1; }
 .repro-gate { border: 1px dashed var(--accent); border-radius: 8px; padding: 0.5rem 0.7rem; margin-bottom: 0.9rem; background: var(--accent-soft, #f5efdd); }
+
+/* —— 复现编译台 · 阶段容器（UX Reframe） —— */
+.repro-stepper { display: flex; gap: 0.4rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.repro-step-item { display: flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.7rem; border: 1px solid var(--border); border-radius: 20px; opacity: 0.55; }
+.repro-step-item.is-active { opacity: 1; border-color: var(--accent); background: var(--accent-soft, #f5efdd); font-weight: 600; }
+.repro-step-item.is-done { opacity: 0.8; }
+.repro-step-item.is-done .repro-step-num::after { content: " ✓"; }
+.repro-step-num { font-family: var(--font-dm-mono); font-size: 0.62rem; }
+.repro-step-name { font-size: 0.75rem; }
+
+.repro-stage { padding: 0.4rem 0 1rem; }
+.repro-stage-title { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.4rem; }
+.repro-goals { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.8rem 0; }
+.repro-goal { display: flex; align-items: center; gap: 0.5rem; padding: 0.55rem 0.7rem; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.repro-goal.is-on { border-color: var(--accent); background: var(--accent-soft, #f5efdd); }
+.repro-goal span { display: flex; flex-direction: column; }
+.repro-goal small { opacity: 0.65; }
+
+.repro-analyzing-cta { margin: 1rem 0; display: flex; flex-direction: column; gap: 0.6rem; align-items: flex-start; }
+.repro-analysis-summary { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.8rem; align-items: flex-start; }
+.repro-analysis-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; width: 100%; }
+.repro-analysis-item { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.6rem; background: var(--bg); display: flex; flex-direction: column; gap: 0.2rem; }
+.repro-analysis-item b { font-size: 0.8rem; }
+.repro-analysis-item span { font-family: var(--font-dm-mono); font-size: 0.62rem; color: var(--muted-foreground); }
+
+.repro-need-scan { border: 1px dashed var(--border); border-radius: 8px; padding: 0.6rem; margin-bottom: 0.8rem; background: var(--bg); }
+.repro-need-scan ul { list-style: none; padding: 0.3rem 0 0.4rem; margin: 0; }
+.repro-need-scan li { padding: 0.15rem 0; }
+.repro-decisions { display: flex; flex-direction: column; gap: 0.7rem; }
+.repro-decision { border: 1px solid var(--border); border-radius: 10px; padding: 0.7rem; background: var(--bg); }
+.repro-decision-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.repro-decision-desc { margin: 0 0 0.5rem; font-size: 0.82rem; }
+.repro-decision-evidence { display: flex; flex-direction: column; gap: 0.2rem; border-top: 1px dashed var(--border); border-bottom: 1px dashed var(--border); padding: 0.5rem 0; margin-bottom: 0.5rem; }
+.repro-decision-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+.repro-custom-inline { display: flex; gap: 0.35rem; align-items: center; }
+.repro-decisions-empty { padding: 1rem 0; display: flex; flex-direction: column; gap: 0.6rem; align-items: flex-start; }
+
+.repro-brief { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); padding: 0.7rem; margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.repro-brief-row { display: flex; gap: 0.6rem; font-size: 0.82rem; }
+.repro-brief-row b { flex: 0 0 110px; color: var(--muted-foreground); }
+
+.repro-advanced { margin-top: 1.2rem; border-top: 1px dashed var(--border); padding-top: 0.6rem; }
+.repro-advanced-toggle { color: var(--muted-foreground); }
+.repro-advanced-body { margin-top: 0.7rem; display: flex; flex-direction: column; gap: 1rem; opacity: 0.92; }

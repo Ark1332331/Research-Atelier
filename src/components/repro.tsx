@@ -5,16 +5,32 @@ import PageHead from "@/components/page-head";
 import EnvironmentsPanel from "@/components/environments-panel";
 import SystemPanel from "@/components/system-panel";
 import ReproCopilot from "@/components/repro-copilot";
-import ReproTarget from "@/components/repro-target";
-import { isDefinitionComplete, type Target, type Constraints, type Acceptance } from "@/lib/reproduction-spec";
+import ReproStageTarget from "@/components/repro-stage-target";
+import ReproStageAnalyzing from "@/components/repro-stage-analyzing";
+import ReproStageDecisions from "@/components/repro-stage-decisions";
+import ReproStageReady from "@/components/repro-stage-ready";
+import type { GoalIntent, Target, Constraints, Acceptance } from "@/lib/reproduction-spec";
 
 type Stat = "todo" | "doing" | "done";
 interface Step { id: string; title: string; status: Stat; note?: string }
 interface Pit { id: string; text: string; env: boolean; stage?: string; papers?: string[]; createdAt: string }
-interface Repr { slug: string; title: string; sourceUrl?: string; repoUrl?: string; note?: string; path: Step[]; pitfalls: Pit[]; target?: Target; constraints?: Constraints; acceptance?: Acceptance; updatedAt?: string }
+interface Analysis { status: string; summary?: { paperFacts: number; repoFacts: number; mappings: number; gaps: number; blocking: number }; error?: string }
+interface Repr {
+  slug: string; title: string; sourceUrl?: string; repoUrl?: string; note?: string;
+  path: Step[]; pitfalls: Pit[]; target?: Target; constraints?: Constraints; acceptance?: Acceptance;
+  goalIntent?: GoalIntent; analysis?: Analysis; updatedAt?: string;
+}
 interface Sum { slug: string; title: string; sourceUrl?: string; repoUrl?: string; pathCount: number; doneCount: number; pitfallCount: number }
-
 interface LibPaper { id: string; title: string; slug?: string | null; status?: string; group?: string | null }
+
+type Stage = "target" | "analyzing" | "decisions" | "ready";
+
+function stageOf(rec: Repr | null): Stage {
+  if (!rec) return "target";
+  if (!rec.goalIntent) return "target";
+  if (rec.analysis?.status !== "done") return "analyzing";
+  return "ready"; // decisions 状态由 ReproStageDecisions 内部根据 gaps 判断；ready 页含"有问题回去处理"入口
+}
 
 export default function Repro() {
   const [list, setList] = useState<Sum[]>([]);
@@ -28,6 +44,7 @@ export default function Repro() {
   const [reviewNote, setReviewNote] = useState("");
   const [pitText, setPitText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const act = async (body: Record<string, unknown>) => {
     await fetch("/api/reproduction", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -55,8 +72,6 @@ export default function Repro() {
     setSlug(s);
     await reopen(s);
   }
-
-  // 从论文库选一篇 → 用它标题建复现记录；若库里有 slug，顺带写 sourceUrl 关联到精读页。
   async function createFromLibrary(paperId: string) {
     const p = libPapers.find((x) => x.id === paperId);
     if (!p) return;
@@ -68,15 +83,34 @@ export default function Repro() {
     setSlug(s);
     await reopen(s);
   }
-  async function open(s: string) { setSlug(s); await reopen(s); setPrompt(""); setReviewNote(""); }
+  async function open(s: string) { setSlug(s); await reopen(s); setPrompt(""); setReviewNote(""); setShowAdvanced(false); }
 
+  // —— 阶段①：目标（只存 goalIntent，不写假 Target）——
+  const saveGoal = async (g: GoalIntent) => {
+    if (!slug) return;
+    await act({ action: "setGoalIntent", slug, goalIntent: g });
+    await reopen(slug);
+  };
+  // —— 阶段②：分析（服务端 orchestrator）——
+  const runAnalyze = async () => {
+    if (!slug) return;
+    try {
+      await fetch("/api/reproduction/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
+      await reopen(slug);
+    } catch { /* */ }
+  };
+  const gotoDecisions = () => setShowAdvanced(false); // 阶段②按钮 → 阶段③由 stageOf 推导（analysis done → ready 页含返回处理入口）
+  // 决策完成 → 回到 ready
+  const decisionsDone = async () => { await reopen(slug ?? ""); };
+  const rescan = async () => { await runAnalyze(); await reopen(slug ?? ""); };
+
+  // —— 旧功能（移入折叠区）——
   async function genPrompt(stepId?: string) {
     if (!slug) return;
     const d = await (await fetch("/api/reproduction/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug, stepId }) })).json();
     setPrompt(d.prompt ?? "");
   }
   async function copyPrompt() { if (prompt) { try { await navigator.clipboard.writeText(prompt); } catch { /* */ } } }
-
   async function review() {
     if (!slug || (!reviewLink.trim() && !reviewNote.trim())) return;
     setBusy(true);
@@ -88,7 +122,6 @@ export default function Repro() {
     } catch { setReviewNote("提炼失败"); }
     setBusy(false);
   }
-
   async function addStep(title: string) { if (!slug || !title.trim()) return; await act({ action: "addStep", slug, title: title.trim() }); await reopen(slug); }
   const writeStepsFromCopilot = async (steps: { title: string; note?: string; status: "todo" | "done" | "doing" }[]) => {
     if (!slug) return;
@@ -102,19 +135,11 @@ export default function Repro() {
   async function delPitfall(id: string) { if (!slug) return; await act({ action: "deletePitfall", slug, id }); await reopen(slug); await refreshList(); }
   async function delRecord() { if (!slug) return; if (!confirm("删除这篇复现记录？")) return; await act({ action: "delete", slug }); setSlug(null); setRec(null); await refreshList(); }
 
-  const saveTarget = async (t: Target, c: Constraints, a: Acceptance) => {
-    if (!slug) return;
-    // 单动作原子写入（对应「保存目标与验收」；后端一次 upsert，避免三次 POST 中途形成部分状态）
-    await act({ action: "setDefinition", slug, target: t, constraints: c, acceptance: a });
-    await reopen(slug);
-  };
-
-  // 门控：目标/约束/验收未定义时，不允许拆路径/加步骤/商定（共享 helper，与后端同一判断）
-  const targetReady = isDefinitionComplete(rec ?? undefined);
+  const stage: Stage = stageOf(rec);
 
   return (
     <section>
-      <PageHead num="05" name="复现工作台" title="复现板块" desc="多论文复现：选论文、给源码地址、一起明确复现路径、一键复制给 GPT 的提示词、复盘实验对话并归档坑点（环境坑点进环境卡）。" meta="本地复现记录 + conda 环境卡" />
+      <PageHead num="05" name="复现" title="复现编译台" desc="选论文 → 系统分析 → 只决定关键问题 → 拿到复现准备摘要。" meta="Paper → Reproduction Spec → Codex 前置编译" />
 
       <div className="repro-layout">
         {/* 左：复现列表 */}
@@ -146,97 +171,123 @@ export default function Repro() {
           ))}
         </div>
 
-        {/* 中：单篇工作台 */}
+        {/* 中：单篇阶段主面板 */}
         <div className="repro-main">
           {!rec ? (
             <p className="mono-label" style={{ padding: "2rem 0", textAlign: "center", opacity: 0.7 }}>在左侧选择一篇复现论文，开始工作。</p>
           ) : (
             <>
-              <div className="repro-paper">
-                <h3>{rec.title}</h3>
-                <div className="repro-fields">
-                  <label className="mono-label">源码/论文来源 <input className="field field--mini" defaultValue={rec.sourceUrl} onBlur={(e) => void setField("sourceUrl", e.target.value)} placeholder="https://..." /></label>
-                  <label className="mono-label">代码/仓库地址 <input className="field field--mini" defaultValue={rec.repoUrl} onBlur={(e) => void setField("repoUrl", e.target.value)} placeholder="github.com/...（可在『网络调研』里搜）" /></label>
-                </div>
-                <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt()}>生成可复制的复现提示词</button>
-                {prompt && (
-                  <div className="repro-prompt">
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                      <button className="btn btn--primary btn--sm" onClick={() => void copyPrompt()}>复制整篇提示词</button>
-                      <span className="mono-label">粘贴给 GPT / Codex</span>
+              {/* 阶段条 */}
+              <div className="repro-stepper">
+                {(["target", "analyzing", "decisions", "ready"] as Stage[]).map((s, i) => (
+                  <div key={s} className={`repro-step-item${stage === s ? " is-active" : ""}${["target", "analyzing", "decisions"].includes(stage) && ["target", "analyzing", "decisions"].indexOf(s) < ["target", "analyzing", "decisions"].indexOf(stage) ? " is-done" : ""}`}>
+                    <span className="repro-step-num">{i + 1}</span>
+                    <span className="repro-step-name">{{ target: "目标", analyzing: "分析", decisions: "决策", ready: "摘要" }[s]}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 阶段主面板 */}
+              {stage === "target" && (
+                <ReproStageTarget goalIntent={rec.goalIntent} onSave={saveGoal} />
+              )}
+              {stage === "analyzing" && (
+                <ReproStageAnalyzing title={rec.title} analysis={rec.analysis} onAnalyze={runAnalyze} onProceed={() => void decisionsDone()} />
+              )}
+              {stage === "decisions" && slug && (
+                <ReproStageDecisions slug={slug} onDone={() => void decisionsDone()} onRescan={() => void rescan()} />
+              )}
+              {stage === "ready" && (
+                <>
+                  <ReproStageReady title={rec.title} analysis={rec.analysis} goalIntent={rec.goalIntent} />
+                  <div style={{ marginTop: "0.8rem" }}>
+                    <button className="btn btn--ghost btn--quiet" onClick={() => setShowAdvanced(true)}>有需要决定的问题？去处理 →</button>
+                  </div>
+                </>
+              )}
+
+              {/* 折叠区：执行记录与高级工具 */}
+              <div className="repro-advanced">
+                <button className="btn btn--ghost btn--quiet repro-advanced-toggle" onClick={() => setShowAdvanced(!showAdvanced)}>
+                  {showAdvanced ? "收起执行记录与高级工具" : "展开执行记录与高级工具（复盘 / 坑点 / 商定 / 路径 / 环境）"}
+                </button>
+                {showAdvanced && (
+                  <div className="repro-advanced-body">
+                    <div className="repro-paper">
+                      <div className="repro-sec-head"><span className="mono-label">论文 / 仓库链接</span></div>
+                      <div className="repro-fields">
+                        <label className="mono-label">源码/论文来源 <input className="field field--mini" defaultValue={rec.sourceUrl} onBlur={(e) => void setField("sourceUrl", e.target.value)} placeholder="https://..." /></label>
+                        <label className="mono-label">代码/仓库地址 <input className="field field--mini" defaultValue={rec.repoUrl} onBlur={(e) => void setField("repoUrl", e.target.value)} placeholder="github.com/..." /></label>
+                      </div>
                     </div>
-                    <pre>{prompt}</pre>
+
+                    <div className="repro-path">
+                      <div className="repro-sec-head">
+                        <span className="mono-label">复现路径（历史分层：R1–R6 模板，非从本论文抽取；执行任务将由系统生成）</span>
+                      </div>
+                      <ul>
+                        {rec.path.map((s) => (
+                          <li key={s.id} className={`repro-step repro-step--${s.status}`}>
+                            <select className="field field--mini" value={s.status} onChange={(e) => void setStepStatus(s.id, e.target.value as Stat)}>
+                              <option value="todo">待办</option><option value="doing">进行中</option><option value="done">已完成</option>
+                            </select>
+                            <span className="repro-step-title">{s.title}</span>
+                            {s.note && <span className="mono-label" style={{ opacity: 0.7 }}>{s.note}</span>}
+                            <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt(s.id)}>per步提示词</button>
+                            <button className="btn btn--ghost btn--quiet" onClick={() => void delStep(s.id)}>×</button>
+                          </li>
+                        ))}
+                      </ul>
+                      <AddStepLine onAdd={addStep} />
+                      <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt()}>生成整篇提示词</button>
+                      {prompt && (
+                        <div className="repro-prompt">
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                            <button className="btn btn--primary btn--sm" onClick={() => void copyPrompt()}>复制整篇提示词</button>
+                            <span className="mono-label">粘贴给 GPT / Codex</span>
+                          </div>
+                          <pre>{prompt}</pre>
+                        </div>
+                      )}
+                    </div>
+
+                    {slug && <ReproCopilot slug={slug} writeSteps={writeStepsFromCopilot} />}
+
+                    <div className="repro-review">
+                      <div className="repro-sec-head"><span className="mono-label">实验复盘（读本机 Codex/DSH 对话 → 提炼坑点）</span></div>
+                      <div className="repro-review-input">
+                        <input className="field field--mini" placeholder="codex://threads/<id>（读本机记录）" value={reviewLink} onChange={(e) => setReviewLink(e.target.value)} />
+                        <textarea className="field" rows={3} placeholder="或直接粘贴对话/日志文本" value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} />
+                        <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void review()}>{busy ? "提炼中…" : "提炼并归档坑点"}</button>
+                      </div>
+                    </div>
+
+                    <div className="repro-pitfalls">
+                      <div className="repro-sec-head"><span className="mono-label">坑点（{rec.pitfalls.length} · 环境类已标）</span></div>
+                      <ul>
+                        {rec.pitfalls.map((p) => (
+                          <li key={p.id} className="repro-pitfall">
+                            <span className="chip chip--dark">{p.env ? "环境" : "复现"}{p.stage ? ` · ${p.stage}` : ""}</span>
+                            <span>{p.text}</span>
+                            <button className="btn btn--ghost btn--quiet" onClick={() => void delPitfall(p.id)}>×</button>
+                          </li>
+                        ))}
+                      </ul>
+                      <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.4rem" }}>
+                        <input className="field field--mini" placeholder="手动记一个坑点" value={pitText} onChange={(e) => setPitText(e.target.value)} />
+                        <button className="btn btn--ghost btn--quiet" onClick={() => void addPitfall()}>记</button>
+                      </div>
+                    </div>
+
+                    <button className="btn btn--ghost btn--quiet" style={{ marginTop: "1rem", color: "var(--muted-foreground)" }} onClick={() => void delRecord()}>删除这篇复现记录</button>
                   </div>
                 )}
               </div>
-
-              {/* ① 目标定义器（Step 2；未定义时下方路径/商定被门控） */}
-              <ReproTarget
-                target={rec.target}
-                constraints={rec.constraints}
-                acceptance={rec.acceptance}
-                onSave={saveTarget}
-              />
-
-              {!targetReady && (
-                <div className="repro-gate">
-                  <span className="mono-label">⚠ 先完成上面的「你想复现什么」（目标 + 约束 + 验收），才能拆路径、加步骤、与 AI 商定。</span>
-                </div>
-              )}
-
-              <div className="repro-path" style={{ opacity: targetReady ? 1 : 0.55, pointerEvents: targetReady ? "auto" : "none" }}>
-                <div className="repro-sec-head"><span className="mono-label">复现路径（一起明确 · 可勾状态）</span></div>
-                <ul>
-                  {rec.path.map((s) => (
-                    <li key={s.id} className={`repro-step repro-step--${s.status}`}>
-                      <select className="field field--mini" value={s.status} onChange={(e) => void setStepStatus(s.id, e.target.value as Stat)}>
-                        <option value="todo">待办</option><option value="doing">进行中</option><option value="done">已完成</option>
-                      </select>
-                      <span className="repro-step-title">{s.title}</span>
-                      {s.note && <span className="mono-label" style={{ opacity: 0.7 }}>{s.note}</span>}
-                      <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt(s.id)}>per步提示词</button>
-                      <button className="btn btn--ghost btn--quiet" onClick={() => void delStep(s.id)}>×</button>
-                    </li>
-                  ))}
-                </ul>
-                <AddStepLine onAdd={addStep} />
-                <button className="btn btn--ghost btn--quiet" onClick={() => void genPrompt()}>生成整篇提示词（到 GPT 那边拆，或直接在下面商定）</button>
-              </div>
-
-              {slug && targetReady && <ReproCopilot slug={slug} writeSteps={writeStepsFromCopilot} />}
-
-              <div className="repro-review">
-                <div className="repro-sec-head"><span className="mono-label">实验复盘（读本机 Codex/DSH 对话 → 提炼坑点）</span></div>
-                <div className="repro-review-input">
-                  <input className="field field--mini" placeholder="codex://threads/<id>（读本机记录）" value={reviewLink} onChange={(e) => setReviewLink(e.target.value)} />
-                  <textarea className="field" rows={3} placeholder="或直接粘贴对话/日志文本" value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} />
-                  <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void review()}>{busy ? "提炼中…" : "提炼并归档坑点"}</button>
-                </div>
-              </div>
-
-              <div className="repro-pitfalls">
-                <div className="repro-sec-head"><span className="mono-label">坑点（{rec.pitfalls.length} · 环境类已标）</span></div>
-                <ul>
-                  {rec.pitfalls.map((p) => (
-                    <li key={p.id} className="repro-pitfall">
-                      <span className="chip chip--dark">{p.env ? "环境" : "复现"}{p.stage ? ` · ${p.stage}` : ""}</span>
-                      <span>{p.text}</span>
-                      <button className="btn btn--ghost btn--quiet" onClick={() => void delPitfall(p.id)}>×</button>
-                    </li>
-                  ))}
-                </ul>
-                <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.4rem" }}>
-                  <input className="field field--mini" placeholder="手动记一个坑点（是环境相关可到环境卡标）" value={pitText} onChange={(e) => setPitText(e.target.value)} />
-                  <button className="btn btn--ghost btn--quiet" onClick={() => void addPitfall()}>记</button>
-                </div>
-              </div>
-
-              <button className="btn btn--ghost btn--quiet" style={{ marginTop: "1rem", color: "var(--muted-foreground)" }} onClick={() => void delRecord()}>删除这篇复现记录</button>
             </>
           )}
         </div>
 
-        {/* 右：全局环境 + conda 环境卡（两张独立卡片） */}
+        {/* 右：环境（折叠进高级工具后不再常驻；保留卡片供详情） */}
         <div className="repro-right">
           <SystemPanel />
           <EnvironmentsPanel />
@@ -251,7 +302,7 @@ function AddStepLine({ onAdd }: { onAdd: (t: string) => void }) {
   const [t, setT] = useState("");
   return (
     <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.5rem" }}>
-      <input className="field field--mini" placeholder="加一步：如「核对 height_scan 数据合同」" value={t} onChange={(e) => setT(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { onAdd(t); setT(""); } }} />
+      <input className="field field--mini" placeholder="加一步…" value={t} onChange={(e) => setT(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { onAdd(t); setT(""); } }} />
       <button className="btn btn--ghost btn--quiet" onClick={() => { onAdd(t); setT(""); }}>+ 步骤</button>
     </div>
   );

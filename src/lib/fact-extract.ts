@@ -230,9 +230,14 @@ export async function extractRepoFacts(
           const key = repoKeyFromToken(m[1]);
           if (!key || !isKnownFactKey(key)) return;
           let rawVal = m[2].trim().replace(/^["']|["']$/g, "").replace(/#.*$/, "").trim();
+          // Python 类型注解/签名噪声：`voxel_size: float = 0.5,` / `def f(x: float)` / `x: int` → 值部分是裸类型名时丢弃
+          if (/^(float|int|str|bool|list|dict|tuple|None|Any|optional)$/i.test(rawVal.replace(/[,;]$/, ""))) return;
+          if (/^=\s*(float|int|str|bool|list|dict|tuple|None)\b/i.test(rawVal) || /^[A-Za-z]+:\s*(float|int|str|bool)\b/i.test(rawVal)) return;
           if (!rawVal) return;
           // python 代码里 batch_size = 32 / optimizer = Adam(...)：剥掉函数调用
           rawVal = rawVal.replace(/\(.*$/, "").trim();
+          // `float = 0.5,` 这类类型注解 + 默认值 → 丢弃（不是 config 值）
+          if (/^(float|int|str|bool)\s*=/i.test(rawVal)) return;
           const verMatch = rawVal.match(/[0-9]+(?:\.[0-9]+){1,3}/);
           const value = key.startsWith("runtime.") && verMatch ? verMatch[0] : rawVal;
           hits.push({ key, value, file: f.path, lineStart: i + 1, commit: f.commit, dirty: f.workingTreeDirty });
