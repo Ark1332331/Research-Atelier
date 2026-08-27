@@ -17,7 +17,7 @@
  */
 "use strict";
 
-const { app, BrowserWindow, dialog, shell } = require("electron");
+const { app, BrowserWindow, dialog, shell, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const fsp = require("node:fs/promises");
 const fs = require("node:fs");
@@ -82,7 +82,13 @@ function log(msg) {
   } catch { /* 日志写失败不致命 */ }
 }
 
-/** 解析 .env.local（KEY=VALUE，支持引号与注释）；已存在的环境变量不覆盖 */
+/**
+ * 解析桌面应用随包的 .env.local（KEY=VALUE，支持引号与注释）。
+ *
+ * 代理配置必须优先于从桌面/终端继承的环境变量：后者常残留已退出的
+ * Clash/mihomo 端口，若优先级更高，会让用户已经修正的 HTTPS_PROXY
+ * 仍然悄悄指向旧代理。其余变量保留原先「不覆盖启动环境」的语义。
+ */
 function loadDotEnv(file) {
   const out = {};
   try {
@@ -100,7 +106,8 @@ function loadDotEnv(file) {
       ) {
         val = val.slice(1, -1);
       }
-      if (!(key in process.env)) out[key] = val;
+      const isProxySetting = /^(?:HTTPS?|NO)_PROXY$/i.test(key);
+      if (isProxySetting || !(key in process.env)) out[key] = val;
     }
   } catch { /* 无 .env.local 也允许 */ }
   return out;
@@ -215,9 +222,13 @@ async function startNextServer(port) {
     // 解决「直连 DeepSeek 不通 / 需代理」导致的 fetch failed。没配代理则仍直连，不受影响。
     NODE_USE_ENV_PROXY: "1",
   };
+  // 默认不继承启动器或 shell 遗留的代理地址。全局/TUN VPN 已经在系统路由层
+  // 接管流量，而一个已退出的本地代理（例如 127.0.0.1:12000）会反过来阻断它。
+  // 只有 .env.local 中明确声明的代理才会被传给 Node fetch。
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+    delete env[key];
+  }
   Object.assign(env, loadDotEnv(path.join(projectDir, ".env.local")));
-  // 默认直连（不自动强制走系统代理——用户系统代理的出口有时反而被 OpenAlex 限流）。
-  // 若用户确需走代理，在 .env.local 显式配 HTTPS_PROXY/HTTP_PROXY 即可，NODE_USE_ENV_PROXY 会自动生效。
 
   const child = spawn(
     process.execPath,
@@ -257,6 +268,7 @@ function createWindow(url) {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: false,
+      preload: path.join(__dirname, "preload.js"),
     },
   });
   win.once("ready-to-show", () => win.show());
@@ -334,6 +346,17 @@ app.on("window-all-closed", () => {
 
 app.whenReady().then(async () => {
   try {
+    // 原生"选择目录"对话框（renderer 经 preload 桥调用）：返回服务器可读的绝对路径
+    ipcMain.handle("pick-directory", async () => {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+      const r = await dialog.showOpenDialog(win ?? undefined as any, {
+        title: "选择代码仓库文件夹（复现绑定）",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (r.canceled || !r.filePaths.length) return { canceled: true };
+      return { canceled: false, path: r.filePaths[0] };
+    });
+
     if (DEV_URL) {
       // 开发模式：直连已运行的 next dev
       if (!(await waitForServer(DEV_URL, 30000))) {

@@ -73,6 +73,17 @@ export default function ReproStageMaterials({
     } finally { setBusy(false); }
   }
 
+  /** 弹系统原生目录选择对话框（zenity，服务器同屏）→ 回填手动路径 */
+  async function pickDir() {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/fs/pick", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      const d = await r.json();
+      if (d.path) { setManualRepo(d.path); setRepoPick(""); }
+    } catch { /* */ }
+    setBusy(false);
+  }
+
   return (
     <div className="repro-stage">
       <div className="repro-stage-title">{ready ? "材料已绑定" : "还不能开始分析"}</div>
@@ -129,7 +140,11 @@ export default function ReproStageMaterials({
             )}
           </select>
         </label>
-        <div className="mono-label" style={{ opacity: 0.7, marginTop: "0.2rem" }}>或手动输入本地目录路径（任意位置 / 非 git 均可）：</div>
+        <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", width: "100%", marginTop: "0.2rem" }}>
+          <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void pickDir()}>选择文件夹…</button>
+          <span className="mono-label" style={{ opacity: 0.6 }}>（弹系统对话框，点选目标代码库文件夹）</span>
+        </div>
+        <div className="mono-label" style={{ opacity: 0.7 }}>或手动输入本地目录路径（任意位置 / 非 git 均可）：</div>
         <input className="field field--mini" placeholder="/home/ark/projects/IsaacLab（绝对路径）" value={manualRepo} onChange={(e) => setManualRepo(e.target.value)} />
         <button className="btn btn--primary" disabled={busy || !paperPick || (!repoPick && !manualRepo.trim())} onClick={() => void bind()}>
           {busy ? "绑定中…" : ready ? "更新绑定" : "绑定论文与仓库"}
