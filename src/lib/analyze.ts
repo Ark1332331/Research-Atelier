@@ -22,7 +22,7 @@ import { createHash } from "node:crypto";
 import { DATA_DIR } from "@/lib/store";
 import { extractPaperFacts, extractRepoFacts } from "@/lib/fact-extract";
 import { proposeMappings } from "@/lib/mapping";
-import { detectGaps, blockingGaps, resolvableGaps } from "@/lib/gap-detector";
+import { blockingGaps, resolvableGaps, detectWithDecisions } from "@/lib/gap-detector";
 import { buildRepositorySnapshot, getRepoRevision } from "@/lib/code-reader";
 import type { ReproductionSpec, AnalysisState, Gap } from "@/lib/reproduction-spec";
 
@@ -90,15 +90,16 @@ export async function runAnalysis(
   });
 
   try {
-    // 1) 固定 revision
+    // 1) 固定 revision + 本轮 run id
     const repoRev = getRepoRevision(input.root);
     const { pages, hash } = await readPaperPages(rec.slug, rec.title);
+    const runId = `run-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`;
 
-    // 2) paper extraction → paper facts
+    // 2) paper extraction → paper facts（**保留 missing**：not_found/not_scanned/ambiguous/not_applicable 是 coverage 语义，不能丢）
     let paperFacts: Awaited<ReturnType<typeof extractPaperFacts>>["facts"] = [];
     if (pages.length) {
       const r = await extractPaperFacts(pages);
-      paperFacts = r.facts.filter((f) => f.status !== "missing"); // missing 不持久化（gap 动态算）
+      paperFacts = r.facts;
     }
 
     // 3) repo analyzer snapshot → repo facts（沿 snapshot 候选，确定性）
@@ -106,22 +107,26 @@ export async function runAnalysis(
     const { facts: repoFacts } = await extractRepoFacts(snap, input.root);
 
     // 4) mapping propose（LLM 基于 paper facts + snapshot anchors）
-    const mappings = await proposeMappings({ facts: paperFacts, snapshot: snap, root: input.root });
+    const mappings = await proposeMappings({ facts: paperFacts.filter((f) => f.status === "observed" || f.status === "inferred"), snapshot: snap, root: input.root });
 
-    // 5) gaps（derived，基于 paper+repo facts + 已存 decisions）
-    const allFacts = [...paperFacts, ...repoFacts];
-    const gaps = detectGaps(allFacts);
-    const blocking = blockingGaps(gaps);
-    const { needScan, needDecision } = classifyGaps(gaps);
+    // 5) gaps：**用 detectWithDecisions（effective）**——当前 facts + 已有 decisions，避免 raw 与 effective 不一致
+    const allFacts = [...paperFacts, ...repoFacts].map((f) => ({ ...f, runId }));
+    const { effectiveGaps, staleDecisions } = detectWithDecisions(allFacts, rec.decisions ?? []);
+    const blocking = blockingGaps(effectiveGaps);
+    const { needScan, needDecision } = classifyGaps(effectiveGaps);
 
-    // 6) 持久化：facts merge + mappings merge + analysis state（一次性 upsert）
-    rec.facts = mergeFacts(rec.facts ?? [], allFacts);
-    rec.mappings = mergeMappings(rec.mappings ?? [], mappings);
+    // 6) 持久化：**替换而非 blind merge**（③）
+    //    - facts：清掉上一轮系统生成的（runId 非当前 / user 保留），写入本轮（带 runId）
+    //    - mappings：保留 confirmed（用户已确认），未确认的 proposed 用本轮替换
+    const userFacts = (rec.facts ?? []).filter((f) => f.source?.kind === "user");
+    rec.facts = [...userFacts, ...allFacts];
+    const confirmedMappings = (rec.mappings ?? []).filter((m) => m.status === "confirmed");
+    rec.mappings = [...confirmedMappings, ...mappings];
     rec.analysis = {
       status: "done", ranAt: new Date().toISOString(),
       paperRevision: hash || undefined,
       repoRevision: repoRev,
-      summary: { paperFacts: paperFacts.length, repoFacts: repoFacts.length, mappings: mappings.length, gaps: gaps.length, blocking: blocking.length },
+      summary: { paperFacts: paperFacts.length, repoFacts: repoFacts.length, mappings: mappings.length, gaps: effectiveGaps.length, blocking: blocking.length },
     };
     rec.paperRevision = { fileHash: hash || undefined };
     rec.repoRevision = repoRev;
@@ -138,11 +143,4 @@ export async function runAnalysis(
   } catch (e) {
     return fail(e);
   }
-}
-
-/** merge facts（复用 fact-extract 的 saveFacts merge 语义） */
-import { saveFacts } from "@/lib/fact-extract";
-import { mergeMappings } from "@/lib/mapping";
-function mergeFacts(existing: ReproductionSpec["facts"], incoming: ReproductionSpec["facts"]): ReproductionSpec["facts"] {
-  return saveFacts(existing, incoming, "merge");
 }

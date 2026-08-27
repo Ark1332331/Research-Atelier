@@ -44,18 +44,16 @@ export default function ReproStageDecisions({
   async function choose(gap: Gap, choice: Decision["choice"]) {
     setBusyId(gap.id);
     try {
-      // 已有该 gap 的 pending decision → accept；否则 propose 再 accept
-      let dec = decisions.find((x) => x.gapId === gap.id);
-      if (!dec) {
-        const p = await act({ slug, action: "proposeDecision", gapId: gap.id });
-        dec = p.decision;
-      }
+      // ② propose 每次交给服务端：按 gapId+fingerprint 复用 pending 或新建；effective needDecision 本身就是 unresolved
+      const p = await act({ slug, action: "proposeDecision", gapId: gap.id });
+      const dec = p.decision;
       if (dec) await act({ slug, action: "acceptDecision", id: dec.id, choice });
       await load();
     } finally { setBusyId(null); }
   }
 
-  const unresolved = needDecision.filter((g) => !decisions.some((d) => d.gapId === g.id && d.status === "accepted"));
+  // ② effective needDecision 本身就是 unresolved（不再按 accepted+gapId 二次过滤，stale 不会隐藏新冲突）
+  const unresolved = needDecision;
 
   return (
     <div className="repro-stage">
@@ -72,7 +70,7 @@ export default function ReproStageDecisions({
               <li key={g.id} className="mono-label" style={{ opacity: 0.75 }}>· {g.description}</li>
             ))}
           </ul>
-          <button className="btn btn--ghost btn--quiet" onClick={onRescan}>重新扫描（补充证据）</button>
+          <button className="btn btn--ghost btn--quiet" onClick={onRescan}>重新分析（换一轮证据再查）</button>
         </div>
       )}
 

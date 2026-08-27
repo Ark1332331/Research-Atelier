@@ -25,11 +25,20 @@ interface LibPaper { id: string; title: string; slug?: string | null; status?: s
 
 type Stage = "target" | "analyzing" | "decisions" | "ready";
 
-function stageOf(rec: Repr | null): Stage {
+interface GapSummary { needDecision: number; needScan: number }
+
+/** 阶段推导：依赖 effective gaps + target 确认（①）。decisions 必须可达。 */
+function stageOf(rec: Repr | null, gaps?: GapSummary): Stage {
   if (!rec) return "target";
   if (!rec.goalIntent) return "target";
   if (rec.analysis?.status !== "done") return "analyzing";
-  return "ready"; // decisions 状态由 ReproStageDecisions 内部根据 gaps 判断；ready 页含"有问题回去处理"入口
+  // analysis done：
+  //  - 有可决策问题 → decisions
+  //  - goalIntent=unknown 且 target 未确认 → decisions（内含"系统建议目标→确认"）
+  //  - 否则 → ready
+  if (gaps && gaps.needDecision > 0) return "decisions";
+  if (rec.goalIntent === "unknown" && !rec.target) return "decisions";
+  return "ready";
 }
 
 export default function Repro() {
@@ -45,12 +54,24 @@ export default function Repro() {
   const [pitText, setPitText] = useState("");
   const [busy, setBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [gapSummary, setGapSummary] = useState<GapSummary | undefined>(undefined);
 
   const act = async (body: Record<string, unknown>) => {
     await fetch("/api/reproduction", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   };
   const refreshList = async () => { const d = await (await fetch("/api/reproduction")).json(); setList(d.records ?? []); };
   const reopen = async (s: string) => { const d = await (await fetch(`/api/reproduction?slug=${encodeURIComponent(s)}`)).json(); setRec(d.record ?? null); };
+  /** analysis done 后拉一次 effective gaps 摘要（决策阶段必须可达；②） */
+  const refreshGaps = async (s: string) => {
+    try {
+      const d = await (await fetch("/api/reproduction/gaps", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: s, action: "detect" }) })).json();
+      const eff = (d.effectiveGaps ?? []) as { type: string }[];
+      setGapSummary({
+        needDecision: eff.filter((g) => ["value_conflict", "source_conflict", "not_found", "uncomparable"].includes(g.type)).length,
+        needScan: eff.filter((g) => g.type === "not_scanned").length,
+      });
+    } catch { /* */ }
+  };
 
   useEffect(() => {
     void refreshList();
@@ -83,7 +104,7 @@ export default function Repro() {
     setSlug(s);
     await reopen(s);
   }
-  async function open(s: string) { setSlug(s); await reopen(s); setPrompt(""); setReviewNote(""); setShowAdvanced(false); }
+  async function open(s: string) { setSlug(s); await reopen(s); setPrompt(""); setReviewNote(""); setShowAdvanced(false); await refreshGaps(s); }
 
   // —— 阶段①：目标（只存 goalIntent，不写假 Target）——
   const saveGoal = async (g: GoalIntent) => {
@@ -97,12 +118,26 @@ export default function Repro() {
     try {
       await fetch("/api/reproduction/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
       await reopen(slug);
+      await refreshGaps(slug);
     } catch { /* */ }
   };
-  const gotoDecisions = () => setShowAdvanced(false); // 阶段②按钮 → 阶段③由 stageOf 推导（analysis done → ready 页含返回处理入口）
-  // 决策完成 → 回到 ready
-  const decisionsDone = async () => { await reopen(slug ?? ""); };
-  const rescan = async () => { await runAnalyze(); await reopen(slug ?? ""); };
+  // 决策完成 / 分析完成 → 刷新 gaps 后由 stageOf 推导下一阶段
+  const decisionsDone = async () => {
+    await reopen(slug ?? "");
+    if (slug) await refreshGaps(slug);
+  };
+  // ⑦ 诚实命名：没有 targeted/expanded scan，只有重新跑一轮分析
+  const rescan = async () => { await runAnalyze(); };
+  // ⑤ unknown goal：确认系统建议的具体 Target（分析后）
+  const confirmTarget = async (accept: boolean) => {
+    if (!slug) return;
+    if (accept) {
+      const suggested: Target = { scope: "table", name: "复现论文里的一个主结果", metrics: [{ name: "主实验指标" }] };
+      await act({ action: "setTarget", slug, target: suggested });
+    }
+    await reopen(slug);
+    if (slug) await refreshGaps(slug);
+  };
 
   // —— 旧功能（移入折叠区）——
   async function genPrompt(stepId?: string) {
@@ -135,7 +170,7 @@ export default function Repro() {
   async function delPitfall(id: string) { if (!slug) return; await act({ action: "deletePitfall", slug, id }); await reopen(slug); await refreshList(); }
   async function delRecord() { if (!slug) return; if (!confirm("删除这篇复现记录？")) return; await act({ action: "delete", slug }); setSlug(null); setRec(null); await refreshList(); }
 
-  const stage: Stage = stageOf(rec);
+  const stage: Stage = stageOf(rec, gapSummary);
 
   return (
     <section>
@@ -192,7 +227,15 @@ export default function Repro() {
                 <ReproStageTarget goalIntent={rec.goalIntent} onSave={saveGoal} />
               )}
               {stage === "analyzing" && (
-                <ReproStageAnalyzing title={rec.title} analysis={rec.analysis} onAnalyze={runAnalyze} onProceed={() => void decisionsDone()} />
+                <ReproStageAnalyzing
+                  title={rec.title}
+                  goalIntent={rec.goalIntent}
+                  analysis={rec.analysis}
+                  hasTarget={Boolean(rec.target)}
+                  onAnalyze={runAnalyze}
+                  onConfirmTarget={confirmTarget}
+                  onProceed={() => void decisionsDone()}
+                />
               )}
               {stage === "decisions" && slug && (
                 <ReproStageDecisions slug={slug} onDone={() => void decisionsDone()} onRescan={() => void rescan()} />
@@ -201,7 +244,7 @@ export default function Repro() {
                 <>
                   <ReproStageReady title={rec.title} analysis={rec.analysis} goalIntent={rec.goalIntent} />
                   <div style={{ marginTop: "0.8rem" }}>
-                    <button className="btn btn--ghost btn--quiet" onClick={() => setShowAdvanced(true)}>有需要决定的问题？去处理 →</button>
+                    <button className="btn btn--ghost btn--quiet" onClick={() => void decisionsDone()}>重新检查待处理问题 →</button>
                   </div>
                 </>
               )}

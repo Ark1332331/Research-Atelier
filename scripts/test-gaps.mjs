@@ -108,5 +108,56 @@ console.log("== 8. missing_required 不可消解 ==");
 const gMR = detectGaps(normalizeFacts([]));
 ok(!resolvableGaps(gMR).some((g) => g.type === "missing_required"), "missing_required 不可 Decision 消解");
 
+console.log("== 9. 回归：stale accepted decision 不隐藏新 gap（②） ==");
+const fR1 = normalizeFacts([
+  { key: "training.lr", side: "paper", value: "1e-4", status: "observed", source: { kind: "paper", section: "4.1" } },
+  { key: "training.lr", side: "repo", value: "1e-4", status: "observed", source: { kind: "repo", file: "cfg.yaml" } },
+]);
+const gR1 = detectGaps(fR1);
+ok(!gR1.some((g) => g.key === "training.lr" && g.type === "value_conflict"), "同值无冲突（基线）");
+const fR2 = normalizeFacts([
+  { key: "training.lr", side: "paper", value: "1e-4", status: "observed", source: { kind: "paper", section: "4.1" } },
+  { key: "training.lr", side: "repo", value: "5e-4", status: "observed", source: { kind: "repo", file: "cfg.yaml" } },
+]);
+const gR2 = detectGaps(fR2);
+const vcR2 = gR2.find((g) => g.type === "value_conflict" && g.key === "training.lr");
+ok(Boolean(vcR2), "repo 值改变 → 新 value_conflict 出现");
+const oldDec = { ...decisionForGap(vcR2), gapFingerprint: "old-fingerprint", status: "accepted", choice: { kind: "fact", factId: fR2.find((f) => f.side === "paper").id } };
+const { effectiveGaps: effR2 } = detectWithDecisions(fR2, [oldDec]);
+ok(effR2.some((g) => g.key === "training.lr" && g.type === "value_conflict"), "stale decision 不隐藏重新出现的冲突（effective 仍含）");
+
+console.log("== 10. 回归：repo 值改动后旧自动 fact 不污染当前 view（③ replace 语义） ==");
+const run1 = [
+  { key: "training.lr", side: "paper", value: "1e-4", status: "observed", runId: "run-1" },
+  { key: "training.lr", side: "repo", value: "1e-4", status: "observed", runId: "run-1" },
+];
+const run2 = [
+  { key: "training.lr", side: "paper", value: "1e-4", status: "observed", runId: "run-2" },
+  { key: "training.lr", side: "repo", value: "5e-4", status: "observed", runId: "run-2" },
+];
+const userF = normalizeFacts([{ key: "training.seed", side: "paper", value: 42, status: "observed", source: { kind: "user", note: "user" } }]);
+const currentView = [...userF, ...normalizeFacts(run2)];
+ok(currentView.filter((f) => f.runId === "run-1").length === 0, "旧 run 事实不在当前 view（replace 未污染）");
+ok(currentView.some((f) => f.source?.kind === "user"), "user 事实保留");
+const gCur = detectGaps(currentView);
+ok(gCur.some((g) => g.type === "value_conflict" && g.key === "training.lr"), "当前 view 反映 run2 冲突");
+
+console.log("== 11. 回归：paper not_found/not_scanned/ambiguous/not_applicable 保留（④） ==");
+const fMiss = normalizeFacts([
+  { key: "training.batch_size", side: "paper", value: 64, status: "observed" },
+  { key: "training.batch_size", side: "repo", status: "missing", missingType: "not_found", missingReason: "扫过没找到" },
+  { key: "model.loss", side: "paper", value: "BCE", status: "observed" },
+  { key: "model.loss", side: "repo", status: "missing", missingType: "not_scanned", missingReason: "未扫描" },
+  { key: "training.seed", side: "paper", value: 42, status: "observed" },
+  { key: "training.seed", side: "repo", status: "missing", missingType: "ambiguous", missingReason: "两处不同" },
+  { key: "data.dataset_name", side: "paper", value: "KITTI", status: "observed" },
+  { key: "data.dataset_name", side: "repo", status: "missing", missingType: "not_applicable", missingReason: "不适用" },
+]);
+const gMiss = detectGaps(fMiss);
+ok(gMiss.some((g) => g.key === "training.batch_size" && g.type === "not_found"), "not_found 保留 → gap not_found");
+ok(gMiss.some((g) => g.key === "model.loss" && g.type === "not_scanned"), "not_scanned 保留 → gap not_scanned（不可 Decision）");
+ok(gMiss.some((g) => g.key === "training.seed" && g.type === "source_conflict"), "ambiguous 保留 → gap source_conflict");
+ok(!gMiss.some((g) => g.key === "data.dataset_name"), "not_applicable → 不报 gap");
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

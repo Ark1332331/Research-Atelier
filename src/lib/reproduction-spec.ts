@@ -49,6 +49,7 @@ export interface Fact {
   importance: FactImportance;
   missingReason?: string;    // status=missing 时保留原因（如「论文未报告 / repo 未找到」）
   missingType?: FactMissingType; // status=missing 时结构化原因（not_found/not_scanned/ambiguous/not_applicable）
+  runId?: string;            // 产生该事实的分析轮次（analyze run；user 事实无；历史轮只审计）
   source?: FactSource;
 }
 
@@ -351,6 +352,7 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           importance: (["required", "recommended", "optional"] as const).includes(f.importance) ? f.importance : "recommended",
           missingReason: typeof f.missingReason === "string" ? f.missingReason : undefined,
           missingType: (["not_found", "not_scanned", "ambiguous", "not_applicable"] as const).includes(f.missingType) ? f.missingType : undefined,
+          runId: typeof f.runId === "string" ? f.runId : undefined,
           source: normFactSource(f.source),
         } : null).filter(notNull)
       : [],
