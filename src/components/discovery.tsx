@@ -69,12 +69,18 @@ export default function Discovery() {
 
   async function copyAndOpen(db: any) {
     const query = db.recommendedFirst ?? db.queries?.[0];
+    const url = db.deepLinkUrl ?? db.landingUrl; // v1.1.2：两者必有其一（WoS=Advanced Search 入口页）
+    // 浏览器 UX 修复：先 window.open（占用 transient activation 前），若被弹窗拦截返回 null，
+    // 则只复制检索式并提示手动打开，不记录 opened、不进入 external-opened
+    let opened: Window | null = null;
+    try { opened = window.open(url, "_blank", "noopener,noreferrer"); } catch { opened = null; }
+    if (!opened) {
+      try { await navigator.clipboard.writeText(query); } catch { /* 剪贴板不可用 */ }
+      setError("浏览器阻止了新窗口：已复制检索式，请手动粘贴打开 " + dbName(db.id));
+      return;
+    }
     try { await navigator.clipboard.writeText(query); setCopied(true); } catch { /* 剪贴板不可用时忽略 */ }
-    // v1.1.2：deepLinkUrl（带 query 直达）或 landingUrl（入口页，如 WoS Advanced Search）必有其一，
-    // 只有真实打开页面后才记录 opened / 进入 external-opened
-    const url = db.deepLinkUrl ?? db.landingUrl;
-    if (url) window.open(url, "_blank");
-    await act("open-external");
+    await act("open-external"); // 只有真实打开页面后才记录 opened
   }
 
   const stage: string = session?.stage ?? "planning";
