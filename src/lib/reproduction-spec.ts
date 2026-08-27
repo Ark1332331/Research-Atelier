@@ -73,14 +73,21 @@ export interface Mapping {
   legacy?: boolean;
 }
 
+/** Decision 的可追溯选择：优先选参与冲突的真实 Fact（kind=fact），否则用户自定义值 */
+export type DecisionChoice =
+  | { kind: "fact"; factId: string }
+  | { kind: "custom"; value: unknown };
+
 /** Decision Ledger（§6.2）：必须引用 gapId + paperFactIds/repoFactIds，不存裸值 */
 export interface Decision {
   id: string;
-  gapId?: string;               // 关联的 Gap（必须是可消解的 gap：value_conflict / not_found / uncomparable）
+  gapId?: string;               // 关联的 Gap（必须是可消解的 gap：value_conflict/source_conflict/not_found/uncomparable）
+  gapType?: GapType;            // 关联 gap 的类型（accept 时校验当前 gap 类型一致）
+  gapFingerprint?: string;      // 关联 gap 的确定性指纹（证据变化后 → stale，不再消解新 gap）
   key: string;
   paperFactIds: string[];       // 参与冲突的 paper fact id（真实 id）
   repoFactIds: string[];        // 参与冲突的 repo fact id（真实 id）
-  chosen?: unknown;
+  choice?: DecisionChoice;      // 可追溯选择（accept 必须有有效 choice）
   rationale?: string;
   impact?: string;
   status: "accepted" | "pending";
@@ -335,10 +342,16 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
       ? r.decisions.map((d: any) => isObj(d) ? {
           id: typeof d.id === "string" ? d.id : `d-${Math.random().toString(36).slice(2, 8)}`,
           gapId: typeof d.gapId === "string" ? d.gapId : undefined,
+          gapType: (["value_conflict","source_conflict","not_found","not_scanned","uncomparable","missing_required"] as const).includes(d.gapType) ? d.gapType : undefined,
+          gapFingerprint: typeof d.gapFingerprint === "string" ? d.gapFingerprint : undefined,
           key: String(d.key ?? ""),
           paperFactIds: Array.isArray(d.paperFactIds) ? d.paperFactIds.map(String) : [],
           repoFactIds: Array.isArray(d.repoFactIds) ? d.repoFactIds.map(String) : [],
-          chosen: d.chosen,
+          choice: isObj(d.choice) && (d.choice.kind === "fact" ? typeof d.choice.factId === "string" : d.choice.kind === "custom")
+            ? (d.choice.kind === "fact"
+                ? { kind: "fact" as const, factId: String(d.choice.factId) }
+                : { kind: "custom" as const, value: d.choice.value })
+            : undefined,
           rationale: typeof d.rationale === "string" ? d.rationale : undefined,
           impact: typeof d.impact === "string" ? d.impact : undefined,
           status: (d.status === "accepted" ? "accepted" : "pending") as "accepted" | "pending",
