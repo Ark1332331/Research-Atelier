@@ -282,7 +282,8 @@ export interface DatabaseStrategy {
   recommendedFirst?: string;
   priority: "primary" | "secondary" | "later";
   recommendedNow: boolean;  // v1.1：一个 SearchPlan 只允许恰好一个 true（代码强制，见 normalizeSearchPlan）
-  deepLinkUrl?: string;     // 只由确定性 builder 生成（gs-link.ts），LLM 返回的 URL 一律不可信
+  landingUrl: string;       // v1.1.2：所有数据库必有的可打开入口（WoS=Advanced Search 入口页），只由 gs-link.ts 确定性生成
+  deepLinkUrl?: string;     // v1.1.2：带 query 的直达深链（GS/S2/arXiv/OpenAlex）；WoS 无 query 参数支持 → 无 deepLinkUrl
   nextActions: string[];
   why: string;
 }

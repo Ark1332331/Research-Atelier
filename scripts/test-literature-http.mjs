@@ -29,6 +29,8 @@ ok(plan.body?.session?.schemaVersion === 1, "schemaVersion=1");
 ok(plan.body?.session?.question === "world model in robotics", "question 保留");
 const recs = plan.body?.session?.plan?.databases?.filter((d) => d.recommendedNow) ?? [];
 ok(recs.length === 1, "恰好一个 recommendedNow");
+const primHit = plan.body?.session?.plan?.databases?.find((d) => d.recommendedNow);
+ok(typeof primHit?.landingUrl === "string" && primHit.landingUrl.startsWith("http"), "primary 有 landingUrl（真实打开才记录 opened）");
 const sessionId = plan.body?.session?.id;
 ok(typeof sessionId === "string" && sessionId.length > 0, "有 sessionId");
 

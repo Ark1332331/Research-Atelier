@@ -7,7 +7,7 @@
  */
 import type { DatabaseStrategy, SearchPlan, SearchIntent, ResearchSession, NextStep, SearchGoal } from "./types.ts";
 import { compileWosQuery } from "./compile-wos.ts";
-import { googleScholarUrl, arxivSearchUrl } from "./gs-link.ts";
+import { landingUrlFor, hasDeepLink } from "./gs-link.ts";
 
 const DB_IDS = ["google-scholar", "web-of-science", "semantic-scholar", "arxiv", "openalex"];
 const PRIORITIES = ["primary", "secondary", "later"];
@@ -104,7 +104,9 @@ function normalizeDatabase(d: unknown): DatabaseStrategy | null {
     ...(str(o.recommendedFirst) ? { recommendedFirst: str(o.recommendedFirst) } : {}),
     priority: (PRIORITIES.includes(str(o.priority)) ? str(o.priority) : "secondary") as DatabaseStrategy["priority"],
     recommendedNow: Boolean(o.recommendedNow),
-    ...(str(o.deepLinkUrl) ? { deepLinkUrl: str(o.deepLinkUrl) } : {}),
+    // v1.1.2：landingUrl 必有（缺失时按 id 确定性兜底）；deepLinkUrl 只有带 query 深链的库才有
+    ...(str(o.landingUrl) ? { landingUrl: str(o.landingUrl) } : { landingUrl: landingUrlFor(id, queries[0]) }),
+    ...(hasDeepLink(id) ? { deepLinkUrl: str(o.deepLinkUrl) || landingUrlFor(id, queries[0]) } : {}),
     nextActions: strArr(o.nextActions),
     why: why || "（未说明理由）",
   };
@@ -199,27 +201,29 @@ export function planFromIntent(intent: SearchIntent, now?: number): SearchPlan {
     priority: DatabaseStrategy["priority"],
     queries: string[],
     extra: Partial<DatabaseStrategy> = {},
-  ): DatabaseStrategy => ({
-    id,
-    purpose: DB_META[id].purpose,
-    queries,
-    priority,
-    recommendedNow: false,
-    nextActions: DB_ACTIONS[id] ?? [],
-    why: DB_META[id].why,
-    ...extra,
-  });
+  ): DatabaseStrategy => {
+    const q0 = queries[0] ?? "";
+    return {
+      id,
+      purpose: DB_META[id].purpose,
+      queries,
+      priority,
+      recommendedNow: false,
+      landingUrl: landingUrlFor(id, q0),           // v1.1.2：所有数据库必有可打开入口
+      ...(hasDeepLink(id) ? { deepLinkUrl: landingUrlFor(id, q0) } : {}), // 有 query 深链才给 deepLinkUrl
+      nextActions: DB_ACTIONS[id] ?? [],
+      why: DB_META[id].why,
+      ...extra,
+    };
+  };
 
   const databases: DatabaseStrategy[] = [];
-  databases.push(mk("google-scholar", "primary", gsQueries, {
-    recommendedFirst: q1,
-    deepLinkUrl: googleScholarUrl(q1),
-  }));
+  databases.push(mk("google-scholar", "primary", gsQueries, { recommendedFirst: q1 }));
   if (wos.query) {
     databases.push(mk("web-of-science", "secondary", [wos.query]));
   }
   databases.push(mk("semantic-scholar", "later", [q1]));
-  databases.push(mk("arxiv", "later", [q1], { deepLinkUrl: arxivSearchUrl(q1) }));
+  databases.push(mk("arxiv", "later", [q1]));
 
   // goal → primary（v1.1.1）：优先 primaryId，构建缺失则 Scholar 兜底
   const primary =

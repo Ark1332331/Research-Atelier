@@ -135,6 +135,22 @@ ok(deriveNextStep({ stage: "external-opened", plan }).action.includes("我搜完
 ok(deriveNextStep({ stage: "awaiting-import", plan }).action.includes("带回来"), "awaiting-import → 带回来");
 ok(displayDbName("google-scholar") === "Google Scholar", "展示名");
 
+console.log("== 9. v1.1.2：landingUrl 全覆盖 / deep-link 区分 / context 不污染 WoS / follow_paper→S2 ==");
+const ctxIntent = { ...intent, context: ["learning", "survey", "overview"] };
+const wosCtx = compileWosQuery(ctxIntent);
+ok(!wosCtx.query.includes("learning") && !wosCtx.query.includes("survey"), "context 不进 WoS 主 query（soft context）");
+const pFound = planFromIntent({ ...intent, goal: "foundational" }, 2026);
+ok(pFound.databases.every((d) => typeof d.landingUrl === "string" && d.landingUrl.startsWith("http")), "所有数据库都有 landingUrl");
+const wosP = pFound.databases.find((d) => d.id === "web-of-science");
+ok(wosP.landingUrl === "https://www.webofscience.com/wos/woscc/advanced-search", "WoS landingUrl = Advanced Search 入口页");
+ok(wosP.deepLinkUrl === undefined, "WoS 无 deepLinkUrl（复制检索式 + 打开入口）");
+ok(pFound.databases[0].id === "web-of-science" && pFound.databases[0].recommendedNow, "foundational → WoS primary");
+const pRecent = planFromIntent({ ...intent, goal: "recent", yearRange: undefined }, 2026);
+ok(pRecent.databases[0].id === "arxiv" && pRecent.databases[0].deepLinkUrl?.startsWith("https://arxiv.org/"), "recent → arXiv primary + deepLinkUrl");
+const pFollow = planFromIntent({ ...intent, goal: "follow_paper" }, 2026);
+ok(pFollow.databases[0].id === "semantic-scholar" && pFollow.databases[0].deepLinkUrl?.startsWith("https://www.semanticscholar.org/search"), "follow_paper → S2 primary + deepLinkUrl");
+ok(plan.databases.find((d) => d.id === "google-scholar")?.deepLinkUrl?.startsWith("https://scholar.google.com/"), "GS deepLinkUrl 存在");
+
 console.log("\n结果：" + pass + " 通过 / " + fail + " 失败");
 process.exit(fail ? 1 : 0);
 

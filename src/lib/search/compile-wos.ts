@@ -1,7 +1,8 @@
 /**
- * WoS 检索式确定性编译器（v1.1 guardrail #2；v1.1.1 组语义）。
+ * WoS 检索式确定性编译器（v1.1 guardrail #2 + v1.1.1 组语义 + v1.1.2 soft context）。
  * LLM 只产结构化 intent；WoS 查询字符串一律由本文件纯函数编译。
- * 组语义：conceptGroups 组内 OR、组间 AND（「world model」与「robotics」必须组间 AND）。
+ * 硬约束组 = conceptGroups（组内 OR、组间 AND）；context 是 soft context，
+ * 不进主 WoS query（避免把「world model」之外的语境词变成强制 AND）。
  */
 import type { SearchIntent } from "./types.ts";
 
@@ -45,17 +46,15 @@ export function yearClause(yearRange?: [number, number]): { clause: string; note
   return { clause: "PY=(" + from + "-" + to + ")", note: null };
 }
 
-/** 编译完整 WoS 检索式：conceptGroups 组间 AND、context 追加 AND 组、exclude NOT、年份 */
+/** 编译完整 WoS 检索式：conceptGroups 组间 AND + exclude NOT + 年份（context 不进） */
 export function compileWosQuery(
-  intent: Pick<SearchIntent, "conceptGroups" | "context" | "exclude" | "yearRange">,
+  intent: Pick<SearchIntent, "conceptGroups" | "exclude" | "yearRange">,
 ): { query: string; note: string | null } {
   const parts: string[] = [];
   for (const g of intent.conceptGroups ?? []) {
     const t = topicGroup(g);
     if (t) parts.push(t);
   }
-  const xg = topicGroup(intent.context ?? []);
-  if (xg) parts.push(xg);
   const eg = excludeGroup(intent.exclude ?? []);
   if (eg) parts.push(eg);
   const yc = yearClause(intent.yearRange);

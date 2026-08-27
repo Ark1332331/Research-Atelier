@@ -70,7 +70,10 @@ export default function Discovery() {
   async function copyAndOpen(db: any) {
     const query = db.recommendedFirst ?? db.queries?.[0];
     try { await navigator.clipboard.writeText(query); setCopied(true); } catch { /* 剪贴板不可用时忽略 */ }
-    if (db.deepLinkUrl) window.open(db.deepLinkUrl, "_blank");
+    // v1.1.2：deepLinkUrl（带 query 直达）或 landingUrl（入口页，如 WoS Advanced Search）必有其一，
+    // 只有真实打开页面后才记录 opened / 进入 external-opened
+    const url = db.deepLinkUrl ?? db.landingUrl;
+    if (url) window.open(url, "_blank");
     await act("open-external");
   }
 
@@ -130,7 +133,7 @@ export default function Discovery() {
               <p style={{ margin: "0.4rem 0 0", fontSize: "0.8rem", color: "var(--muted-foreground)" }}>{primary.why}</p>
               <div style={{ marginTop: "0.8rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                 <button className="btn btn--primary" disabled={busy} onClick={() => void copyAndOpen(primary)}>
-                  {copied ? "已复制 · 已打开" : "复制并打开 " + dbName(primary.id)}
+                  {copied ? "已复制 · 已打开" : (primary.deepLinkUrl ? "复制并打开 " : "复制检索式并打开入口 ") + dbName(primary.id)}
                 </button>
                 <button className="btn btn--ghost" disabled={busy} onClick={() => void act("returned-import")}>
                   我搜完了，开始导入论文

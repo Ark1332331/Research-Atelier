@@ -144,7 +144,8 @@ interface DatabaseStrategy {
   recommendedFirst?: string;       // 推荐先执行哪条
   priority: "primary" | "secondary" | "later";  // v1.1：本轮是否主推
   recommendedNow: boolean;         // v1.1：一个 SearchPlan 只允许一个 recommendedNow=true
-  deepLinkUrl?: string;            // 可稳定带 query 的深链（GS 的 q= 通常可用；WoS 不稳定 → 以复制为主）
+  landingUrl: string;              // v1.1.2：所有数据库必有的可打开入口（WoS=Advanced Search 入口页）
+  deepLinkUrl?: string;            // v1.1.2：带 query 的直达深链（GS/S2/arXiv/OpenAlex）；WoS 无 → 复制检索式+打开入口
   nextActions: string[];           // 进去以后点什么：Cited by / Related Records / References …
   why: string;                     // 为什么这一轮建议它（默认一句话，可展开）
 }
@@ -671,6 +672,15 @@ v1.1.1（2026-08-27）Phase A hardening patch（进入 B-lite 前）：
 - SearchIntent 语义修正：concepts → conceptGroups（组内 OR、组间 AND）；WoS 与 GS query 均由结构化 groups 编译
 - 年份注入：planner 显式注入当前年份；resolveYearRange 相对时间稳定（2026 最近三年 → [2024,2026]，clamp 未来年份）
 - goal → primary 数据库确定性规则（recent→arXiv、foundational→WoS、其余→Scholar）；支持 RA_PLANNER_MOCK 确定性集成测试
+
+v1.1.2（2026-08-27）Phase A 封板 hardening：
+- landingUrl 全覆盖：所有数据库必有确定性可打开入口（WoS=Advanced Search 入口页）；deepLinkUrl 仅带
+  query 深链的库有（GS/S2/arXiv/OpenAlex）；UI 打开 deepLinkUrl ?? landingUrl，真实打开才记录 opened
+- context 定义为 soft context：不进主 WoS query（硬约束组 = conceptGroups）；仅用于 GS 短 query 多样化
+- 新增 API 级 goal 路由测试 scripts/test-literature-goals.mjs（六 goal：foundational→WoS / recent→arXiv /
+  follow_paper→S2 primary + landingUrl + deep-link 区分 + context 不污染 WoS，42 项全过）；
+  HTTP 集成测试补 primary landingUrl 断言（15/15）；单测 68/68
 ~~~
+
 
 
