@@ -11,11 +11,15 @@ interface Pit { id: string; text: string; env: boolean; stage?: string; papers?:
 interface Repr { slug: string; title: string; sourceUrl?: string; repoUrl?: string; note?: string; path: Step[]; pitfalls: Pit[]; updatedAt?: string }
 interface Sum { slug: string; title: string; sourceUrl?: string; repoUrl?: string; pathCount: number; doneCount: number; pitfallCount: number }
 
+interface LibPaper { id: string; title: string; slug?: string | null; status?: string; group?: string | null }
+
 export default function Repro() {
   const [list, setList] = useState<Sum[]>([]);
   const [slug, setSlug] = useState<string | null>(null);
   const [rec, setRec] = useState<Repr | null>(null);
   const [addTitle, setAddTitle] = useState("");
+  const [libPapers, setLibPapers] = useState<LibPaper[]>([]);
+  const [libPick, setLibPick] = useState("");
   const [prompt, setPrompt] = useState("");
   const [reviewLink, setReviewLink] = useState("");
   const [reviewNote, setReviewNote] = useState("");
@@ -28,7 +32,15 @@ export default function Repro() {
   const refreshList = async () => { const d = await (await fetch("/api/reproduction")).json(); setList(d.records ?? []); };
   const reopen = async (s: string) => { const d = await (await fetch(`/api/reproduction?slug=${encodeURIComponent(s)}`)).json(); setRec(d.record ?? null); };
 
-  useEffect(() => { void refreshList(); }, []);
+  useEffect(() => {
+    void refreshList();
+    void (async () => {
+      try {
+        const d = await (await fetch("/api/library")).json();
+        setLibPapers((d.papers ?? []).filter((p: LibPaper) => p.title));
+      } catch { /* */ }
+    })();
+  }, []);
 
   async function create() {
     const t = addTitle.trim();
@@ -36,6 +48,19 @@ export default function Repro() {
     const s = "r-" + Date.now().toString(36);
     await act({ action: "create", slug: s, title: t });
     setAddTitle("");
+    await refreshList();
+    setSlug(s);
+    await reopen(s);
+  }
+
+  // 从论文库选一篇 → 用它标题建复现记录；若库里有 slug，顺带写 sourceUrl 关联到精读页。
+  async function createFromLibrary(paperId: string) {
+    const p = libPapers.find((x) => x.id === paperId);
+    if (!p) return;
+    const s = "r-" + Date.now().toString(36);
+    await act({ action: "create", slug: s, title: p.title });
+    if (p.slug) await act({ action: "setSource", slug: s, sourceUrl: `/read/${p.slug}` });
+    setLibPick("");
     await refreshList();
     setSlug(s);
     await reopen(s);
@@ -84,6 +109,16 @@ export default function Repro() {
             <input className="field field--mini" placeholder="输入要复现的论文标题，回车添加" value={addTitle} onChange={(e) => setAddTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void create(); }} />
             <button className="btn btn--ghost btn--quiet" onClick={() => void create()}>添加</button>
           </div>
+          {libPapers.length > 0 && (
+            <div className="repro-add">
+              <select className="field field--mini" value={libPick} onChange={(e) => { if (e.target.value) void createFromLibrary(e.target.value); }} style={{ flex: 1 }}>
+                <option value="">从论文库选一篇加入复现…</option>
+                {libPapers.map((p) => (
+                  <option key={p.id} value={p.id}>{p.title}{p.status ? `（${p.status}）` : ""}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {list.length === 0 && <p className="mono-label" style={{ padding: "0.8rem", opacity: 0.7 }}>还没有复现记录——从论文库挑一篇，或直接输入标题新建。</p>}
           {list.map((r) => (
             <button key={r.slug} className={`repro-row${slug === r.slug ? " is-active" : ""}`} onClick={() => void open(r.slug)}>
