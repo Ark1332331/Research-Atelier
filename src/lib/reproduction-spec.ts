@@ -174,6 +174,19 @@ export interface RepoRevision {
   dirty?: boolean;
 }
 
+/** Analysis Binding Gate：每篇复现记录必须显式绑定论文与仓库（P0 context binding） */
+export interface PaperArtifact {
+  paperId: string;          // 论文库 id 或 data/papers/<slug> 的 slug
+  parsedPages: number;      // 已解析页数（0 = 未解析全文）
+  paperRevision?: string;   // 正文页文件内容 hash（sha1 前 16）
+}
+export interface RepoArtifact {
+  repoRootId: string;       // code-roots.json 里登记的 rootId（绝不允许 fallback roots[0]）
+  repoPath: string;         // root 绝对路径（记录用）
+  commit?: string;
+  dirty?: boolean;
+}
+
 /** 粗粒度复现目标意图（阶段①，系统分析前用户唯一输入；不是 Target——Target 需分析后确认） */
 export type GoalIntent = "run_first" | "main_result" | "figure" | "full" | "unknown";
 
@@ -184,6 +197,8 @@ export interface AnalysisState {
   paperRevision?: string;   // 本轮 paper 文件 hash
   repoRevision?: RepoRevision;
   error?: string;
+  /** ⑤ 系统建议目标：来自本轮 paper facts 的真实证据；null=暂时无法推荐（不硬编码） */
+  suggestedTarget?: Target | null;
   summary?: {
     paperFacts: number; repoFacts: number; mappings: number; gaps: number; blocking: number;
   };
@@ -204,6 +219,8 @@ export interface ReproductionSpec {
   // —— v2 新增 ——
   paperRevision?: PaperRevision;
   repoRevision?: RepoRevision;
+  paperArtifact?: PaperArtifact;  // Binding Gate：论文绑定（无则不可分析）
+  repoArtifact?: RepoArtifact;    // Binding Gate：仓库绑定（无则不可分析，绝不 fallback）
   goalIntent?: GoalIntent;    // 阶段①：粗粒度目标（"我不知道，让系统建议"=unknown，不写假 Target）
   analysis?: AnalysisState;   // 阶段②：分析编排状态（persisted，防半新半旧）
   target?: Target;
@@ -287,6 +304,21 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           dirty: typeof r.repoRevision.dirty === "boolean" ? r.repoRevision.dirty : undefined,
         }
       : undefined,
+    paperArtifact: isObj(r.paperArtifact)
+      ? {
+          paperId: String(r.paperArtifact.paperId ?? ""),
+          parsedPages: typeof r.paperArtifact.parsedPages === "number" ? r.paperArtifact.parsedPages : 0,
+          paperRevision: typeof r.paperArtifact.paperRevision === "string" ? r.paperArtifact.paperRevision : undefined,
+        }
+      : undefined,
+    repoArtifact: isObj(r.repoArtifact)
+      ? {
+          repoRootId: String(r.repoArtifact.repoRootId ?? ""),
+          repoPath: String(r.repoArtifact.repoPath ?? ""),
+          commit: typeof r.repoArtifact.commit === "string" ? r.repoArtifact.commit : undefined,
+          dirty: typeof r.repoArtifact.dirty === "boolean" ? r.repoArtifact.dirty : undefined,
+        }
+      : undefined,
     goalIntent: (["run_first", "main_result", "figure", "full", "unknown"] as const).includes(r.goalIntent) ? r.goalIntent : undefined,
     analysis: isObj(r.analysis)
       ? {
@@ -297,6 +329,15 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
             ? { root: String(r.analysis.repoRevision.root ?? ""), repoUrl: typeof r.analysis.repoRevision.repoUrl === "string" ? r.analysis.repoRevision.repoUrl : undefined, commit: typeof r.analysis.repoRevision.commit === "string" ? r.analysis.repoRevision.commit : undefined, branch: typeof r.analysis.repoRevision.branch === "string" ? r.analysis.repoRevision.branch : undefined, dirty: typeof r.analysis.repoRevision.dirty === "boolean" ? r.analysis.repoRevision.dirty : undefined }
             : undefined,
           error: typeof r.analysis.error === "string" ? r.analysis.error : undefined,
+          suggestedTarget: isObj(r.analysis.suggestedTarget)
+            ? {
+                scope: (["table", "figure", "metric", "full", "custom"] as const).includes(r.analysis.suggestedTarget.scope) ? r.analysis.suggestedTarget.scope : "table",
+                name: String(r.analysis.suggestedTarget.name ?? ""),
+                metrics: Array.isArray(r.analysis.suggestedTarget.metrics)
+                  ? r.analysis.suggestedTarget.metrics.map((m: any) => isObj(m) ? { name: String(m.name ?? ""), expected: m.expected, tolerance: typeof m.tolerance === "number" ? m.tolerance : undefined, unit: typeof m.unit === "string" ? m.unit : undefined } : null).filter((x): x is NonNullable<typeof x> => Boolean(x))
+                  : [],
+              }
+            : r.analysis.suggestedTarget === null ? null : undefined,
           summary: isObj(r.analysis.summary)
             ? { paperFacts: typeof r.analysis.summary.paperFacts === "number" ? r.analysis.summary.paperFacts : 0, repoFacts: typeof r.analysis.summary.repoFacts === "number" ? r.analysis.summary.repoFacts : 0, mappings: typeof r.analysis.summary.mappings === "number" ? r.analysis.summary.mappings : 0, gaps: typeof r.analysis.summary.gaps === "number" ? r.analysis.summary.gaps : 0, blocking: typeof r.analysis.summary.blocking === "number" ? r.analysis.summary.blocking : 0 }
             : undefined,

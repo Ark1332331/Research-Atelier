@@ -3660,6 +3660,13 @@ input, textarea, select {
 .repro-analyzing-cta { margin: 1rem 0; display: flex; flex-direction: column; gap: 0.6rem; align-items: flex-start; }
 .repro-target-suggest { border: 1px dashed var(--accent); border-radius: 8px; padding: 0.6rem; background: var(--accent-soft, #f5efdd); display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; }
 .repro-target-suggest-card { display: flex; flex-direction: column; gap: 0.2rem; }
+
+/* Binding Gate（材料绑定阶段） */
+.repro-binding { border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem; margin: 0.8rem 0; background: var(--bg); display: flex; flex-direction: column; gap: 0.4rem; }
+.repro-binding-row { display: flex; align-items: center; gap: 0.6rem; }
+.repro-binding-form { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-start; }
+.repro-binding-form label { display: flex; align-items: center; gap: 0.5rem; width: 100%; }
+.repro-binding-form select { flex: 1; }
 .repro-analysis-summary { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.8rem; align-items: flex-start; }
 .repro-analysis-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; width: 100%; }
 .repro-analysis-item { border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.6rem; background: var(--bg); display: flex; flex-direction: column; gap: 0.2rem; }

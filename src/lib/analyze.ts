@@ -20,11 +20,12 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import { DATA_DIR } from "@/lib/store";
-import { extractPaperFacts, extractRepoFacts } from "@/lib/fact-extract";
+import { extractPaperFacts, extractRepoFacts, suggestTargetFromFacts } from "@/lib/fact-extract";
+export { suggestTargetFromFacts } from "@/lib/fact-extract";
 import { proposeMappings } from "@/lib/mapping";
 import { blockingGaps, resolvableGaps, detectWithDecisions } from "@/lib/gap-detector";
 import { buildRepositorySnapshot, getRepoRevision } from "@/lib/code-reader";
-import type { ReproductionSpec, AnalysisState, Gap } from "@/lib/reproduction-spec";
+import type { ReproductionSpec, AnalysisState, Gap, Target } from "@/lib/reproduction-spec";
 
 /** 读论文正文页（按页码数字排序），返回 { pages, hash } */
 export async function readPaperPages(slug: string, altTitle?: string): Promise<{ pages: string[]; hash: string }> {
@@ -59,8 +60,8 @@ export function classifyGaps(gaps: Gap[]): { needScan: Gap[]; needDecision: Gap[
 export interface AnalyzeInput {
   slug: string;
   title: string;
-  rootId?: string;
-  root?: string;
+  paperId: string;      // Binding Gate：data/papers/<paperId> 必须可读
+  repoRoot: string;     // Binding Gate：显式 repo root（绝不 fallback）
 }
 
 export interface AnalyzeResult {
@@ -72,27 +73,33 @@ export interface AnalyzeResult {
   needScan: number;
   needDecision: number;
   error?: string;
+  bindingError?: "paper_not_bound" | "repo_not_bound";
 }
 
 /** 执行一轮完整分析并持久化产物到 record（返回 record 需要被调用方 upsert 或本函数 upsert） */
 export async function runAnalysis(
   rec: ReproductionSpec,
-  input: { root: string },
+  input: { paperId: string; repoRoot: string },
 ): Promise<AnalyzeResult> {
-  const t0 = Date.now();
-  const fail = (err: unknown): AnalyzeResult => ({
+  const fail = (err: unknown, bindingError?: AnalyzeResult["bindingError"]): AnalyzeResult => ({
     ok: false,
     analysis: { status: "failed", ranAt: new Date().toISOString(), paperRevision: "", error: err instanceof Error ? err.message : String(err) },
-    paperRevision: "", repoRevision: getRepoRevision(input.root),
+    paperRevision: "", repoRevision: getRepoRevision(input.repoRoot),
     summary: { paperFacts: 0, repoFacts: 0, mappings: 0, gaps: 0, blocking: 0 },
     needScan: 0, needDecision: 0,
     error: err instanceof Error ? err.message : String(err),
+    bindingError,
   });
 
   try {
+    // 0) Binding Gate：论文全文必须可读（无 pages → paper_not_bound，不得用空 paperFacts 自嗨 repo）
+    const { pages, hash } = await readPaperPages(input.paperId, rec.title);
+    if (!pages.length) {
+      return fail(new Error("未找到论文全文（data/papers/<paperId> 无 page_*.txt）"), "paper_not_bound");
+    }
     // 1) 固定 revision + 本轮 run id
-    const repoRev = getRepoRevision(input.root);
-    const { pages, hash } = await readPaperPages(rec.slug, rec.title);
+    const repoRev = getRepoRevision(input.repoRoot);
+    
     const runId = `run-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`;
 
     // 2) paper extraction → paper facts（**保留 missing**：not_found/not_scanned/ambiguous/not_applicable 是 coverage 语义，不能丢）
@@ -103,11 +110,11 @@ export async function runAnalysis(
     }
 
     // 3) repo analyzer snapshot → repo facts（沿 snapshot 候选，确定性）
-    const snap = await buildRepositorySnapshot(input.root);
-    const { facts: repoFacts } = await extractRepoFacts(snap, input.root);
+    const snap = await buildRepositorySnapshot(input.repoRoot);
+    const { facts: repoFacts } = await extractRepoFacts(snap, input.repoRoot);
 
     // 4) mapping propose（LLM 基于 paper facts + snapshot anchors）
-    const mappings = await proposeMappings({ facts: paperFacts.filter((f) => f.status === "observed" || f.status === "inferred"), snapshot: snap, root: input.root });
+    const mappings = await proposeMappings({ facts: paperFacts.filter((f) => f.status === "observed" || f.status === "inferred"), snapshot: snap, root: input.repoRoot });
 
     // 5) gaps：**用 detectWithDecisions（effective）**——当前 facts + 已有 decisions，避免 raw 与 effective 不一致
     const allFacts = [...paperFacts, ...repoFacts].map((f) => ({ ...f, runId }));
@@ -122,14 +129,18 @@ export async function runAnalysis(
     rec.facts = [...userFacts, ...allFacts];
     const confirmedMappings = (rec.mappings ?? []).filter((m) => m.status === "confirmed");
     rec.mappings = [...confirmedMappings, ...mappings];
+    const suggestedTarget = suggestTargetFromFacts(paperFacts);
     rec.analysis = {
       status: "done", ranAt: new Date().toISOString(),
       paperRevision: hash || undefined,
       repoRevision: repoRev,
+      suggestedTarget,
       summary: { paperFacts: paperFacts.length, repoFacts: repoFacts.length, mappings: mappings.length, gaps: effectiveGaps.length, blocking: blocking.length },
     };
     rec.paperRevision = { fileHash: hash || undefined };
     rec.repoRevision = repoRev;
+    rec.paperArtifact = { paperId: input.paperId, parsedPages: pages.length, paperRevision: hash || undefined };
+    rec.repoArtifact = { repoRootId: rec.repoArtifact?.repoRootId ?? "", repoPath: input.repoRoot, commit: repoRev.commit, dirty: repoRev.dirty };
 
     return {
       ok: true,

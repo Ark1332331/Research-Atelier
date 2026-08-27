@@ -27,7 +27,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { KNOWN_FACTS, factDef, isKnownFactKey, ENUM_ALIASES, type FactCategory } from "./fact-taxonomy.ts";
-import type { Fact, FactConfidence, FactImportance, FactMissingType, FactStatus } from "@/lib/reproduction-spec";
+import type { Fact, FactConfidence, FactImportance, FactMissingType, FactStatus, Target } from "@/lib/reproduction-spec";
 
 /* ================= 1. 确定性归一化 ================= */
 
@@ -152,6 +152,23 @@ export function saveFacts(existing: Fact[], incoming: Fact[], mode: "merge" | "r
     else out.push(f);
   }
   return out;
+}
+
+/** ⑤ 从论文事实证据推导建议目标（不硬编码）；无法确定返回 null。
+ *  只在有真实论文证据（evaluation.metric / data.dataset_name / preprocessing.input_size 的 observed）时建议，
+ *  否则返回 null（UI 明确"暂时无法推荐"，绝不拿 generic placeholder 冒充论文分析）。 */
+export function suggestTargetFromFacts(paperFacts: Fact[]): Target | null {
+  const obs = (key: string) => paperFacts.filter((f) => f.key === key && (f.status === "observed" || f.status === "inferred"));
+  const metrics = obs("evaluation.metric").map((f) => String(f.value ?? "")).filter(Boolean);
+  const dataset = obs("data.dataset_name").map((f) => String(f.value ?? ""))[0];
+  const inputSize = obs("preprocessing.input_size").map((f) => String(f.value ?? ""))[0];
+  if (metrics.length) {
+    return { scope: "table", name: `复现主结果（${metrics.slice(0, 3).join(" / ")}）`, metrics: metrics.slice(0, 5).map((n) => ({ name: n })) };
+  }
+  if (dataset || inputSize) {
+    return { scope: "metric", name: dataset ? `复现主指标（数据：${dataset.slice(0, 40)}）` : `复现主指标（输入：${inputSize.slice(0, 40)}）`, metrics: [{ name: "主指标" }] };
+  }
+  return null;
 }
 
 /* ================= 2. Repo 侧确定性抽取（按 taxonomy→snapshot 映射定向） ================= */

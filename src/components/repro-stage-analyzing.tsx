@@ -7,7 +7,12 @@ export default function ReproStageAnalyzing({
 }: {
   title: string;
   goalIntent?: string;
-  analysis?: { status: string; summary?: { paperFacts: number; repoFacts: number; mappings: number; gaps: number; blocking: number }; error?: string };
+  analysis?: {
+    status: string;
+    summary?: { paperFacts: number; repoFacts: number; mappings: number; gaps: number; blocking: number };
+    suggestedTarget?: { scope: string; name: string; metrics: { name: string }[] } | null;
+    error?: string;
+  };
   hasTarget: boolean;
   onAnalyze: () => Promise<void>;
   onConfirmTarget: (accept: boolean) => Promise<void>;
@@ -65,18 +70,29 @@ export default function ReproStageAnalyzing({
             <p className="mono-label" style={{ opacity: 0.7 }}>分析完成，所有可判定问题已整理。</p>
           )}
 
-          {/* ⑤ unknown goal：系统建议目标 → 用户确认 */}
+          {/* ⑤ unknown goal：系统建议目标必须来自论文证据；无法确定时明确说不能推荐 */}
           {needConfirmTarget && (
             <div className="repro-target-suggest">
-              <span className="mono-label">你选择了「让系统建议」——根据论文分析，系统建议这次复现：</span>
-              <div className="repro-target-suggest-card">
-                <b>复现论文里的一个主结果（主实验指标）</b>
-                <span className="mono-label" style={{ opacity: 0.7 }}>论文实验章节定位到主结果表；具体指标值待你在执行阶段与代码对齐。</span>
-              </div>
-              <div style={{ display: "flex", gap: "0.4rem" }}>
-                <button className="btn btn--primary btn--sm" onClick={() => void onConfirmTarget(true)}>接受这个目标</button>
-                <button className="btn btn--ghost btn--quiet" onClick={() => void onConfirmTarget(false)}>我另有目标</button>
-              </div>
+              {analysis.suggestedTarget ? (
+                <>
+                  <span className="mono-label">你选择了「让系统建议」——根据论文分析，系统建议这次复现：</span>
+                  <div className="repro-target-suggest-card">
+                    <b>{analysis.suggestedTarget.name}</b>
+                    <span className="mono-label" style={{ opacity: 0.7 }}>
+                      {analysis.suggestedTarget.metrics.length ? `指标：${analysis.suggestedTarget.metrics.map((m) => m.name).join(" / ")}` : ""}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: "0.4rem" }}>
+                    <button className="btn btn--primary btn--sm" onClick={() => void onConfirmTarget(true)}>接受这个目标</button>
+                    <button className="btn btn--ghost btn--quiet" onClick={() => void onConfirmTarget(false)}>我另有目标</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="mono-label">你选择了「让系统建议」，但当前论文证据不足以推荐具体目标（未定位到明确主结果/指标）。</span>
+                  <span className="mono-label" style={{ opacity: 0.7 }}>你可以先选择一个粗粒度目标（如「复现主结果」），执行阶段再与代码对齐具体指标。</span>
+                </>
+              )}
             </div>
           )}
 

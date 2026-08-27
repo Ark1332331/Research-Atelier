@@ -6,6 +6,7 @@ import EnvironmentsPanel from "@/components/environments-panel";
 import SystemPanel from "@/components/system-panel";
 import ReproCopilot from "@/components/repro-copilot";
 import ReproStageTarget from "@/components/repro-stage-target";
+import ReproStageMaterials from "@/components/repro-stage-materials";
 import ReproStageAnalyzing from "@/components/repro-stage-analyzing";
 import ReproStageDecisions from "@/components/repro-stage-decisions";
 import ReproStageReady from "@/components/repro-stage-ready";
@@ -14,22 +15,31 @@ import type { GoalIntent, Target, Constraints, Acceptance } from "@/lib/reproduc
 type Stat = "todo" | "doing" | "done";
 interface Step { id: string; title: string; status: Stat; note?: string }
 interface Pit { id: string; text: string; env: boolean; stage?: string; papers?: string[]; createdAt: string }
-interface Analysis { status: string; summary?: { paperFacts: number; repoFacts: number; mappings: number; gaps: number; blocking: number }; error?: string }
+interface Analysis {
+  status: string;
+  summary?: { paperFacts: number; repoFacts: number; mappings: number; gaps: number; blocking: number };
+  suggestedTarget?: Target | null;   // ⑤ 证据建议的目标（来自论文结构；null=暂时无法推荐）
+  error?: string;
+}
+interface PaperArtifact { paperId: string; parsedPages: number; paperRevision?: string }
+interface RepoArtifact { repoRootId: string; repoPath: string; commit?: string; dirty?: boolean }
 interface Repr {
   slug: string; title: string; sourceUrl?: string; repoUrl?: string; note?: string;
   path: Step[]; pitfalls: Pit[]; target?: Target; constraints?: Constraints; acceptance?: Acceptance;
-  goalIntent?: GoalIntent; analysis?: Analysis; updatedAt?: string;
+  goalIntent?: GoalIntent; analysis?: Analysis; paperArtifact?: PaperArtifact; repoArtifact?: RepoArtifact; updatedAt?: string;
 }
 interface Sum { slug: string; title: string; sourceUrl?: string; repoUrl?: string; pathCount: number; doneCount: number; pitfallCount: number }
 interface LibPaper { id: string; title: string; slug?: string | null; status?: string; group?: string | null }
 
-type Stage = "target" | "analyzing" | "decisions" | "ready";
+type Stage = "materials" | "target" | "analyzing" | "decisions" | "ready";
 
 interface GapSummary { needDecision: number; needScan: number }
 
 /** 阶段推导：依赖 effective gaps + target 确认（①）。decisions 必须可达。 */
 function stageOf(rec: Repr | null, gaps?: GapSummary): Stage {
-  if (!rec) return "target";
+  if (!rec) return "materials";
+  // Binding Gate：论文+仓库未绑定 → 材料未齐，绝不进分析/决策
+  if (!rec.paperArtifact || !rec.paperArtifact.parsedPages || !rec.repoArtifact) return "materials";
   if (!rec.goalIntent) return "target";
   if (rec.analysis?.status !== "done") return "analyzing";
   // analysis done：
@@ -128,12 +138,17 @@ export default function Repro() {
   };
   // ⑦ 诚实命名：没有 targeted/expanded scan，只有重新跑一轮分析
   const rescan = async () => { await runAnalyze(); };
-  // ⑤ unknown goal：确认系统建议的具体 Target（分析后）
+  // Binding Gate：绑定论文与仓库
+  const bindArtifacts = async (paperId: string, repoRootId: string, repoPath: string) => {
+    if (!slug) return;
+    await act({ action: "bindArtifacts", slug, paperId, repoRootId, repoPath });
+    await reopen(slug);
+  };
+  // ⑤ unknown goal：**不硬编码 Target**；由分析结果给出证据建议，无法确定则明确"暂时无法推荐"
   const confirmTarget = async (accept: boolean) => {
     if (!slug) return;
-    if (accept) {
-      const suggested: Target = { scope: "table", name: "复现论文里的一个主结果", metrics: [{ name: "主实验指标" }] };
-      await act({ action: "setTarget", slug, target: suggested });
+    if (accept && rec?.analysis?.suggestedTarget) {
+      await act({ action: "setTarget", slug, target: rec.analysis.suggestedTarget });
     }
     await reopen(slug);
     if (slug) await refreshGaps(slug);
@@ -214,15 +229,22 @@ export default function Repro() {
             <>
               {/* 阶段条 */}
               <div className="repro-stepper">
-                {(["target", "analyzing", "decisions", "ready"] as Stage[]).map((s, i) => (
-                  <div key={s} className={`repro-step-item${stage === s ? " is-active" : ""}${["target", "analyzing", "decisions"].includes(stage) && ["target", "analyzing", "decisions"].indexOf(s) < ["target", "analyzing", "decisions"].indexOf(stage) ? " is-done" : ""}`}>
+                {(["materials", "target", "analyzing", "decisions", "ready"] as Stage[]).map((s, i) => (
+                  <div key={s} className={`repro-step-item${stage === s ? " is-active" : ""}${["materials", "target", "analyzing", "decisions"].includes(stage) && ["materials", "target", "analyzing", "decisions"].indexOf(s) < ["materials", "target", "analyzing", "decisions"].indexOf(stage) ? " is-done" : ""}`}>
                     <span className="repro-step-num">{i + 1}</span>
-                    <span className="repro-step-name">{{ target: "目标", analyzing: "分析", decisions: "决策", ready: "摘要" }[s]}</span>
+                    <span className="repro-step-name">{{ materials: "材料", target: "目标", analyzing: "分析", decisions: "决策", ready: "摘要" }[s]}</span>
                   </div>
                 ))}
               </div>
 
               {/* 阶段主面板 */}
+              {stage === "materials" && (
+                <ReproStageMaterials
+                  paperArtifact={rec.paperArtifact}
+                  repoArtifact={rec.repoArtifact}
+                  onBind={bindArtifacts}
+                />
+              )}
               {stage === "target" && (
                 <ReproStageTarget goalIntent={rec.goalIntent} onSave={saveGoal} />
               )}

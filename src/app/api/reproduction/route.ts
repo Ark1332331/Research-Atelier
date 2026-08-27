@@ -67,6 +67,12 @@ export async function POST(request: Request) {
       if (["run_first", "main_result", "figure", "full", "unknown"].includes(body.goalIntent)) r.goalIntent = body.goalIntent;
       break;
     }
+    case "bindArtifacts": {
+      // Analysis Binding Gate：显式绑定论文（data/papers/<paperId>）与仓库（code-roots rootId）
+      if (body.paperId) r.paperArtifact = { paperId: String(body.paperId), parsedPages: 0 };
+      if (body.repoRootId && body.repoPath) r.repoArtifact = { repoRootId: String(body.repoRootId), repoPath: String(body.repoPath) };
+      break;
+    }
     case "setDefinition": {
       // 原子式一次写入 target/constraints/acceptance（对应 UI 的「保存目标与验收」单动作）
       if (body.target && typeof body.target === "object") r.target = body.target;
@@ -76,6 +82,7 @@ export async function POST(request: Request) {
     }
     case "setTarget": {
       if (body.target && typeof body.target === "object") r.target = body.target;
+      else if (body.target === null) r.target = undefined;
       break;
     }
     case "setConstraints": {
