@@ -1,8 +1,8 @@
 # Research Atelier → Paper-to-Reproduction Compiler 实现方案
 
-> 状态：**方案 v0.2（按评审修订）——待确认，未开始实现**。用户确认后按 §13 开发顺序进入 Step 1。
+> 状态：**方案 v0.3（架构 v0.2 + UX Contract）——待确认，未开始实现**。用户确认后按 §14 开发顺序进入 Step 1。
 > 配套设计文档：`../paper_repro_compiler.md`（产品定位 + NSR 走查 + token 审计证据）。
-> v0.1 → v0.2 修订记录见 §14（用户评审 7 点已全部采纳）。
+> v0.1 → v0.2 修订记录见 §15（评审 7 点已全部采纳）；v0.2 → v0.3 见 §15（新增 UX Contract）。
 
 ---
 
@@ -83,7 +83,7 @@ ReproductionSpec {
 }
 ```
 
-**向后兼容迁移**：`normalizeReproduction(raw) → ReproductionSpec`——旧记录缺字段用默认值；旧 UI/API 行为完全不变；迁移后写回时 `schemaVersion: 2` 成为稳定真相源（Step 1 验收，见 §13）。
+**向后兼容迁移**：`normalizeReproduction(raw) → ReproductionSpec`——旧记录缺字段用默认值；旧 UI/API 行为完全不变；迁移后写回时 `schemaVersion: 2` 成为稳定真相源（Step 1 验收，见 §14）。
 
 ---
 
@@ -262,7 +262,7 @@ vs Actual（现有采样）
 → Scientific impact（无/低/高）
 ```
 修工程债：`CONDA` 硬编码 → PATH 探测 + `RA_CONDA_BIN` 覆盖 + 配置文件。
-**顺序依据**：Codex Task 的 `allowed_changes / stop_conditions / environment context` 受环境决策影响，故 Env 必须在 Task Compiler 之前（§13 顺序 7→8）。
+**顺序依据**：Codex Task 的 `allowed_changes / stop_conditions / environment context` 受环境决策影响，故 Env 必须在 Task Compiler 之前（§14 顺序 7→8）。
 
 ---
 
@@ -356,7 +356,213 @@ ready =
 
 ---
 
-## 13. 开发顺序（评审调整：Target 提前、Mapping 补入、Env 在 Task 前）
+## 13. UX Contract：用户不需要理解 ReproductionSpec 才能使用 ReproductionSpec
+
+> 这一章是用户层设计，与底层 schema 并行。**底层再漂亮，页面也不许变成"把 schema 可视化给用户看"。**
+> 产品体验目标：
+> **我拿到一篇论文 → 打开 Research Atelier → 它告诉我现在该做什么 → 它自己能做的先做掉 → 真需要我判断时再叫我 → 最后我几乎不用组织语言，就能把一个干净的任务交给 Codex。**
+
+### 13.1 两条最高原则
+
+1. **任何时刻，页面只能有一个主要任务（primary action）**——不是只有一个按钮，而是只有一个"现在最该做的事"。页面替你回答"我现在处于哪个阶段"，而不是让用户自己从一堆面板里猜。
+2. **系统能自己确定的信息，不要做成表单让用户填写。** 能自动确定就自动确定；高置信度默认接受；只有低置信度或 blocking 冲突才要求用户处理。
+
+### 13.2 内部术语与用户术语分离
+
+底层叫法永远不直接出现在用户面前：
+
+| 内部（schema/开发者） | 用户层（页面文案） |
+|---|---|
+| Target / Constraints / Acceptance | 你想复现什么 / 材料准备好了没 |
+| Facts / provenance | 系统正在核对论文和代码 |
+| Mapping | （不出现；只显示"对应关系已核对"） |
+| Gap / Risk | 有几个地方需要你决定 / 需要注意 |
+| Decision | 需要你决定 |
+| Environment Plan | 看看这台电脑能不能跑 |
+| Task Compiler / Context Packet | 准备交给 Codex / 查看 Codex 实际收到的上下文 |
+| Ready gate | 开始交给 Codex |
+
+`D-004 / normalizedValue / blocksReady / schemaVersion` 这些只在"查看详情/查看 Codex 收到的上下文"里出现。
+
+### 13.3 页面结构：progressive disclosure（渐进披露）
+
+三层结构，任何时刻用户只看到当前层：
+
+```
+┌─────────────────────────────────────────────────┐
+│ 顶部：你现在在哪                                  │
+│  Neural Scene Representation                     │
+│  复现 Table 2 · Main Result                      │
+│  准备进度  ███████░░  78%                        │
+│  ✓ 目标  ✓ 材料  ✓ 论文↔代码  ● 需要决定  ○ 环境  ○ Codex │
+├─────────────────────────────────────────────────┤
+│ 中间：当前唯一任务（primary action）              │
+│  还有 2 个问题需要决定                            │
+│  解决后即可生成 Codex 执行计划                    │
+│  [处理第一个问题 →]                              │
+├─────────────────────────────────────────────────┤
+│ 底部/侧边：折叠的详细信息                         │
+│  查看全部：论文事实 27 · 代码事实 34 · 对应关系 16 · 风险 3 · 坑点 4 │
+└─────────────────────────────────────────────────┘
+```
+
+### 13.4 全流程闭环（用户心智连续，不中断）
+
+```
+选论文 → 系统准备材料 → 确定复现目标 → 自动核对 → 只解决关键冲突
+      → 环境放行 → 查看 Codex 计划 → 交给 Codex → 导入执行结果 → 下一任务
+```
+
+每个阶段只出现该阶段的 UI，其余全部隐藏。
+
+### 13.5 各阶段用户层设计
+
+**① 选论文（首次进入，空态）**
+```
+开始一次论文复现
+你想复现哪篇论文？
+[ 从论文库选择 ] [ 导入 PDF ] [ 粘贴论文链接 ]
+[下一步 →]
+```
+不显示环境/坑点/Codex/Facts/Prompt/Acceptance/添加步骤——它们现在都与你无关。
+
+**② 系统准备材料（选完后，系统自己干活）**
+```
+正在准备复现材料
+论文   ✓ PDF 已导入  ✓ 已识别标题/作者/方法章节  ✓ 找到实验章节
+官方代码 ○ 正在寻找          （若已给 GitHub：✓ 仓库找到 ✓ commit 固定 ✓ README ✓ 环境文件 ✓ 训练入口）
+[继续：确定你要复现什么 →]
+```
+
+**③ 确定复现目标（选项式，不是填表）**
+```
+你这次想做到哪一步？
+○ 先把官方代码跑起来（确认项目和环境可用）
+● 复现论文里的一个核心结果（如 Table 2 / Figure 4 / 主指标）
+○ 完整复现实验（主实验 + 消融 + 主要图表）
+○ 我有自己的目标
+```
+选"核心结果"后，系统**根据论文自动给出候选**（Table 2 — Main results: Accuracy 84.7, F1 81.2 / Figure 4 — Ablation / Table 3 — Generalization），用户选/确认，而不是自己输入 `Target name / Metric / Expected / Tolerance`。
+
+**④ 验收标准（系统推荐，用户确认）**
+```
+为了判断复现是否成功，我建议检查：
+✓ 官方数据集版本一致  ✓ 评估协议一致  ✓ 主指标 84.7 ± 0.5  ✓ 未为凑结果改模型结构
+[接受这些标准] [查看并调整]      （高级用户才展开编辑）
+```
+不出现"请定义 acceptance criteria"。
+
+**⑤ 核对结论（默认显示结论，证据按需展开）**
+```
+论文与代码核对
+✓ 数据集版本一致  ✓ 模型结构已找到对应实现  ✓ 优化器一致
+⚠ Batch size 不一致   ? 论文没写随机种子
+23 项已确认 · 2 项需要注意 · 1 项需要你决定
+[查看需要处理的 3 项]        ← 点进去才看详细 Facts
+```
+**默认显示结论，详细证据按需展开**，不把几十个 Fact 当参数数据库扔给用户。
+
+**⑥ Mapping（用户只处理 exception）**
+```
+论文方法已和代码对应好
+Method §3.1 Multi-scale feature aggregation → models/fusion.py MultiScaleFusion.forward()
+Method §3.2 Temporal alignment → models/temporal.py TemporalAlign.forward()
+12 个高置信度对应关系已自动确认 · 2 个不确定需要你看看
+[只处理不确定项]
+```
+**用户只处理 exception，不处理 normal case**——绝不逐条 `[确认][驳回]`。
+
+**⑦ Decision Center（真正需要用户出现的地方）**
+```
+需要你决定 · 2     1 / 2
+论文和官方代码的 batch size 不一致
+  论文 64 · Section 4.1      官方代码 32 · configs/train.yaml:21
+这意味着什么？batch size 可能影响结果，但不是模型结构变化。
+Research Atelier 建议 ● 使用官方代码的 32
+为什么？该 config 与论文对应实验直接绑定，更可能代表作者最终公开配置。影响等级：中
+[采用推荐] [使用论文的 64] [我想先了解更多]
+```
+**不出现 `D-004 / normalizedValue / blocksReady`**——纯人类语言。
+
+**⑧ 环境（从"环境管理器"变成"我到底能不能跑"）**
+```
+运行环境
+⚠ 当前环境不能直接运行
+项目需要 Python 3.9 / PyTorch 1.13 / CUDA 11.x
+你的机器 Python 3.11 / PyTorch 2.4 / RTX 5070 Laptop
+推荐方案 新建独立环境，不改你现有环境。科学影响：无。预计新增磁盘 ~6GB
+[采用推荐方案] [查看详细环境信息]   ← 后者才进完整 Environment Panel
+```
+现有 SystemPanel/EnvironmentsPanel 保留但不再常驻占据注意力。
+
+**⑨ Codex 计划（先给人类可读任务卡，YAML 折叠在后面）**
+```
+准备完成，已拆成 5 个 Codex 任务
+01 检查项目环境（5–10 min，不修改科学逻辑）
+02 验证数据预处理（涉及 3 个文件 · 成功标准：shape/split/normalization 与论文一致）
+03 跑最小 Smoke Test（只验证 pipeline，不追求指标）
+04 复现主实验（目标：Table 2）
+05 对齐最终指标
+```
+点单个任务：
+```
+02 为什么要做？数据预处理不一致则后面指标无比较意义。
+Codex 会看：datasets/kitti.py · configs/base.yaml · Section 4.1
+Codex 不允许：修改数据划分 / 改变输入尺寸
+完成标准：3 项
+[查看 Codex 实际收到的上下文]    ← 这才显示结构化 Context Packet
+```
+透明度在，但用户默认不碰 YAML。
+
+**⑩ 交给 Codex（不用"READY FOR CODEX"字样）**
+```
+准备完成
+✓ 没有未解决的关键冲突  ✓ 环境方案已确定  ✓ 成功标准已明确  ✓ Codex 只收到当前任务需要的信息
+[开始交给 Codex]
+```
+不能开始时：
+```
+还不能开始
+还差 2 件事：1. 选择 batch size  2. 确认数据集版本
+[继续处理]
+```
+**而不是一个灰掉的按钮让用户猜"为什么不让我点"。**
+
+**⑪ Codex 跑完后的回归路径（闭环）**
+```
+任务 03 · Smoke Test
+Codex 已完成？ [导入最近的 Codex 会话]
+导入后自动：
+本次执行结果  ✓ 数据加载 ✓ forward ✓ backward
+发现 1 个问题：CUDA extension 编译失败，已用兼容方案修复
+新证据 +command +config +output     科学逻辑修改：无
+[确认完成任务 03] [我觉得结果有问题]
+下一步：04 复现主实验
+```
+复用现有 `codex://threads/<id>` review 能力；用户心智连续，不需要记住"上次 Codex 干到哪了"。
+
+### 13.6 两个贯穿性控件
+
+- **"为什么"按钮（永远存在）**：解释"当前这一步为什么对当前这篇论文必要"，例如"因为论文复现不是代码能跑就算成功；现在确认数据处理与论文一致，否则指标接近也不能确认复现有效"。不是泛泛的产品说明。
+- **"我不知道，让系统建议"（任何输入处可用）**：例如最大运行时间 → 系统按目标和机器建议"先不设硬上限；Smoke Test 控制在 10 分钟内，正式训练预计 5–8 小时"。**用户永远可以说不知道**。
+
+### 13.7 产品级规则：User Decision Budget
+
+> 对一次典型论文复现，进入 Codex 之前，Research Atelier 应尽量把用户必须主动做出的技术决策压缩到**真正影响科学结果或资源投入的少量问题**。可自动确定的内容自动确定；高置信度默认接受；低置信度或 blocking 冲突才要求用户处理。
+
+与 Token Budget 成对——**减少 Codex token + 减少 Human decision load** 才是产品真正舒服的地方。
+
+### 13.8 对实现的约束
+
+1. 底层按 §2–§12 实现（schema、模块、ready 公式），**页面层按本章组织**；内部术语禁止直接成为用户导航。
+2. 任何时刻页面只有一个 primary action（顶部"你现在在哪" + 中间唯一任务 + 底部折叠详情）。
+3. 系统能推导的信息不做成表单；高置信度自动确认，用户只处理 exception。
+4. Codex 计划默认展示人类可读任务卡；Context Packet / YAML 折叠在"查看 Codex 实际收到的上下文"。
+5. 完整闭环必须成立：选论文 → 系统准备 → 确定目标 → 自动核对 → 只解决关键冲突 → 环境放行 → 查看 Codex 计划 → 交给 Codex → 导入执行结果 → 下一任务。
+
+---
+
+## 14. 开发顺序（评审调整：Target 提前、Mapping 补入、Env 在 Task 前）
 
 | 顺序 | 做什么 | 验收 |
 |---|---|---|
@@ -368,13 +574,13 @@ ready =
 | **6** | Gap Detector + Decision Ledger（blocking-aware） | conflict/missing 自动出 Gap；required+missing 阻塞；决策采纳写入 ledger |
 | **7** | Environment Resolver（Desired vs Actual vs Diff vs Plan + conda PATH 探测） | 一键算出项目要什么 vs 本机有什么 vs 差在哪 vs 怎么跑起来 |
 | **8** | Task Compiler + Context Router（prompt 降级；Human/Agent 分离；contextStats） | 每任务最小上下文包 + token 预算 + included/omitted |
-| **9** | Evidence + Ready Gate + 最终 UI 重组 | Ready 门控按 §12；Evidence 挂接；页面流水线完整 |
+| **9** | Evidence + Ready Gate + 最终 UI 重组（按 §13 UX Contract 组织页面：primary action、progressive disclosure、用户术语） | Ready 门控按 §12；Evidence 挂接；页面按 UX Contract 流水线重组（选论文→准备→目标→核对→决策→环境→Codex 计划→交给 Codex→回归） |
 
 每步独立可验收、可回退；Step 1 完成后其余在它之上叠加，不返工。
 
 ---
 
-## 14. v0.1 → v0.2 修订记录（评审 7 点逐条对应）
+## 15. v0.1 → v0.2 修订记录（评审 7 点逐条对应）
 
 | # | 评审点 | 修订落点 |
 |---|---|---|
@@ -382,27 +588,45 @@ ready =
 | 2 | confidence:"missing" 混淆存在性与可信度 → status/confidence/importance 三分；required+missing 才阻塞 | §4、§6 |
 | 3 | Fact 需归一化避免假冲突 → value/normalizedValue/unit；Gap 比较 normalized | §4、§6.1 |
 | 4 | 版本锚点 → schemaVersion、paperRevision、repoRevision.commit；RepoFact/Mapping/Evidence/CodeRef 绑定 commit | §2、§4.1、§5、§11 |
-| 5 | 缺 Paper↔Code Mapping 实现步骤 → 新增 Step 5，半自动 AI 提议+用户确认 | §5、§13 |
+| 5 | 缺 Paper↔Code Mapping 实现步骤 → 新增 Step 5，半自动 AI 提议+用户确认 | §5、§14 |
 | 6 | Repo Analyzer 文件规则坑 → ALLOWED_EXTENSIONS+BASENAMES+PATTERNS 拆分；1MB 限制；secret denylist 第一版就有 | §7.2、§7.3 |
 | 7 | derived state 与 source-of-truth 分开 → readiness/gaps 动态算；tasks 快照带 compiledFromRevision；Ready Gate 改 blocking-aware（blockingIssues/blockingGaps/blockingDecisions） | §2、§6、§9、§12 |
 | + | Context Router 不 HTTP 调自己 → 抽 `code-reader.ts` 共享层 | §7.1、§10.1 |
 | + | Evidence claim → observation（证据证明了什么） | §11 |
 | + | 不追固定 1500 token → 默认 budget 2k + 按复杂度升降 + contextStats.included/omitted | §10.2 |
 
+### v0.2 → v0.3 修订（2026-08-27：新增 UX Contract）
+
+| # | 评审点 | 修订落点 |
+|---|---|---|
+| 1 | 页面不能变成"把 schema 可视化给用户看"；内部术语与用户术语分离 | 新 §13 整章 |
+| 2 | 任何时刻页面只有一个主要任务（primary action） | §13.1、§13.3 |
+| 3 | 系统能自己确定的信息不做成表单；高置信度默认接受；用户只处理 exception | §13.1、§13.5⑥⑧ |
+| 4 | Target/Acceptance 由系统生成候选、用户确认，而非填表 | §13.5③④ |
+| 5 | Facts/Mapping 默认显示结论，证据按需展开；Mapping 只处理不确定项 | §13.5⑤⑥ |
+| 6 | Environment 从"管理器"变"我到底能不能跑"；详情折叠 | §13.5⑧ |
+| 7 | Codex 计划先给人类可读任务卡，YAML 折叠在"查看 Codex 实际收到的上下文" | §13.5⑨ |
+| 8 | 按钮不叫 READY FOR CODEX → "开始交给 Codex"；不能开始时说"还差 N 件事"而非灰按钮 | §13.5⑩ |
+| 9 | Codex 跑完必须能"回来"：导入会话 → 自动总结 → 确认 → 下一任务（闭环） | §13.4、§13.5⑪ |
+| 10 | 永远存在的"为什么"按钮；用户永远可以说"我不知道，让系统建议" | §13.6 |
+| 11 | 产品级规则：User Decision Budget（减少 token + 减少 human decision load） | §13.7 |
+
 ---
 
-## 15. 明确不做
+## 16. 明确不做
 
 - 不做内置 Terminal / IDE / Git UI / 自训练实验 / 完整实验云平台 / 自写代码 Agent。
 - Codex 已经会跑、会试错、会写代码；Research Atelier 占住的是 **Codex 前面那 10 分钟到 1 小时**。
 
 ---
 
-## 16. 验收总则
+## 17. 验收总则
 
 1. 旧 `reproduction.json` 数据迁移后不丢（path/pitfalls 保留），旧 UI/API 行为不坏。
 2. 每个新字段必须有对应 UI 或 API；禁止只加 schema 不给入口。
 3. Missing/Conflict 显式分级并**仅 required/critical 影响 readiness**，不靠 AI 假装知道。
 4. Context Packet 输出 token 预算 + included/omitted，可对比"整份 markdown"前后的 token 差。
 5. 页面顶部唯一门控：§12 的 blocking-aware ready 公式，Critical 不清零不放行。
-6. 全部改动 `tsc --noEmit` 通过、dev server 热重载验证；真实数据（NSR 记录）作为验收样本。
+6. 页面按 §13 UX Contract：任何时刻一个 primary action；系统能确定的自动确定；用户只处理 exception；内部术语不出现在用户导航。
+7. 完整闭环可走通：选论文 → 系统准备材料 → 确定目标 → 自动核对 → 只解决关键冲突 → 环境放行 → 查看 Codex 计划 → 交给 Codex → 导入执行结果 → 下一任务。
+8. 全部改动 `tsc --noEmit` 通过、dev server 热重载验证；真实数据（NSR 记录）作为验收样本。
