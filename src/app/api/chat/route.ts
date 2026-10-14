@@ -10,6 +10,9 @@
  *   - download_paper(...)：下载开放获取 PDF 并导入本地论文库
  * （AI 本身不联网，真正的检索/下载由后端 route 执行——见 src/lib/paper-tools.ts）
  */
+import { prepareLearning, finishLearning } from "@/lib/learning/store";
+import { attachObservationTool, redactObservation } from "@/lib/learning/observations";
+import { observeConversation } from "@/lib/learning/extract";
 import { searchPapers, downloadPaper, type PaperHit } from "@/lib/paper-tools";
 import type { PaperHitV2 } from "@/lib/search/types";
 
@@ -146,7 +149,7 @@ async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef
 }
 
 export async function POST(request: Request) {
-  let body: { messages?: ChatMsg[]; enableToolcall?: boolean };
+  let body: { messages?: ChatMsg[]; enableToolcall?: boolean; scene?: string; projectId?: string; resourceId?:string; useMemory?: boolean };
   try {
     body = await request.json();
   } catch {
@@ -166,13 +169,24 @@ export async function POST(request: Request) {
     );
   }
 
+  const scene = ["general", "code", "paper", "repro"].includes(body.scene ?? "") ? body.scene as "general" : "general";
+  const latestUser = [...messages].reverse().find(m => m.role === "user")?.content;
+  if (typeof latestUser !== "string" || latestUser.length > 20000) return Response.json({ error: "用户消息无效或超过 20000 字符" }, { status: 400 });
+  let learning;
+  try { learning = await prepareLearning(latestUser, scene, typeof body.projectId === "string" && body.projectId ? body.projectId : null, body.useMemory !== false); }
+  catch (e) { return Response.json({ error: `学习库不可用：${e instanceof Error ? e.message : String(e)}` }, { status: 503 }); }
+  const learningNote = await observeConversation(learning,messages,"学习对话",typeof body.resourceId==="string"?body.resourceId:undefined);
   const useTools = Boolean(body.enableToolcall);
   // function calling 循环：AI 要求调用工具 → 后端执行 → 回填 → 再让 AI 继续，最多 4 轮
   const MAX_TOOL_ROUNDS = 3;
-  let convo: ChatMsg[] = messages;
+  let convo: ChatMsg[] = [...messages, ...(learning.prompt ? [{ role: "system", content: learning.prompt }] : [])];
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     const res = await deepseekChat(apiKey, convo, useTools ? TOOLS : undefined);
-    if (!res.ok) return res;
+    if (!res.ok) {
+      const failure = await res.json();
+      await finishLearning(learning, "", failure.error ?? "模型请求失败");
+      return Response.json(failure, { status: res.status });
+    }
     const data = await res.json();
     const msg = data?.choices?.[0]?.message as ChatMsg | undefined;
     const toolCalls = (msg?.tool_calls as { id: string; function: { name: string; arguments?: string } }[] | undefined);
@@ -182,13 +196,18 @@ export async function POST(request: Request) {
       for (const tc of toolCalls) {
         let args: Record<string, unknown> = {};
         try { args = JSON.parse(tc.function?.arguments || "{}"); } catch { /* 忽略坏参数 */ }
+        const started=Date.now();
         const result = await executeTool(tc.function?.name || "", args);
+        const toolError=typeof result.error==="string"?redactObservation(result.error).slice(0,300):undefined;
+        if(learning.observationId)await attachObservationTool(learning.observationId,{source:"AI 论文检索与下载",action:tc.function?.name||"unknown",tool:{ok:!toolError,status:0,durationMs:Date.now()-started,...(toolError?{error:toolError}:{})}});
         convo.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
       }
       continue;
     }
-    return Response.json(data);
+    await finishLearning(learning, typeof msg?.content === "string" ? msg.content : "");
+    return Response.json({ ...data, learning: { runId: learning.id, observationId:learning.observationId, selected: learning.selected, proposedIds: learning.proposedIds, note: learningNote } });
   }
+  await finishLearning(learning, "", "工具调用次数过多");
   return Response.json({ error: "工具调用次数过多，已停止。" }, { status: 500 });
 }
 

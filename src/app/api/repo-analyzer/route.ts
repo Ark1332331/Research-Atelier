@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * Repo Analyzer（Step 3）：给定已登记的本地 repo，安全、确定性地产出 Repository Snapshot。
  * POST /api/repo-analyzer { root } → { snapshot }（buildRepositorySnapshot 输出）
@@ -24,7 +25,7 @@ async function readRoots(): Promise<RootConfig[]> {
   return [{ id: "project", name: "项目根（allinone）", root: projectRoot }];
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { root?: string; rootId?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 
@@ -54,3 +55,5 @@ export async function POST(request: Request) {
     return Response.json({ error: e instanceof Error ? e.message : "分析失败" }, { status: 500 });
   }
 }
+
+export const POST=withToolObservation({source:"仓库分析",scene:"code",conversation:false},observedPOST);

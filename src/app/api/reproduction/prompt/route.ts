@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 生成「可直接复制给 GPT / Codex」的复现提示词（模板拼接，不依赖网络）。
  * POST { slug, stepId? } → { prompt }
@@ -17,7 +18,7 @@ async function profileSummary(): Promise<string> {
   return lines.slice(0, 1200) || "（暂无画像，按新手友好、数据合同讲解）";
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { slug?: string; stepId?: string; focus?: string };
   try {
     body = await request.json();
@@ -64,3 +65,5 @@ export async function POST(request: Request) {
   }
   return Response.json({ prompt: `${base}【下一步】请先帮我明确复现路径（分层、可验证），或继续推进当前步骤；每完成一步给一句可验证结论，不要把‘跑通’当‘复现成功’。` });
 }
+
+export const POST=withToolObservation({source:"生成复现指令",scene:"repro",conversation:false},observedPOST);

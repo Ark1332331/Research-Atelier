@@ -26,17 +26,18 @@ export default function CodeReading() {
       <PageHead
         num="05" name="代码导读"
         title="读代码"
-        desc="选项目/文件 → 自动带出重点，或针对某个问题；读完把卡点写回你的代码能力画像，下次不重讲。"
-        meta="按你的代码画像 · 越用越懂你"
+        desc="选项目/文件 → 自动带出重点，或针对某个问题；对话和操作会留下观察，新发现的讲解改法经你确认后生效。"
+        meta="按已确认的学习规则讲解"
       />
       {attached ? (
         <>
           <div className="chat-ctx-note" style={{ marginBottom: "0.7rem" }}>
             已选项目代码：{attached.name} · 模式 {attached.full ? "全部读" : "自动挑重点"}
-            {codeProfile?.mastered?.length ? ` · 你已掌握 ${codeProfile.mastered.length} 个，已读过的不再重讲` : ""}
+            {codeProfile?.mastered?.length ? ` · ${codeProfile.mastered.length} 条历史自评，需核对理解` : ""}
           </div>
           <ChatPanel
             toolKey="code"
+            resourceId={attached.name}
             hint={`代码导读开始：${attached.name}。请先按我的代码能力画像把这次会卡的写法单独讲清楚，再给调用链和数据合同。${attached.question ? `\n我这次的提问：${attached.question}` : ""}${attached.highlights.length ? "\n本文件重点（真实导入/定义/调用链）：\n" + attached.highlights.slice(0, 3).join("\n") : ""}`}
             contextKind="repro"
             attachedCode={{ name: attached.name, content: attached.content }}

@@ -1,8 +1,9 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 代码能力画像接口：代码导读的“越用越懂你”底座
  * GET  /api/code-profile                       → { profile }
  * POST /api/code-profile  { action:"update", patch }      → 手动编辑背景/卡点/偏好/分层
- * POST /api/code-profile  { action:"mastered", terms:[..] }→ 学会的卡点/语法标记为已掌握（自动）
+ * POST /api/code-profile  { action:"mastered", terms:[..] }→ 旧自动掌握入口已停用，需真实证据
  * POST /api/code-profile  { action:"log", entry:{...} }   → AI 追加上次导读的更新（卡在哪/解释了什么/是否通过）
  * 存储：本地 data/code-profile.json；生产（Vercel）自动切 KV（见 src/lib/store.ts）
  */
@@ -51,7 +52,7 @@ export async function GET() {
   return Response.json({ profile });
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -72,12 +73,7 @@ export async function POST(request: Request) {
     if (typeof patch.depth === "string") profile.depth = patch.depth;
     if (Array.isArray(patch.mastered)) profile.mastered = patch.mastered;
   } else if (action === "mastered") {
-    const terms = (body.terms ?? []) as string[];
-    const set = new Set(profile.mastered);
-    terms.forEach((t) => t.trim() && set.add(t.trim()));
-    profile.mastered = [...set];
-    // 学会的从 gaps 里移除
-    profile.gaps = profile.gaps.filter((g) => !terms.some((t) => t.trim() && g.includes(t.trim())));
+    return Response.json({error:"旧画像不再自动标记掌握；请使用术语复述核对和实际任务证据。"},{status:400});
   } else if (action === "log") {
     interface Entry { file?: string; explained?: string[]; blocked?: string[]; passed?: boolean; note?: string }
     const entry = (body.entry ?? {}) as Entry;
@@ -91,12 +87,7 @@ export async function POST(request: Request) {
     });
     // 限制历史长度，避免无限膨胀
     if (profile.log.length > 80) profile.log = profile.log.slice(-80);
-    // 若通过，把 blocked 里已解释的标记为已掌握（去重）
-    if (entry.passed && Array.isArray(entry.blocked)) {
-      const set = new Set(profile.mastered);
-      entry.blocked.forEach((t) => t.trim() && set.add(t.trim()));
-      profile.mastered = [...set];
-    }
+    // Keep the log as evidence only; explanation and model claims do not prove mastery.
   } else {
     return Response.json({ error: `未知 action：${action}` }, { status: 400 });
   }
@@ -104,3 +95,5 @@ export async function POST(request: Request) {
   await writeStore(FILE, JSON.stringify(profile, null, 2));
   return Response.json({ profile });
 }
+
+export const POST=withToolObservation({source:"代码导读记录",scene:"code"},observedPOST);

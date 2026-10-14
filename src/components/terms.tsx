@@ -1,226 +1,40 @@
 "use client";
-
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import type { Term } from "@/app/api/terms/route";
-import PageHead from "@/components/page-head";
-import { KnowledgeGraph } from "@/components/dashboard";
-
-const ROLE_OPTIONS = [
-  "感知/传感器", "状态估计/对齐", "场景表示/建图", "补全/学习机制",
-  "控制/决策", "训练机制", "评估指标", "工程/部署", "领域背景",
-];
-const STATUS_OPTIONS = ["未接触", "有直觉", "能解释", "能对应论文", "能实现"];
-const REUSE_OPTIONS = ["通用", "论文特有", "论文内特殊含义"];
-export const STATUS_COLOR: Record<string, string> = {
-  "未接触": "var(--muted-foreground)", "有直觉": "var(--amber)", "能解释": "var(--foreground)",
-  "能对应论文": "var(--foreground)", "能实现": "var(--foreground)",
-};
-
-/** ISO → MM/DD 短日期（术语卡"更新于"痕迹） */
-function fmtDate(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
-}
-
-
-export default function Terms() {
-  const [terms, setTerms] = useState<Term[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<Partial<Term>>({});
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/terms")
-      .then((r) => r.json())
-      .then((data) => { if (!cancelled) setTerms(data.terms ?? []); })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  async function post(body: object) {
-    const res = await fetch("/api/terms", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setTerms(data.terms ?? []);
-      return true;
-    }
-    return false;
+import { termsForPaper, type Term, type TermAssessment } from "@/lib/terms";
+export const STATUS_COLOR: Record<string,string> = { "未接触":"var(--muted-foreground)", "有直觉":"var(--amber)", "能解释":"var(--ok)", "能对应论文":"var(--ok)", "能实现":"var(--ok)" };
+export default function Terms({ initialId, initialPaper = "" }: { initialId?: string; initialPaper?:string } = {}) {
+  const [terms,setTerms] = useState<Term[]>([]); const [selected,setSelected] = useState<string | null>(null);
+  const [papers,setPapers] = useState<{slug:string;title:string}[]>([]); const [paper,setPaper] = useState(initialPaper);
+  const [search,setSearch] = useState(""); const [dueOnly,setDueOnly] = useState(false); const [now,setNow] = useState(0);
+  const [error,setError] = useState(""); const [busy,setBusy] = useState(false); const [notice,setNotice] = useState("");
+  const [form,setForm] = useState<Partial<Term> | null>(null); const [answer,setAnswer] = useState(""); const [revealed,setRevealed] = useState(false);
+  const [assessment,setAssessment] = useState<TermAssessment | null>(null); const [explanation,setExplanation] = useState<Partial<Term> | null>(null);
+  useEffect(() => { fetch("/api/terms").then(async r => { const d=await r.json(); if(!r.ok) throw Error(d.error); setTerms(d.terms); setPaper(initialPaper); setSelected(d.terms.find((t:Term)=>t.id===initialId||t.legacyIds?.includes(initialId??""))?.id ?? d.terms[0]?.id ?? null); setNow(Date.now()); }).catch(e => setError(e.message)); fetch("/api/paper").then(r=>r.json()).then(d=>setPapers(d.papers??[])).catch(()=>{}); },[initialId,initialPaper]);
+  function choose(id:string) { setSelected(id); setAnswer(""); setRevealed(false); setExplanation(null); setForm(null); setNotice(""); setAssessment(null); }
+  async function post(body:object) {
+    setBusy(true);setError("");setNotice("");
+    try { const r=await fetch("/api/terms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); const d=await r.json();if(!r.ok) throw Error(d.error); if(d.terms) {setTerms(d.terms);setNow(Date.now());setForm(null);if(d.saved)setSelected(d.saved.id);setNotice("已保存");} if(d.assessment)setAssessment(d.assessment);if(d.explanation) setExplanation(d.explanation);return true; }
+    catch(e){setError(e instanceof Error?e.message:String(e));return false;}finally{setBusy(false);}
   }
-
-  function startEdit(t: Term) {
-    setEditingId(t.id);
-    setEditForm({ name: t.name, role: t.role, reuse: t.reuse, note: t.note, source: t.source, links: t.links });
-  }
-
-  async function saveEdit() {
-    if (!editingId || !editForm.name?.trim()) return;
-    if (await post({ term: { id: editingId, ...editForm } })) setEditingId(null);
-  }
-
-  async function changeStatus(t: Term, status: string) {
-    await post({ term: { ...t, status } });
-  }
-
-  async function remove(id: string) {
-    await post({ deleteId: id });
-  }
-
-  const latestUpdate = terms.reduce((max, t) => (t.updatedAt > max ? t.updatedAt : max), "");
-
-  return (
-    <section>
-      <PageHead
-        num="04" name="术语卡"
-        title="跨论文词汇表"
-        desc="术语由研究伴侣在读论文时自动建档（首次出现即建档）；这里查看与校准——状态升级由 AI 当场验收后帮你改。"
-        meta={terms.length > 0 ? `${terms.length} 张卡 · 最近更新 ${fmtDate(latestUpdate)}` : "词汇表还是空的 — 读论文时会自动生成"}
-      />
-
-      {/* 知识网络（并入术语卡 · 关系图） */}
-      <div className="mod" style={{ marginBottom: "2rem" }}>
-        <header className="mod-head" style={{ cursor: "default" }}>
-          <span className="mod-num">03</span>
-          <h2 className="mod-title">知识网络</h2>
-          <span className="mod-count">{terms.length} 术语 · 点击节点跳到下方词条</span>
-        </header>
-        <div className="mod-body">
-          <div className="net-scroll">
-            <KnowledgeGraph
-              terms={terms}
-              height={300}
-              onNavigate={(id) => {
-                if (id === "terms") {
-                  document.getElementById(`term-row-0`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-                }
-              }}
-            />
-          </div>
-          <div className="net-legend">
-            <span><i style={{ background: "var(--ok)" }} />已掌握</span>
-            <span><i style={{ background: "var(--amber)" }} />进行中</span>
-            <span><i style={{ background: "var(--muted-foreground)" }} />未接触</span>
-          </div>
-        </div>
-      </div>
-
-      {/* 词汇表索引 */}
-      <div className="term-index">
-        <div className="term-head-row" aria-hidden="true">
-          <span>编号</span>
-          <span>术语</span>
-          <span>角色 · 复用</span>
-          <span>状态</span>
-          <span>更新</span>
-          <span style={{ textAlign: "right" }}>操作</span>
-        </div>
-
-        {loading ? (
-          <p className="mono-label" style={{ padding: "1.5rem 0.3rem" }}>读取中…</p>
-        ) : terms.length === 0 ? (
-          <p style={{ padding: "1.5rem 0.3rem", fontStyle: "italic", fontFamily: "var(--font-lora)", color: "var(--muted-foreground)" }}>
-            词汇表还是空的——从第一张卡开始。
-          </p>
-        ) : (
-          terms.map((t, i) => (
-            <article key={t.id} id={`term-row-${i}`} className="term-item">
-              <span className="term-no">{String(i + 1).padStart(2, "0")}</span>
-              <div>
-                <h3 className="term-name">{t.name}</h3>
-                {t.note && <p className="term-note">{t.note}</p>}
-                {t.links && <p className="term-links">关联 → {t.links}</p>}
-              </div>
-              <div className="term-cell">
-                <strong>{t.role}</strong>
-                <br />
-                {t.reuse}
-              </div>
-              <div>
-                <select className="field field--mini" value={t.status}
-                  onChange={(e) => void changeStatus(t, e.target.value)}
-                  style={{ color: STATUS_COLOR[t.status] ?? undefined }}
-                  aria-label={`${t.name} 的状态`}>
-                  {STATUS_OPTIONS.map((s) => <option key={s}>{s}</option>)}
-                </select>
-              </div>
-              <div className="term-cell">
-                {t.updatedAt ? fmtDate(t.updatedAt) : "—"}
-                <br />
-                {Array.isArray(t.papers) && t.papers.length > 0 ? (
-                  <span className="term-papers" style={{ opacity: 0.9 }}>
-                    见于 {t.papers.length} 篇：
-                    {t.papers.map((p, idx) => (
-                      <span key={p.slug}>
-                        {idx > 0 && "、"}
-                        <Link href={`/read/${p.slug}`} style={{ textDecoration: "underline", cursor: "pointer" }}>{p.title.slice(0, 16)}</Link>
-                      </span>
-                    ))}
-                  </span>
-                ) : (
-                  <span style={{ opacity: 0.6 }}>出处 {t.source ? t.source.slice(0, 18) : "—"}</span>
-                )}
-              </div>
-              <div className="term-actions">
-                <button className="btn btn--ghost btn--quiet" onClick={() => startEdit(t)}>编辑</button>
-                <button className="btn btn--ghost btn--danger-ghost btn--quiet" onClick={() => void remove(t.id)}>删除</button>
-              </div>
-
-              {editingId === t.id && (
-                <div className="term-edit-panel">
-                  <div className="ledger-grid" style={{ marginBottom: 0 }}>
-                    <label className="field-label">
-                      <span className="mono-label">名称</span>
-                      <input className="field" value={editForm.name ?? ""}
-                        onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
-                    </label>
-                    <label className="field-label">
-                      <span className="mono-label">来源 / 历史出处</span>
-                      <input className="field" value={editForm.source ?? ""}
-                        onChange={(e) => setEditForm({ ...editForm, source: e.target.value })} />
-                    </label>
-                    <label className="field-label">
-                      <span className="mono-label">角色归类</span>
-                      <select className="field" value={editForm.role ?? ""}
-                        onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}>
-                        {ROLE_OPTIONS.map((r) => <option key={r}>{r}</option>)}
-                      </select>
-                    </label>
-                    <label className="field-label">
-                      <span className="mono-label">复用标记</span>
-                      <select className="field" value={editForm.reuse ?? ""}
-                        onChange={(e) => setEditForm({ ...editForm, reuse: e.target.value })}>
-                        {REUSE_OPTIONS.map((r) => <option key={r}>{r}</option>)}
-                      </select>
-                    </label>
-                    <label className="field-label ledger-grid-full">
-                      <span className="mono-label">当前先理解为</span>
-                      <textarea className="field" rows={2} value={editForm.note ?? ""}
-                        onChange={(e) => setEditForm({ ...editForm, note: e.target.value })} />
-                    </label>
-                    <label className="field-label ledger-grid-full">
-                      <span className="mono-label">关联术语</span>
-                      <input className="field" value={editForm.links ?? ""}
-                        onChange={(e) => setEditForm({ ...editForm, links: e.target.value })} />
-                    </label>
-                  </div>
-                  <div style={{ display: "flex", gap: "0.6rem", marginTop: "1.1rem" }}>
-                    <button className="btn btn--primary" onClick={() => void saveEdit()}>保存修改</button>
-                    <button className="btn btn--ghost" onClick={() => setEditingId(null)}>取消</button>
-                  </div>
-                </div>
-              )}
-            </article>
-          ))
-        )}
-      </div>
-    </section>
-  );
+  const inScope=paper?termsForPaper(terms,paper,papers.find(p=>p.slug===paper)?.title):terms;
+  const filtered=inScope.filter(t=>(!dueOnly||!t.dueAt||Date.parse(t.dueAt)<=now)&&`${t.name} ${t.note} ${t.role}`.toLowerCase().includes(search.toLowerCase()));
+  const term=terms.find(t=>t.id===selected); const context=term?.contexts?.find(c=>c.slug===paper);
+  const dueCount=inScope.filter(t=>!t.dueAt||Date.parse(t.dueAt)<=now).length;
+  return <section className="companion-page terms-workspace">
+    <header className="companion-heading"><span className="eyebrow">CONCEPT NOTEBOOK</span><h1>术语笔记</h1><p>先知道它解决什么问题，再看它在论文里做什么。复述一次，才留下理解证据。</p></header>
+    {error&&<p role="alert" className="v1-error">{error}</p>}{notice&&<p className="success-note" role="status">{notice}</p>}
+    <div className="study-filter"><input className="field" aria-label="搜索术语" value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索术语、解释或角色…"/><select className="field" aria-label="术语论文范围" value={paper} onChange={e=>{setPaper(e.target.value);setExplanation(null);setForm(null);setAnswer("");setRevealed(false);setAssessment(null);const scope=e.target.value?termsForPaper(terms,e.target.value,papers.find(p=>p.slug===e.target.value)?.title):terms;setSelected(scope[0]?.id??null);}}><option value="">跨论文词汇表</option>{papers.map(p=><option key={p.slug} value={p.slug}>{p.title}</option>)}</select><button className={"btn"+(dueOnly?" btn--primary":"")} onClick={()=>setDueOnly(!dueOnly)}>{dueOnly?"返回全部":"待回顾"} · {dueCount}</button><button className="btn" onClick={()=>{setForm({name:"",note:"",role:"领域背景",reuse:"通用",source:"手动建卡",links:"",nextAction:""});setExplanation(null);}}>新建笔记</button></div>
+    <div className="concept-layout"><aside className="concept-list" aria-label="术语列表"><p className="soft-copy">{filtered.length} 个概念{paper?" · 当前论文":" · 跨论文累积"}</p>{filtered.map(t=><button className={"concept-item"+(selected===t.id?" is-active":"")} key={t.id} onClick={()=>choose(t.id)}><strong>{t.name}</strong><span>{t.role} · {t.status}</span><small>{t.note||"还没有解释"}</small></button>)}{!filtered.length&&<p className="empty-study">没有匹配的概念。可以在论文中点术语，或手动建一张笔记。</p>}</aside>
+    <main className="surface-card concept-detail">
+      {form?<><h2>{form.id?"修改笔记":"新建术语笔记"}</h2>{[["name","术语 · 英文 / 中文"],["note","一句话：它是什么"],["mechanism","输入如何变成输出"],["example","一个具体例子"],["nextAction","下次要弄清什么"],["source","来源"],["links","必须一起理解的关联术语"]].map(([k,label])=><label className="field-label" key={k}>{label}<textarea className="field" rows={k==="name"?1:2} value={String(form[k as keyof Term]??"")} onChange={e=>setForm({...form,[k]:e.target.value})}/></label>)}<div className="inline-actions"><button className="btn btn--primary" disabled={busy||!form.name?.trim()} onClick={()=>void post({term:form})}>保存笔记</button><button className="btn" onClick={()=>setForm(null)}>取消</button></div></> : term?<>
+        <div className="section-top"><span className="pill">{term.role}</span><button className="text-button" onClick={()=>setForm({...term})}>修改笔记</button></div><h2 className="concept-title">{term.name}</h2><p className="soft-copy">{term.status} · {term.reuse}{term.reviews?.length?` · ${term.reviews.length} 次有复述记录的回顾`:" · 历史状态待核对 · 尚无复述证据"}</p>
+        <div className="recall-prompt"><strong>先试着说一句</strong><p>它的输入是什么、做了什么、输出有什么用？可以只写你现在确定的部分。</p><textarea className="field" aria-label="术语复述" rows={3} value={answer} onChange={e=>{setAnswer(e.target.value);setAssessment(null);}} placeholder="我的理解是…"/><div className="inline-actions"><button className="btn btn--primary" disabled={busy||!answer.trim()} onClick={()=>void post({action:"assess",id:term.id,answer,slug:paper}).then(ok=>{if(ok)setRevealed(true);})}>{busy?"检查中…":"让助手检查我的复述"}</button><button className="btn" onClick={()=>setRevealed(!revealed)}>{revealed?"收起参考解释":"看参考解释"}</button></div></div>
+        {revealed&&<div className="concept-explanation"><h3>先理解为</h3><p>{context?.meaning||term.note||"还没有参考解释，可让助手生成。"}</p>{term.mechanism&&<><h3>它怎样工作</h3><p>{term.mechanism}</p></>}{term.example&&<><h3>走一个小例子</h3><p>{term.example}</p></>}<h3>回到论文</h3>{context?.quote?<blockquote>{context.quote}<small>{context.title}{context.page?` · 第 ${context.page} 页`:""}</small></blockquote>:<p className="soft-copy">当前还没有核对过的原文摘录。可以从论文选中原句添加术语。</p>}{term.nextAction&&<p>下一步：{term.nextAction}</p>}<div className="inline-actions"><button className="btn" disabled={busy} onClick={()=>void post({action:"explain",id:term.id,slug:paper})}>{busy?"整理中…":"用机制和例子讲清楚"}</button></div>
+        {explanation&&<div className="generated-explanation"><span className="pill">AI 参考解释 · 尚未保存</span><p>{explanation.note}</p><p>{explanation.mechanism}</p><p>{explanation.example}</p><p>检查：{explanation.nextAction}</p><button className="btn" disabled={busy} onClick={()=>void post({term:{id:term.id,name:term.name,...explanation,explanationSource:"用户保存的 AI 参考解释；不代表掌握证据"}}).then(ok=>{if(ok)setExplanation(null);})}>保留这份参考解释</button></div>}
+        <div className="review-controls">{assessment&&<div className="generated-explanation"><span className="pill">AI 复述检查 · {assessment.verdict==="supported"?"有支持证据":assessment.verdict==="needs-work"?"仍有卡点":"还不能判断"}</span><p>{assessment.feedback}</p><p>再想一步：{assessment.nextQuestion}</p>{assessment.verdict==="supported"&&<p>建议状态：{assessment.suggestedStatus}。你确认后才更新；这不代表已能实现。</p>}</div>}<p className="soft-copy">根据本次复述留下证据。看过解释不会自动升级；实现能力需要真实任务结果。</p><div className="inline-actions"><button className="btn" disabled={busy||!answer.trim()} onClick={()=>void post({action:"review",id:term.id,answer,rating:"again"}).then(ok=>{if(ok){setAnswer("");setRevealed(false);setAssessment(null);}})}>还卡住 · 明天再看</button><button className="btn btn--primary" disabled={busy||!assessment||assessment.verdict!=="supported"||assessment.answer!==answer.trim()} onClick={()=>void post({action:"review",id:term.id,answer,rating:"good",assessmentId:assessment?.id}).then(ok=>{if(ok){setAnswer("");setRevealed(false);setAssessment(null);}})}>确认这次理解，安排回顾</button></div></div></div>}
+        <details className="quiet-details"><summary>论文出处与理解记录</summary>{term.papers?.map(p=><p key={p.slug}><Link href={`/read/${p.slug}`}>{p.title} →</Link></p>)}{term.contexts?.map(c=><div key={c.slug}><strong>{c.title}</strong><p>{c.meaning}</p>{c.quote&&<blockquote>{c.quote}</blockquote>}</div>)}<p>{term.source}</p>{term.legacyCards?.length ? <details><summary>合并前的历史卡片 · {term.legacyCards.length} 张</summary>{term.legacyCards.map(t=><blockquote key={t.id}>{t.name} · {t.status}<p>{t.note}</p><small>{t.source}</small></blockquote>)}</details>:null}{term.links&&<p>关联：{term.links}</p>}{term.reviews?.slice().reverse().map((r,i)=><blockquote key={i}>{r.answer}<small>{new Date(r.at).toLocaleDateString("zh-CN")} · {r.assessmentId?"复述检查已确认":"卡点记录"} {r.status}</small></blockquote>)}{term.dueAt&&<p>下次回顾：{new Date(term.dueAt).toLocaleDateString("zh-CN")}</p>}<button className="text-button danger-text" disabled={busy} onClick={()=>{if(confirm(`删除“${term.name}”的笔记与复述记录？`))void post({deleteId:term.id}).then(ok=>{if(ok)setSelected(null);});}}>删除这张笔记</button></details>
+      </>:<p className="empty-study">从左侧选一个概念，或新建笔记。</p>}
+    </main></div>
+  </section>;
 }

@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * Paper ↔ Code Mapping 接口（Step 5，grounding hardening）
  * POST /api/reproduction/mappings
@@ -22,7 +23,7 @@ async function readRoots(): Promise<RootConfig[]> {
   return [{ id: "project", name: "项目根", root: path.resolve(process.cwd(), "..") }];
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { slug?: string; action?: string; rootId?: string; mappings?: unknown[]; id?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 
@@ -71,3 +72,5 @@ export async function POST(request: Request) {
 
   return Response.json({ error: `未知 action：${action}` }, { status: 400 });
 }
+
+export const POST=withToolObservation({source:"复现映射",scene:"repro",conversation:false},observedPOST);

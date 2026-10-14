@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { FullPdfPage } from "@/components/full-pdf-page";
+import { useRouter } from "next/navigation";
+import { FullPdfPage, type WordSelection } from "@/components/full-pdf-page";
 import ChatPanel from "@/components/chat-panel";
 import Markdown from "@/components/markdown";
 import { STATUS_COLOR } from "@/components/terms";
-import type { Term } from "@/app/api/terms/route";
+import { termsForPaper, type Term } from "@/lib/terms";
+import type { VocabularyEntry } from "@/lib/vocabulary";
 
 /* 全屏阅读器 /read/<slug>。
    点击任意论文标题进入：占满整个视口，左栏可切换文章；所有阅读功能都在这里：
@@ -58,6 +60,34 @@ function readChatBox(): ChatBox | null {
 }
 
 export default function FullReader({ slug }: { slug: string }) {
+  const router=useRouter();
+  const [railOpen,setRailOpen] = useState(false);
+  const [words,setWords] = useState<VocabularyEntry[]>([]);
+  const [wordLookup,setWordLookup]=useState(false);
+  useEffect(()=>{let gone=false;queueMicrotask(()=>{try{if(!gone)setWordLookup(localStorage.getItem("ra-reader-word-lookup")==="true");}catch{/* reading preference is optional */}});return()=>{gone=true;};},[]);
+  const [docId,setDocId] = useState(""); const [wordSelection,setWordSelection] = useState<WordSelection | null>(null);
+  const [wordPop,setWordPop] = useState<{entry:VocabularyEntry;x:number;y:number} | null>(null);
+  const wordCloseRef=useRef<ReturnType<typeof setTimeout>|null>(null);
+  function keepWordOpen(){if(wordCloseRef.current)clearTimeout(wordCloseRef.current);}
+  function closeWordSoon(){keepWordOpen();wordCloseRef.current=setTimeout(()=>setWordPop(null),250);}
+  useEffect(()=>()=>{if(wordCloseRef.current)clearTimeout(wordCloseRef.current);},[]);
+  const [wordBusy,setWordBusy] = useState(false); const [wordError,setWordError] = useState(""); const [showWords,setShowWords] = useState(false);
+  const [pdfError,setPdfError] = useState("");
+  useEffect(() => { let cancelled=false; queueMicrotask(()=>{if(!cancelled){setWords([]);setDocId("");setWordSelection(null);setWordPop(null);setWordError("");}});
+    fetch(`/api/vocabulary?slug=${encodeURIComponent(slug)}`).then(async r => {const d=await r.json();if(!r.ok)throw Error(d.error);if(!cancelled){setWords(d.entries);setDocId(d.docId);}}).catch(e=>{if(!cancelled)setWordError(e.message);});return()=>{cancelled=true;}; },[slug]);
+  async function translateWord() {
+    if(!wordSelection||!docId||wordBusy)return;setWordBusy(true);setWordError("");
+    try { const r=await fetch("/api/vocabulary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"translate",slug,docId,...wordSelection})});const d=await r.json();if(!r.ok)throw Error(d.error);setWords(d.entries);setWordPop({entry:d.saved,x:wordSelection.x,y:wordSelection.y});setWordSelection(null);window.getSelection()?.removeAllRanges(); }
+    catch(e){setWordError(e instanceof Error?e.message:String(e));}finally{setWordBusy(false);}
+  }
+  async function captureTerm() {
+    if(!wordSelection||wordBusy)return;setWordBusy(true);setWordError("");
+    try {const r=await fetch("/api/terms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"capture",slug,page:wordSelection.page,text:wordSelection.text})});const d=await r.json();if(!r.ok)throw Error(d.error);setTerms(d.terms);setWordSelection(null);window.getSelection()?.removeAllRanges();router.push(`/terms/${d.saved.id}?paper=${encodeURIComponent(slug)}`);}
+    catch(e){setWordError(e instanceof Error?e.message:String(e));}finally{setWordBusy(false);}
+  }
+  async function removeWord(entry:VocabularyEntry) {
+    try {const r=await fetch("/api/vocabulary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"delete",slug,docId,id:entry.id})});const d=await r.json();if(!r.ok)throw Error(d.error);setWords(d.entries);setWordPop(null);}catch(e){setWordError(e instanceof Error?e.message:String(e));}
+  }
   const [doc, setDoc] = useState<{ getPage: (n: number) => Promise<unknown>; numPages: number } | null>(null);
   const [papers, setPapers] = useState<PaperItem[]>([]);
   const [terms, setTerms] = useState<Term[]>([]);
@@ -68,11 +98,14 @@ export default function FullReader({ slug }: { slug: string }) {
   const [chatBox, setChatBox] = useState<ChatBox | null>(null);
   const [paperText, setPaperText] = useState("");
   const [translation, setTranslation] = useState("");
+  const [translationError, setTranslationError] = useState("");
+  const [zhGenerating, setZhGenerating] = useState(false);
   const [view, setView] = useState<"pdf" | "zh">("pdf");
   const [readSet, setReadSet] = useState<Set<number>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
   const paperDataLoaded = useRef<string | null>(null);
+  const zhTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const dragRef = useRef<{ mode: "move" | "resize"; sx: number; sy: number; box: ChatBox } | null>(null);
 
@@ -80,7 +113,8 @@ export default function FullReader({ slug }: { slug: string }) {
 
   // 视图模式：URL ?view=zh 决定（切换论文时跟着 URL 走）
   useEffect(() => {
-    setView(window.location.search.includes("view=zh") ? "zh" : "pdf");
+    let cancelled=false;queueMicrotask(()=>{if(!cancelled)setView(window.location.search.includes("view=zh") ? "zh" : "pdf");});
+    return()=>{cancelled=true;};
   }, [slug]);
 
   // 论文列表（左栏切换）
@@ -103,22 +137,74 @@ export default function FullReader({ slug }: { slug: string }) {
     return () => { cancelled = true; };
   }, []);
 
-  // 论文译文（上传时全文翻译生成的 markdown）：
+  // 论文译文（导入时全文翻译生成的 markdown，失败会带 translationError）：
   // - 中文视图直接渲染它；
   // - AI 讲解抽屉把它作为论文上下文（ChatPanel 自动截断长正文）。
   useEffect(() => {
     if (paperDataLoaded.current === slug) return;
     paperDataLoaded.current = slug;
     setTranslation("");
+    setTranslationError("");
+    if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; }
+    setZhGenerating(false);
     fetch(`/api/paper?slug=${encodeURIComponent(slug)}`)
       .then((r) => r.json())
       .then((d) => {
         const pages: { n: number; zh: string }[] = d.pages ?? [];
         const t: string = d.translation ?? "";
         setTranslation(t);
+        setTranslationError(d.translationError ?? "");
         setPaperText(t || pages.map((p) => `【第 ${p.n} 页译文】\n${p.zh}`).join("\n\n"));
       })
       .catch(() => {});
+    return () => { if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; } };
+  }, [slug]);
+
+  // 手动触发/重试整篇中文翻译（后台分钟级；完成后自动刷新视图）
+  const generateTranslation = useCallback(() => {
+    const cancelled = false;
+    setZhGenerating(true);
+    setTranslationError("");
+    (async () => {
+      try {
+        const res = await fetch("/api/paper", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "translate", slug }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          if (!cancelled) { setTranslationError(d?.error ?? "触发翻译失败"); setZhGenerating(false); }
+          return;
+        }
+      } catch {
+        if (!cancelled) { setTranslationError("触发翻译失败：网络错误"); setZhGenerating(false); }
+        return;
+      }
+      // 轮询结果：translation.md 或 translation.error.txt 出现即结束（上限 12 分钟）
+      const started = Date.now();
+      zhTimerRef.current = setInterval(async () => {
+        if (cancelled) { if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; } return; }
+        if (Date.now() - started > 12 * 60 * 1000) {
+          if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; }
+          setZhGenerating(false);
+          setTranslationError("翻译超时未完成，请稍后重试");
+          return;
+        }
+        try {
+          const d = await (await fetch(`/api/paper?slug=${encodeURIComponent(slug)}`)).json();
+          if (d.translation || d.translationError) {
+            if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; }
+            const pages: { n: number; zh: string }[] = d.pages ?? [];
+            const t: string = d.translation ?? "";
+            setTranslation(t);
+            setTranslationError(d.translationError ?? "");
+            setPaperText(t || pages.map((p: { n: number; zh: string }) => `【第 ${p.n} 页译文】\n${p.zh}`).join("\n\n"));
+            setZhGenerating(false);
+          }
+        } catch { /* 网络抖动，继续轮询 */ }
+      }, 8000);
+    })();
   }, [slug]);
 
   // 容器宽度
@@ -135,6 +221,7 @@ export default function FullReader({ slug }: { slug: string }) {
   useEffect(() => {
     if (view !== "pdf") return;
     let cancelled = false;
+    queueMicrotask(()=>{if(!cancelled){setDoc(null);setPdfError("");}});
     (async () => {
       try {
         const pdfjs = await import("pdfjs-dist");
@@ -147,7 +234,7 @@ export default function FullReader({ slug }: { slug: string }) {
         }).promise;
         if (cancelled) return;
         setDoc(d);
-      } catch { /* ignore */ }
+      } catch(e) {if(!cancelled)setPdfError(e instanceof Error?e.message:"PDF 加载失败");}
     })();
     return () => { cancelled = true; };
   }, [src, view]);
@@ -283,10 +370,7 @@ export default function FullReader({ slug }: { slug: string }) {
   const numPages = papers.find((p) => p.slug === slug)?.pages ?? doc?.numPages ?? 0;
 
   // 能力画像数据：这篇论文（NSR）相关的术语 + 各状态计数
-  const paperTerms = useMemo(() => {
-    const nsr = terms.filter((t) => /nsr/i.test(t.source ?? ""));
-    return nsr.length ? nsr : terms;
-  }, [terms]);
+  const paperTerms = useMemo(() => termsForPaper(terms, slug, title), [terms, slug, title]);
   const statusCount = useMemo(() => {
     const m: Record<string, number> = {};
     for (const t of paperTerms) m[t.status] = (m[t.status] ?? 0) + 1;
@@ -295,7 +379,8 @@ export default function FullReader({ slug }: { slug: string }) {
   const mastered = (statusCount["能对应论文"] ?? 0) + (statusCount["能实现"] ?? 0);
 
   return (
-    <div className="full-reader">
+    <div className={"full-reader"+(railOpen?" is-rail-open":"")}>
+      {railOpen && <button className="reader-rail-mask" aria-label="关闭论文列表" onClick={()=>setRailOpen(false)} />}
       {/* 左栏：论文切换 + 能力画像 */}
       <aside className="full-reader-rail">
         <div className="full-reader-rail-head">
@@ -304,12 +389,12 @@ export default function FullReader({ slug }: { slug: string }) {
         <div className="full-reader-rail-list">
           {papers.map((p) => (
             <div key={p.slug} className={`full-reader-rail-row${p.slug === slug ? " is-active" : ""}`}>
-              <Link href={`/read/${p.slug}`} className="full-reader-rail-item">
+              <Link href={`/read/${p.slug}`} onClick={()=>setRailOpen(false)} className="full-reader-rail-item">
                 <span className="full-reader-rail-title">{p.title}</span>
                 <span className="full-reader-rail-meta">{p.pages} 页</span>
               </Link>
               <button className={`rail-zh-btn${p.slug === slug && view === "zh" ? " is-on" : ""}`}
-                onClick={() => { if (p.slug === slug) setViewMode("zh"); else window.location.href = `/read/${p.slug}?view=zh`; }}
+                onClick={() => { if (p.slug === slug) setViewMode("zh"); else router.push(`/read/${p.slug}?view=zh`); }}
                 title="看这篇的中文翻译（上传时全文翻译）">
                 中
               </button>
@@ -321,7 +406,7 @@ export default function FullReader({ slug }: { slug: string }) {
         </div>
 
         <div className="reader-profile">
-          <div className="reader-profile-title"><span>论文能力画像</span><span>{title}</span></div>
+          <div className="reader-profile-title"><span>这篇的概念笔记</span><span>{title}</span></div>
           <div className="reader-profile-bar" title={STATUS_ORDER.map((s) => `${s} ${statusCount[s] ?? 0}`).join(" · ")}>
             {STATUS_ORDER.map((s) => (
               <i key={s} style={{
@@ -336,7 +421,7 @@ export default function FullReader({ slug }: { slug: string }) {
             ))}
           </div>
           <div className="reader-profile-meta">
-            已读 {readSet.size}/{numPages} 页 · 术语 {paperTerms.length} 个 · 已掌握 {mastered} 个
+            浏览过 {readSet.size}/{numPages} 页 · 术语 {paperTerms.length} 个 · 自评能对应/实现 {mastered} 个
           </div>
         </div>
       </aside>
@@ -344,11 +429,13 @@ export default function FullReader({ slug }: { slug: string }) {
       {/* 主区 */}
       <div className="full-reader-main">
         <div className="full-reader-toolbar">
+          <button className="btn reader-library-toggle" aria-expanded={railOpen} onClick={()=>setRailOpen(!railOpen)}>论文库</button>
           <Link href="/" className="full-reader-back" title="返回">←</Link>
           <span className="full-reader-title">{title}</span>
           {view === "pdf" ? (
             <>
-              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>点术语→小卡 · Ctrl+滚轮缩放 · 左栏「中」看译文</span>
+              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>{wordLookup?"单击英文词 → 翻译 · 切回划选可选短语":"划选英文 → 翻译并高亮"}</span>
+              <button className="btn btn--quiet" aria-pressed={wordLookup} onClick={()=>{setWordLookup(!wordLookup);try{localStorage.setItem("ra-reader-word-lookup",String(!wordLookup));}catch{/* lookup mode still works without storage */}setWordSelection(null);window.getSelection()?.removeAllRanges();}} title="开启后单击单词即可翻译，不使用浏览器原生选区">{wordLookup?"切回划选":"点词查译"}</button>
               <span style={{ flex: 1 }} />
               <span className="pdf-zoom-label">{Math.round(zoom * 100)}%</span>
               <button className="btn btn--ghost btn--quiet" onClick={() => applyZoom(zoom - 0.15)}>缩小</button>
@@ -357,11 +444,12 @@ export default function FullReader({ slug }: { slug: string }) {
             </>
           ) : (
             <>
-              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>中文翻译 · 上传时由 DeepSeek 按段落全文翻译</span>
+              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>中文翻译 · 导入时由 DeepSeek 按段落全文翻译</span>
               <span style={{ flex: 1 }} />
               <button className="btn btn--accent" onClick={() => setViewMode("pdf")}>查看原文 PDF</button>
             </>
           )}
+          <button className="btn btn--ghost btn--quiet" onClick={() => setShowWords(!showWords)}>生词本 · {words.length}</button>
           <button className={`btn ${chatOpen ? "btn--accent" : "btn--ghost btn--quiet"}`} style={{ marginLeft: "0.3rem" }}
             onClick={toggleChat}>
             AI 讲解
@@ -373,27 +461,44 @@ export default function FullReader({ slug }: { slug: string }) {
             <div className="reader-zh-scroll">
               {translation ? (
                 <Markdown>{translation}</Markdown>
-              ) : (
+              ) : zhGenerating ? (
                 <p className="mono-label" style={{ padding: "2rem 0", textAlign: "center" }}>
-                  {paperDataLoaded.current === slug ? "这篇论文还没有生成中文翻译（重新导入时会生成）" : "正在加载中文翻译…"}
+                  正在生成中文翻译（分钟级，可先看原文 PDF，生成完这里会自动刷新）…
                 </p>
+              ) : translationError ? (
+                <div style={{ padding: "2rem 0", textAlign: "center" }}>
+                  <p className="mono-label" style={{ color: "var(--muted-foreground)" }}>中文翻译生成失败：{translationError}</p>
+                  <button className="btn btn--accent" style={{ marginTop: "0.8rem" }} onClick={generateTranslation}>重试生成翻译</button>
+                </div>
+              ) : paperDataLoaded.current === slug ? (
+                <div style={{ padding: "2rem 0", textAlign: "center" }}>
+                  <p className="mono-label">这篇论文还没有生成中文翻译</p>
+                  <button className="btn btn--accent" style={{ marginTop: "0.8rem" }} onClick={generateTranslation}>生成中文翻译</button>
+                </div>
+              ) : (
+                <p className="mono-label" style={{ padding: "2rem 0", textAlign: "center" }}>正在加载中文翻译…</p>
               )}
             </div>
           </div>
         ) : (
           <div className="full-reader-scroll" ref={scrollRef}
-            onClick={() => { setPop(null); }}
+            onClick={() => { setPop(null); if(!window.getSelection()?.toString())setWordSelection(null);setWordPop(null); }}
+            onScroll={() => {setWordSelection(null);setWordPop(null);}}
             onWheel={onWheel}
             onTouchStart={onTouchStart}
             onTouchMove={onTouchMove}>
-            {!doc && <p className="mono-label" style={{ padding: "2rem 0" }}>加载 PDF…</p>}
-            {doc && pageWidth > 0 && Array.from({ length: Math.min(doc.numPages, 25) }, (_, i) => (
-              <FullPdfPage key={i + 1} pageNum={i + 1} width={pageWidth} frameWidth={frameWidth} doc={doc} terms={terms} onTerm={handleTerm} />
+            {!doc && <p className="mono-label" style={{ padding: "2rem 0" }}>{pdfError||"加载 PDF…"}</p>}
+            {doc && pageWidth > 0 && Array.from({ length: doc.numPages }, (_, i) => (
+              <FullPdfPage key={i + 1} pageNum={i + 1} width={pageWidth} frameWidth={frameWidth} doc={doc} terms={paperTerms} selectedWord={wordSelection} wordLookup={wordLookup} onTerm={handleTerm} vocabulary={words} onSelect={s => {setWordSelection(s);setWordPop(null);setPop(null);setWordError("");}} onWordLeave={closeWordSoon} onWord={(entry,x,y) => {keepWordOpen();setWordPop({entry,x:Math.max(8,Math.min(x,window.innerWidth-340)),y:Math.max(8,Math.min(y+12,window.innerHeight-230))});setWordSelection(null);}} />
             ))}
           </div>
         )}
       </div>
 
+      {wordError && !wordSelection && <div className="reader-notice" role="alert">{wordError}<button className="text-button" onClick={()=>setWordError("")}>关闭</button></div>}
+      {wordSelection && <div className="word-popover" style={{left:wordSelection.x,top:wordSelection.y}} onClick={e=>e.stopPropagation()}><strong>{wordSelection.text}</strong><p className="soft-copy">选区已保留在页面中，可直接操作；翻译成功后保存高光。</p>{wordError&&<p role="alert" className="v1-error">{wordError}</p>}<div className="inline-actions"><button className="btn btn--primary" disabled={wordBusy||!docId} onClick={()=>void translateWord()}>{wordBusy?"翻译中…":"翻译并高亮"}</button><button className="text-button" onClick={()=>{void navigator.clipboard.writeText(wordSelection.text).catch(()=>setWordError("复制失败，请检查浏览器剪贴板权限。"));}}>复制</button><button className="text-button" disabled={wordBusy} onClick={()=>void captureTerm()}>加入术语笔记</button><button className="text-button" disabled={wordBusy} onClick={()=>setWordSelection(null)}>取消</button></div></div>}
+      {wordPop && <div className="word-popover" role="tooltip" style={{left:wordPop.x,top:wordPop.y}} onMouseEnter={keepWordOpen} onMouseLeave={closeWordSoon}><div className="section-top"><strong>{wordPop.entry.text}</strong><button className="text-button" aria-label="关闭释义" onClick={()=>setWordPop(null)}>×</button></div><p className="word-meaning">{wordPop.entry.meaning}</p><small>{wordPop.entry.lemma} · {wordPop.entry.partOfSpeech}</small><p>{wordPop.entry.usage}</p><small>AI 语境释义 · 第 {wordPop.entry.page} 页</small><button className="text-button" disabled={wordBusy} onClick={()=>void removeWord(wordPop.entry)}>移除这处高亮</button></div>}
+      {showWords && <aside className="vocabulary-drawer" role="dialog" aria-label="这篇论文的生词本"><div className="section-top"><h2>阅读中遇见的词</h2><button className="text-button" onClick={()=>setShowWords(false)}>关闭</button></div><p className="soft-copy">翻译后自动收集。点击页码回到原句。</p>{words.length?words.map(w=><article className="vocabulary-item" key={w.id}><strong>{w.text}</strong><p>{w.meaning}</p><small>{w.lemma} · {w.partOfSpeech}</small><details><summary>原句与用法</summary><blockquote>{w.context}</blockquote><p>{w.usage}</p></details><div className="inline-actions"><button className="text-button" onClick={()=>{setViewMode("pdf");setShowWords(false);setTimeout(()=>document.querySelector(`[data-page="${w.page}"]`)?.scrollIntoView({behavior:"smooth"}),100);}}>第 {w.page} 页 →</button><button className="text-button" onClick={()=>void removeWord(w)}>移除</button></div></article>):<p className="empty-study">在 PDF 原文里划选一个词，点击“翻译并高亮”，就会出现在这里。</p>}</aside>}
       {/* AI 讲解抽屉（可拖动头部、可缩放左下角把手，位置尺寸本地记忆） */}
       {chatOpen && chatBox && (
         <aside className="reader-chat" role="dialog" aria-label="AI 讲解对话"
@@ -414,8 +519,9 @@ export default function FullReader({ slug }: { slug: string }) {
           <div className="reader-chat-body">
             <ChatPanel
               toolKey="p3"
+              resourceId={slug}
               hint="我是你的导读讲解。可以问：这一段在解决什么问题？这个术语怎么理解？方法部分怎么串起来？也可以直接说「讲一下第 3 页」。"
-              systemExtra={paperText}
+              systemExtra={paperText + "\n\n【当前论文术语笔记：自评状态仅作参考，先核对理解，不能把已讲解当掌握】\n" + JSON.stringify(paperTerms.slice(0,30).map(t => ({name:t.name,meaning:t.contexts?.find(c=>c.slug===slug)?.meaning||t.note,status:t.status,nextAction:t.nextAction,lastRecall:t.reviews?.at(-1)?.answer}))) }
               historyKey={`read-${slug}`}
             />
           </div>
@@ -436,10 +542,10 @@ export default function FullReader({ slug }: { slug: string }) {
               <span style={{ marginLeft: "auto", color: STATUS_COLOR[pop.term.status] ?? "var(--muted-foreground)" }}>● {pop.term.status}</span>
             </div>
             <span className="pdf-pop-role">{pop.term.role} · {pop.term.reuse}</span>
-            <p className="pdf-pop-note">{pop.term.note || "还没有写理解笔记。"}</p>
+            <p className="pdf-pop-note">{pop.term.contexts?.find(c=>c.slug===slug)?.meaning || pop.term.note || "还没有写理解笔记。"}</p>
             <button className="pdf-pop-close" onClick={() => setPop(null)}>×</button>
             <div className="pdf-pop-foot">
-              <span className="mono-label">来自词汇表 · 首次出现即建档</span>
+              <Link href={`/terms/${pop.term.id}?paper=${encodeURIComponent(slug)}`} className="text-button">查看完整笔记与复述 →</Link>
             </div>
           </div>
         </div>

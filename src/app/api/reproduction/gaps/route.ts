@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * Gap Detector + Decision Ledger 接口（Step 6 resolution hardening）
  * POST /api/reproduction/gaps
@@ -21,7 +22,7 @@ import type { DecisionChoice } from "@/lib/reproduction-spec";
 
 const PROPOSABLE = ["value_conflict", "source_conflict", "not_found", "uncomparable"];
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { slug?: string; action?: string; gapId?: string; id?: string; choice?: DecisionChoice; rationale?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 
@@ -107,3 +108,5 @@ export async function POST(request: Request) {
 
   return Response.json({ error: `未知 action：${action}` }, { status: 400 });
 }
+
+export const POST=withToolObservation({source:"复现缺口决策",scene:"repro",conversation:false},observedPOST);

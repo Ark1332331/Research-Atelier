@@ -6,7 +6,8 @@
  *    后端捕获该步骤清单，随 reply 一起返回，前端据此渲染「建议步骤」勾选/改写后再写回路径。
  */
 import { getReproduction } from "@/lib/reproduction";
-import { readStore } from "@/lib/store";
+import { prepareLearning, finishLearning } from "@/lib/learning/store";
+import { observeConversation } from "@/lib/learning/extract";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
@@ -46,13 +47,6 @@ const PROPOSE_TOOL = {
     },
   },
 };
-
-async function profileSummary(): Promise<string> {
-  const md = await readStore("profile.md");
-  if (!md) return "（暂无画像，按新手友好、数据合同讲解）";
-  const lines = md.split("\n").filter((l) => /^[-*]\s|^\d+\.|编程与工具|PyTorch|Python|终端|论文理解|学习方法/.test(l.trim())).slice(0, 30).join("\n");
-  return lines.slice(0, 1200) || "（暂无画像，按新手友好、数据合同讲解）";
-}
 
 function buildSystem(rec: NonNullable<Awaited<ReturnType<typeof getReproduction>>>, profile: string): string {
   const pathText = rec.path.length
@@ -123,8 +117,10 @@ export async function POST(request: Request) {
     return Response.json({ error: "DEEPSEEK_API_KEY 未配置：复制 .env.local.example 为 .env.local 并填入你的 key" }, { status: 500 });
   }
 
-  const profile = await profileSummary();
-  const system = buildSystem(rec, profile);
+  const query=[...userMsgs].reverse().find(m=>m.role==="user")?.content;if(typeof query!=="string"||!query.trim())return Response.json({error:"请输入问题"},{status:400});
+  const learning=await prepareLearning(query,"repro",null);
+  const note=await observeConversation(learning,userMsgs,"复现路径对话");
+  const system = buildSystem(rec, "使用已确认的学习规则；历史画像不自动作为生效偏好。")+learning.prompt;
   const convo: ChatMsg[] = [{ role: "system", content: system }, ...userMsgs.map((m) => ({ role: m.role, content: m.content ?? "" }))];
 
   // 工具循环：AI 要求提交步骤 → 捕获（只取最新一次，用户端以它为准）→ 回填已收录步骤 → 继续。
@@ -132,7 +128,7 @@ export async function POST(request: Request) {
   let reply = "";
   for (let round = 0; round <= 2; round++) {
     const r = await deepseekChat(apiKey, convo);
-    if (!r.ok) return Response.json({ error: r.error, hint: r.hint }, { status: 502 });
+    if (!r.ok) {await finishLearning(learning,"",r.error);return Response.json({ error: r.error, hint: r.hint }, { status: 502 });}
     const data = r.data!;
     const first = Array.isArray((data as { choices?: unknown }).choices) ? ((data as { choices: any[] }).choices[0] as { message?: unknown }) : undefined;
     const msg: ChatMsg = (first?.message as ChatMsg) ?? {};
@@ -160,5 +156,6 @@ export async function POST(request: Request) {
     break;
   }
 
-  return Response.json({ reply, proposed });
+  await finishLearning(learning,reply);
+  return Response.json({ reply, proposed,learning:{runId:learning.id,observationId:learning.observationId,selected:learning.selected,proposedIds:learning.proposedIds,note} });
 }

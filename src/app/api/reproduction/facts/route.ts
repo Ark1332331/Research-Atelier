@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * Fact 抽取与保存接口（Step 4）
  * POST /api/reproduction/facts
@@ -31,7 +32,7 @@ async function readRoots(): Promise<RootConfig[]> {
   return [{ id: "project", name: "项目根", root: path.resolve(process.cwd(), "..") }];
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { slug?: string; action?: string; rootId?: string; facts?: unknown[]; mode?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 
@@ -92,3 +93,5 @@ export async function POST(request: Request) {
 
   return Response.json({ error: `未知 action：${action}` }, { status: 400 });
 }
+
+export const POST=withToolObservation({source:"复现事实",scene:"repro",conversation:false},observedPOST);

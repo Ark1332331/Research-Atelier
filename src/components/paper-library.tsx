@@ -92,7 +92,8 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
 
   const addPaper = async () => {
     if (!addForm.title.trim()) return;
-    const ok = await act({ action: "addPaper", paper: { ...addForm, title: addForm.title.trim() }, group: addGroup || null });
+    // 手动添加的是"仅元数据"记录（没有 PDF 正文），标 manual 与导入论文区分，避免点不开的困惑
+    const ok = await act({ action: "addPaper", paper: { ...addForm, source: "manual", title: addForm.title.trim() }, group: addGroup || null });
     if (ok) {
       setAddForm({ title: "", authors: "", venue: "", year: "", status: "未读" });
       setAddGroup("");
@@ -109,7 +110,9 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
       fd.append("file", f);
       const res = await fetch("/api/paper", { method: "POST", body: fd });
       const d = await res.json();
-      if (res.ok) {
+      if (res.ok && d?.duplicate) {
+        setImportTip(`✓ 这份 PDF 已导入过（《${d?.title ?? f.name}》），未重复添加`);
+      } else if (res.ok) {
         setImportTip(`✓ 已导入《${d?.meta?.title ?? f.name}》，中文翻译正在后台生成，稍后可在「精读讲解」阅读`);
         const r = await fetch("/api/library", { cache: "no-store" });
         const data = await r.json();
@@ -144,13 +147,20 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
     const has = !!(isReadable(p) || p.venue || p.year);
     const isCur = p.current;
     const slug = readSlug(p);
+    const readable = Boolean(slug); // false = 仅元数据记录（无 PDF 正文）
     return (
       <article className={`lib-paper${isCur ? " is-current" : ""}`}>
         <div className="lib-paper-top">
-          <button className="lib-paper-title" title={`打开《${p.title}》全屏阅读`}
-            onClick={() => slug && router.push(`/read/${slug}`)}>{p.title}</button>
+          {readable ? (
+            <button className="lib-paper-title" title={`打开《${p.title}》全屏阅读`}
+              onClick={() => slug && router.push(`/read/${slug}`)}>{p.title}</button>
+          ) : (
+            <span className="lib-paper-title" style={{ cursor: "default" }}
+              title="仅元数据记录：没有导入 PDF 正文，不可打开阅读">{p.title}</span>
+          )}
           <div className="lib-paper-tags">
             <FuzzyStatus status={p.status} color={p.statusColor} />
+            {!readable && <span className="chip" title="手动添加，只有条目信息，没有 PDF 正文">仅元数据</span>}
             {isCur && <span className="chip chip--active">当前在读</span>}
           </div>
         </div>
@@ -162,7 +172,7 @@ export default function PaperLibrary({ onNavigate }: { onNavigate?: (p: string) 
         )}
         {has && (
           <div className="lib-paper-foot">
-            <button className="btn btn--ghost btn--quiet" onClick={() => slug && router.push(`/read/${slug}`)}>全屏阅读</button>
+            {readable && <button className="btn btn--ghost btn--quiet" onClick={() => slug && router.push(`/read/${slug}`)}>全屏阅读</button>}
             <button className="btn btn--ghost btn--quiet" onClick={() => onNavigate?.("repro")}>实验复现</button>
           </div>
         )}

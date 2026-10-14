@@ -55,8 +55,8 @@ if (!app.requestSingleInstanceLock()) {
 // <project>/electron/main.js → <project>（打包后即 resources/app）
 const projectDir = path.dirname(__dirname);
 const userDataDir = app.getPath("userData");
-// 打包后数据必须落在用户可写目录；dev 保持项目内 data/（现状不变）
-const dataDir = isPackaged ? path.join(userDataDir, "data") : path.join(projectDir, "data");
+// 开发版与打包版共用用户可写目录，避免 `npm run dev` 和桌面版各自维护一套数据。
+const dataDir = path.join(userDataDir, "data");
 const logFile = path.join(userDataDir, "server.log");
 const runtimeConfigPath = path.join(__dirname, "runtime-config.json");
 
@@ -157,9 +157,9 @@ function fatal(message, detail) {
 
 async function seedDataDir() {
   await fsp.mkdir(dataDir, { recursive: true });
-  // 只有首次（用户数据目录还没有 data/library.json）才拷贝种子，避免覆盖用户已有改动
+  // 只有首次（用户数据目录还没有项目库/论文库）才拷贝种子，避免覆盖用户已有改动
   try {
-    await fsp.access(path.join(dataDir, "library.json"));
+    await fsp.access(path.join(dataDir, "projects.json"));
     return;
   } catch { /* 首次运行 */ }
   const seed = path.join(projectDir, "data");
@@ -349,7 +349,7 @@ app.whenReady().then(async () => {
     // 原生"选择目录"对话框（renderer 经 preload 桥调用）：返回服务器可读的绝对路径
     ipcMain.handle("pick-directory", async () => {
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
-      const r = await dialog.showOpenDialog(win ?? undefined as any, {
+      const r = await dialog.showOpenDialog(win ?? undefined, {
         title: "选择代码仓库文件夹（复现绑定）",
         properties: ["openDirectory", "createDirectory"],
       });
@@ -366,12 +366,9 @@ app.whenReady().then(async () => {
       return;
     }
 
-    if (isPackaged) {
-      await seedDataDir();
-      await seedCodeRoots();
-    } else {
-      log(`dev 模式：数据目录保持项目内 ${dataDir}`);
-    }
+    await seedDataDir();
+    await seedCodeRoots();
+    log(`数据目录：${dataDir}`);
 
     const port = await freePort();
     serverProc = await startNextServer(port);

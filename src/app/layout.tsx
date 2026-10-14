@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import ObservationIndicator from "@/components/observation-indicator";
 
 export const metadata: Metadata = {
   title: "Research Atelier · 我的研究空间",
@@ -13,7 +14,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="zh-CN" className="h-full antialiased">
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full">{children}<ObservationIndicator/></body>
     </html>
   );
 }

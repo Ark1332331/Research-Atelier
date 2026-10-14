@@ -16,6 +16,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { DATA_DIR, readStore, writeStore } from "@/lib/store";
 import { translateDocument } from "@/lib/translate";
+import { saveTranslationResult } from "@/lib/translate-store";
+import { ensureProjectForPaper } from "@/lib/project";
 import { extractTermsInBackground } from "@/lib/terms-extract";
 
 const execFileAsync = promisify(execFile);
@@ -168,11 +170,11 @@ export async function downloadPaper(opts: {
   if (pages > 0) {
     void (async () => {
       try {
-        const translation = await translateDocument(pageTexts);
-        if (translation && !translation.startsWith("（未配置") && !translation.includes("（翻译失败")) {
-          await fs.writeFile(path.join(dir, "translation.md"), translation, "utf-8");
-        }
-      } catch { /* 后台翻译失败不影响导入；精读页会提示未生成 */ }
+        // 失败写 translation.error.txt（阅读页可见、可重试），不再静默吞掉
+        await saveTranslationResult(dir, await translateDocument(pageTexts));
+      } catch (e) {
+        await saveTranslationResult(dir, `（翻译失败：${e instanceof Error ? e.message : String(e)}）`).catch(() => {});
+      }
     })();
   }
 
@@ -181,6 +183,7 @@ export async function downloadPaper(opts: {
   };
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
   await addToLibrary(meta);
+  await ensureProjectForPaper({ slug: meta.slug, title: meta.title });
   // 术语抽查：导入后后台抽取术语记入术语卡（数量不限，需要的才抽；已存在的跳过）
   extractTermsInBackground(pageTexts, { slug, title: meta.title });
 

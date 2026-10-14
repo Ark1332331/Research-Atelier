@@ -6,7 +6,7 @@
  *     { action:"createGroup", name }                 → 新建分组
  *     { action:"renameGroup", id, name }             → 重命名分组
  *     { action:"deleteGroup", id }                   → 删除分组（其下论文移入 null = 未分组）
- *     { action:"addPaper", paper:{title,...}, group }→ 新增论文（手动加入 / 从导入列表选中）
+ *     { action:"addPaper", paper:{title,...}, group }→ 新增论文（手动加入 source:"manual" 仅元数据 / 从导入列表选中 source:"imported"）
  *     { action:"updatePaper", id, patch }            → 改任意字段（title/status/tags/group/…）
  *     { action:"setCurrent", id|null }               → 设为「当前在读」（同一时刻只有一篇）
  *     { action:"deletePaper", id }                   → 删除论文（若为导入论文，同时删除其 data/papers/<slug>，阅读页也不再显示）
@@ -35,7 +35,7 @@ export interface LibraryPaper {
   tags?: string[];
   group: string | null;
   current?: boolean;
-  source?: "builtin" | "imported";
+  source?: "builtin" | "imported" | "manual";
   slug?: string | null;
   firstEncounter?: string;
   lastEngaged?: string;

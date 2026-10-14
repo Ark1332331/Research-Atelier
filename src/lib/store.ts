@@ -8,9 +8,15 @@
  * 依据：node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md
  */
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-export const DATA_DIR = process.env.RA_DATA_DIR ?? path.join(process.cwd(), "data");
+// 本地 dev 与 Electron 共用用户数据目录；否则 `npm run dev` 会退回仓库内
+// 的种子 data/，看起来就像项目、分组和复现记录全部丢失。部署环境仍使用
+// 随应用提供的 data/（或 Vercel KV），也可用 RA_DATA_DIR 显式覆盖。
+const localUserData = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "Research Atelier", "data");
+const deployed = Boolean(process.env.VERCEL);
+export const DATA_DIR = process.env.RA_DATA_DIR ?? (deployed ? path.join(process.cwd(), "data") : localUserData);
 const KV_URL = process.env.VERCEL_KV_REST_API_URL;
 const KV_TOKEN = process.env.VERCEL_KV_REST_API_TOKEN;
 const useKV = Boolean(KV_URL && KV_TOKEN);

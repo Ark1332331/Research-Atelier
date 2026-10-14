@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { TOOLS } from "@/lib/data";
 import Markdown from "@/components/markdown";
+import LearningResponse, { type ResponseLearning } from "./learning-response";
 
 export interface CodeSessionEnd {
   explained: string[];
@@ -11,6 +12,8 @@ export interface CodeSessionEnd {
 }
 
 export interface ChatPanelProps {
+  resourceId?: string;
+  projectId?: string;
   toolKey: string;          // TOOLS 中的键（p0/p3/env/code/handoff/checklist）
   hint: string;             // 开场提示（第一条消息发什么）
   saveLabel?: string;       // 保存按钮文案（如"保存为筛选笔记"）
@@ -30,6 +33,7 @@ interface Msg {
   role: "user" | "assistant";
   content: string;
   time: string;
+  learning?: ResponseLearning;
 }
 
 interface SessionSummary { id: string; title: string; createdAt: string; updatedAt: string; count: number }
@@ -57,7 +61,7 @@ function fmtTime(iso: string): string {
   return `${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved, contextKind, systemExtra, attachedCode, profile, onCodeSessionEnd, seed, historyKey, enableToolcall }: ChatPanelProps) {
+export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLabel, saveKind, onSaved, contextKind, systemExtra, attachedCode, profile, onCodeSessionEnd, seed, historyKey, enableToolcall }: ChatPanelProps) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -131,24 +135,19 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
         system += `\n\n【项目代码 · ${attachedCode.name}】\n这是用户从项目复现代码库选定的文件。请按代码导读协议讲解：真实调用链 → 关键函数数据合同 → 执行前后变化；\n只在涉及本文件时引用它，并使用真实函数/变量名，不要泛泛总结。\n\`\`\`python\n${attachedCode.content}\n\`\`\``;
         notes.push(`项目代码（${attachedCode.name}）`);
       }
-      if (toolKey === "code" && profile) {
-        // 注入代码能力画像：让 AI 按用户当前水平讲，且已掌握的不再重讲
-        const mastered = profile.mastered?.length ? profile.mastered.join("、") : "（暂无，会按您的现有水平讲）";
-        system += `\n\n【用户代码能力画像 · 请据此讲解】\n背景：${profile.background ?? ""}\n当前会卡的写法：${(profile.gaps ?? []).join("；") || "（尚无记录，请主动标出会卡的语法）"}\n用户更偏好的讲解：${(profile.preferences ?? []).join("；")}\n已经掌握的（不要重讲，只在用到时点到）：${mastered}\n\n讲解要求：① 先做知识门槛扫描，标出上面列出的会卡写法（以及本文件里新出现的会卡写法）；② 给真实调用链 + 关键函数数据合同（输入/输出/形状/返回去向）；③ 分层标注：必须懂的深入、可黑盒的带过；④ 不要用白话故事代替数据合同。`;
-        notes.push("代码能力画像");
-      }
+      if(toolKey==="code"&&profile?.background){system+=`\n\n【历史背景自述，仅作待核对事实；长期讲解规则以服务端已确认记忆为准】\n${profile.background}`;notes.push("历史背景自述");}
       if (notes.length) setCtxNote(`已附带：${notes.join("、")}（自动）`);
       system += GUIDE_RULES;
 
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "system", content: system }, ...next], ...(enableToolcall ? { enableToolcall: true } : {}) }),
+        body: JSON.stringify({ scene: toolKey === "code" ? "code" : toolKey === "p3" ? "paper" : ["env","handoff","checklist"].includes(toolKey)?"repro":"general", resourceId, projectId, messages: [{ role: "system", content: system }, ...next], ...(enableToolcall ? { enableToolcall: true } : {}) }),
       });
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content;
       const errText = data?.error ? `错误：${data.error}` + (data?.hint ? `\n\n${data.hint}` : "") : null;
-      const finalMsgs: Msg[] = [...next, { role: "assistant", content: content ?? (errText ?? "无响应"), time: nowTime() }];
+      const finalMsgs: Msg[] = [...next, { role: "assistant", content: content ?? (errText ?? "无响应"), time: nowTime(), learning: data.learning }];
       setMsgs(finalMsgs);
       void persistSession(finalMsgs); // 自动写入会话历史
       // 代码导读：读完后写回一次画像（会的不重讲、卡点提前解释）
@@ -159,7 +158,7 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
         onCodeSessionEnd({
           explained,
           blocked: ((profile?.gaps ?? []) as string[]).slice(0, 3),
-          passed: /复述|通过/.test(content),
+          passed: false, // 模型提到“通过”不能作为用户掌握证据
         });
       }
     } catch (e) {
@@ -367,6 +366,7 @@ export default function ChatPanel({ toolKey, hint, saveLabel, saveKind, onSaved,
             ) : (
               <div className="msg-body-ai">
                 <Markdown>{m.content}</Markdown>
+                {m.learning && <LearningResponse learning={m.learning} />}
               </div>
             )}
           </div>

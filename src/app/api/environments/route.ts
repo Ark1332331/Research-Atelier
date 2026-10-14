@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 环境卡（conda 环境管理）
  * 本地：动态采样 conda（conda env list / conda list -n <env>），拿到真实环境 + 依赖版本；
@@ -205,7 +206,7 @@ async function envsPayload(url: URL, meta: EnvStore) {
   return { envs: list, baseline: baseline ?? null };
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { name?: string; purpose?: string; stage?: string };
   try {
     body = await request.json();
@@ -227,3 +228,5 @@ export async function POST(request: Request) {
   await writeMeta(meta);
   return Response.json({ ok: true, envs: meta.envs });
 }
+
+export const POST=withToolObservation({source:"实验环境",scene:"repro",conversation:false},observedPOST);

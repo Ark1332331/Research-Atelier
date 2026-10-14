@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 实验复盘：从对话/日志提炼坑点并归档到复现记录。
  * POST { slug, link?, text? }
@@ -116,7 +117,7 @@ async function extractPitfalls(text: string): Promise<PitOff[]> {
   return [];
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { slug?: string; link?: string; text?: string };
   try {
     body = await request.json();
@@ -147,3 +148,5 @@ export async function POST(request: Request) {
   await upsertReproduction(r);
   return Response.json({ pitfalls: added, count: added.length });
 }
+
+export const POST=withToolObservation({source:"复现对话审查",scene:"repro",conversation:false},observedPOST);

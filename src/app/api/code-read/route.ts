@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 代码读取接口：代码导读的取件层（Step 3 起走共享层 code-reader.ts）
  * GET  /api/code-read?root=<配置里的根别名>                  → { available, roots, currentRoot, files:[{name,path,lines}] }
@@ -54,7 +55,7 @@ function pythonChain(absFullPath: string): Record<string, unknown> {
   }
 }
 
-export async function GET(request: Request) {
+async function observedGET(request: Request) {
   const url = new URL(request.url);
   const rootId = url.searchParams.get("root") ?? "project";
   const rel = url.searchParams.get("file");
@@ -112,7 +113,7 @@ export async function GET(request: Request) {
 
 /** POST /api/code-read { action: "registerRoot", root, name? } → 把本地仓库登记进 code-roots.json
  *  （供材料绑定阶段把自动发现的仓库持久化；幂等：同 root 不重复登记）。 */
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { action?: string; root?: string; name?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
   if (body.action !== "registerRoot") return Response.json({ error: `未知 action：${body.action}` }, { status: 400 });
@@ -131,3 +132,7 @@ export async function POST(request: Request) {
   }
   return Response.json({ ok: true, roots });
 }
+
+export const POST=withToolObservation({source:"代码读取",scene:"code",conversation:false},observedPOST);
+
+export const GET=withToolObservation({source:"代码读取",scene:"code",conversation:false},observedGET);

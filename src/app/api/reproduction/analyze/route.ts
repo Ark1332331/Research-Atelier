@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * Analyze orchestrator 接口（阶段②，P0 Analysis Binding Gate）
  * POST /api/reproduction/analyze { slug }
@@ -19,7 +20,7 @@ async function readRoots(): Promise<RootConfig[]> {
   return [];
 }
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { slug?: string };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 
@@ -54,3 +55,5 @@ export async function POST(request: Request) {
   await upsertReproduction(rec);
   return Response.json({ root: cfg.id, ...result }, { status: 500 });
 }
+
+export const POST=withToolObservation({source:"论文与代码核对",scene:"repro",conversation:false},observedPOST);

@@ -5,7 +5,8 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { DATA_DIR, readStore, writeStore } from "@/lib/store";
+import { DATA_DIR } from "@/lib/store";
+import { mergeExtractedTerms } from "@/lib/terms-store";
 
 const ROLE_OPTIONS = [
   "感知/传感器", "状态估计/对齐", "场景表示/建图", "补全/学习机制",
@@ -18,9 +19,9 @@ const EXTRACT_SYSTEM =
   "要求：\n" +
   "1. 抽" + "这篇论文真正需要的、阅读中会卡住的术语；数量不限，论文需要多少就抽多少，但只抽真正相关、会在文中反复出现或属于本领域核心的，不要抽无关的普通词。\n" +
   "2. 每个术语输出一个 JSON 对象（严格，不要输出 JSON 以外的任何文字）：{\"name\":\"英文术语名\",\"role\":\"从这些里选一个：感知/传感器, 状态估计/对齐, 场景表示/建图, 补全/学习机制, 控制/决策, 训练机制, 评估指标, 工程/部署, 领域背景\",\"reuse\":\"通用或论文特有或论文内特殊含义\",\"note\":\"当前先理解为（一句话中文）\"}\n" +
-  "3. 把全部术语作为 JSON 数组输出，例如：[{\"name\":\"point cloud\",\"role\":\"感知/传感器\",\"reuse\":\"通用\",\"note\":\"环境的离散三维点集\"}]。不要用 markdown 代码块包裹，只要纯 JSON 数组。";
+  "3. 把全部术语作为 JSON 数组输出，例如：[{\"name\":\"point cloud\",\"role\":\"感知/传感器\",\"reuse\":\"通用\",\"note\":\"环境的离散三维点集\"}]。不要用 markdown 代码块包裹，只要纯 JSON 数组。每个对象再附 quote：原文中连续的一小段包含该术语的句子，必须逐字引用；note 说明本文中的含义。";
 
-interface ExtractedTerm { name: string; role?: string; reuse?: string; note?: string }
+interface ExtractedTerm { name: string; role?: string; reuse?: string; note?: string; quote?: string }
 
 /** 从文本调 DeepSeek 抽取术语（带重试），返回术语数组 */
 async function extractTerms(text: string): Promise<ExtractedTerm[]> {
@@ -63,44 +64,8 @@ function parseJsonArray(s: string): unknown {
 }
 
 /** 把抽取到的术语 upsert 进术语卡 glossary.json。已存在的同名术语：不重复建卡，但追加「出现在这篇论文」；新术语则新建并记录来源论文。 */
-async function saveTermsToGlossary(terms: ExtractedTerm[], paper: { slug: string; title: string }): Promise<void> {
-  const raw = await readStore("glossary.json");
-  let arr: Record<string, unknown>[] = [];
-  try {
-    const d = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(d)) arr = d;
-  } catch { /* 忽略坏数据 */ }
-  const now = new Date().toISOString();
-  let changed = false;
-  for (const t of terms) {
-    const name = (t.name ?? "").trim();
-    if (!name) continue;
-    const found = arr.find((x) => String((x as { name?: string })?.name ?? "") === name);
-    if (found) {
-      // 已存在：若这篇论文还没记录，追加进去（同一术语跨多篇论文，便于联系起来）
-      const papers = Array.isArray((found as { papers?: unknown }).papers) ? (found as { papers: { slug: string; title: string }[] }).papers : [];
-      if (!papers.some((p) => p.slug === paper.slug)) {
-        papers.push(paper);
-        (found as { papers: unknown }).papers = papers;
-        changed = true;
-      }
-      continue;
-    }
-    arr.push({
-      id: `t${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
-      name,
-      role: ROLE_OPTIONS.includes(t.role ?? "") ? t.role : "领域背景",
-      status: "未接触",
-      reuse: REUSE_OPTIONS.includes(t.reuse ?? "") ? t.reuse : "通用",
-      note: t.note ?? "",
-      source: paper.title,
-      links: "",
-      papers: [paper],
-      updatedAt: now,
-    });
-    changed = true;
-  }
-  if (changed) await writeStore("glossary.json", JSON.stringify(arr, null, 2));
+async function saveTermsToGlossary(terms: ExtractedTerm[], paper: { slug: string; title: string }, pages: string[]): Promise<void> {
+  await mergeExtractedTerms(terms.map(t => ({ ...t, role: ROLE_OPTIONS.includes(t.role ?? "") ? t.role : "领域背景", reuse: REUSE_OPTIONS.includes(t.reuse ?? "") ? t.reuse : "通用" })), paper, pages);
 }
 
 /** 导入论文后调用：后台从页文本抽术语并记入术语卡（失败不影响导入）。paper 传 {slug,title}。 */
@@ -109,7 +74,7 @@ export function extractTermsInBackground(pages: string[], paper: { slug: string;
   void (async () => {
     try {
       const terms = await extractTerms(pages.join("\n\n"));
-      if (terms.length) await saveTermsToGlossary(terms, paper);
+      if (terms.length) await saveTermsToGlossary(terms, paper, pages);
     } catch { /* 术语抽取失败不影响导入 */ }
   })();
 }

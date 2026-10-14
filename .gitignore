@@ -47,3 +47,5 @@ next-env.d.ts
 /release/
 electron/runtime-config.json
 .build-cache/
+
+!.env.local.example

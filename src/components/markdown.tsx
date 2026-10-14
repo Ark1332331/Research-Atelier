@@ -9,9 +9,16 @@ import remarkGfm from "remark-gfm";
  * 依据：node_modules/next/dist/docs 客户端组件约定（'use client' 边界）。
  */
 export default function Markdown({ children }: { children: string }) {
+  const normalized = unwrapMarkdownFence(children);
   return (
     <div className="md-body">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalized}</ReactMarkdown>
     </div>
   );
+}
+
+function unwrapMarkdownFence(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  return match?.[1] ?? value;
 }

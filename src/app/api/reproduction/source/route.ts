@@ -1,3 +1,4 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 网络调研论文/源码：复现工作台在添加论文/找源码地址时调用。
  * POST { query }              → { hits }（searchPapers 检索，含 landing/publisher/arxiv/oaPdf，供选来源）
@@ -5,7 +6,7 @@
  */
 import { searchPapers } from "@/lib/paper-tools";
 
-export async function POST(request: Request) {
+async function observedPOST(request: Request) {
   let body: { query?: string; pick?: number };
   try {
     body = await request.json();
@@ -25,3 +26,5 @@ export async function POST(request: Request) {
     return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 502 });
   }
 }
+
+export const POST=withToolObservation({source:"绑定复现来源",scene:"repro",conversation:false},observedPOST);

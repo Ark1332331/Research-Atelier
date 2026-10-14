@@ -1,21 +1,32 @@
+import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 论文导入与翻译接口（"丢 PDF 给工具"的核心）
  * POST /api/paper  multipart: file=<PDF> → 保存 data/papers/<slug>/original.pdf，
  *   提取每页文本（pdfjs-dist），把全文按段落组织翻译成一篇 Markdown（deepseek-chat），
- *   存档 page_XX.txt（每页原文）/ translation.md（整篇中文翻译）/ meta.json
+ *   存档 page_XX.txt（每页原文）/ translation.md（整篇中文翻译）/ meta.json（含内容 sha256）
  *   （扫描版无文本层会 422；视觉翻译留作后续）
- * GET  /api/paper?slug=<slug> → { meta, pages: [{n, original, zh}], translation }
+ *   去重：同一 PDF（内容 sha256 相同）重复上传不重复入库，返回 { duplicate: true }。
+ * POST /api/paper  JSON:
+ *   { action:"delete", slug }   → 删 data/papers/<slug> + 清理论文库记录
+ *   { action:"translate", slug }→ 重新生成整篇中文翻译（后台进行；失败写 translation.error.txt 可见）
+ * GET  /api/paper?slug=<slug> → { meta, pages: [{n, original, zh}], translation, translationError }
  * GET  /api/paper            → 已导入论文列表
  * 存储：本地 data/papers/；生产（Vercel）由 store 适配器同层扩展（云服务器直接用文件）
  * 依据：node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { DATA_DIR, readStore, writeStore } from "@/lib/store";
 import { translateDocument } from "@/lib/translate";
+import {
+  saveTranslationResult, readTranslationError,
+  translationRunning, markTranslationRunning, clearTranslationRunning,
+} from "@/lib/translate-store";
 import { extractTermsInBackground } from "@/lib/terms-extract";
+import { attachPaperToProject, ensureProjectForPaper, getProject } from "@/lib/project";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,6 +54,31 @@ interface PaperMeta {
   title: string;
   pages: number;
   importedAt: string;
+  sha256?: string;
+}
+
+/** 查找内容完全相同的已导入论文。
+ * 新论文直接使用 meta.json 的 sha256；旧论文第一次参与去重时才计算 original.pdf
+ * 的哈希并回填，避免升级后把历史论文再次导入一份。 */
+async function findDuplicateByHash(hash: string): Promise<PaperMeta | null> {
+  try {
+    for (const d of await fs.readdir(PAPERS_DIR)) {
+      try {
+        const metaPath = path.join(PAPERS_DIR, d, "meta.json");
+        const meta: PaperMeta = JSON.parse(await fs.readFile(metaPath, "utf-8"));
+        if (meta.sha256 && meta.sha256 === hash) return meta;
+        if (!meta.sha256) {
+          const existingHash = crypto.createHash("sha256")
+            .update(await fs.readFile(path.join(PAPERS_DIR, d, "original.pdf")))
+            .digest("hex");
+          meta.sha256 = existingHash;
+          await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf-8");
+          if (existingHash === hash) return meta;
+        }
+      } catch { /* 跳过不完整目录 */ }
+    }
+  } catch { /* papers 目录还不存在 */ }
+  return null;
 }
 
 function slugify(name: string): string {
@@ -94,9 +130,19 @@ async function extractText(pdfFullPath: string): Promise<string[]> {
   return Array.isArray(parsed.texts) ? parsed.texts : [];
 }
 
+/** 后台生成整篇中文翻译：成功写 translation.md，失败写 translation.error.txt（阅读页可见、可重试） */
+async function translateInBackground(dir: string, pages: string[]): Promise<void> {
+  try {
+    await saveTranslationResult(dir, await translateDocument(pages));
+  } catch (e) {
+    await saveTranslationResult(dir, `（翻译失败：${e instanceof Error ? e.message : String(e)}）`).catch(() => {});
+  } finally {
+    await clearTranslationRunning(dir);
+  }
+}
 
-export async function POST(request: Request) {
-  // 支持 JSON { action:"delete", slug }：从精读页删除一篇导入论文（删 data/papers/<slug> + 清理论文库记录）
+async function observedPOST(request: Request) {
+  // JSON 动作：delete（从精读页删除）/ translate（重新生成中文翻译）
   const contentType = request.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
     let body: { action?: string; slug?: string };
@@ -105,6 +151,27 @@ export async function POST(request: Request) {
       await fs.rm(path.join(PAPERS_DIR, body.slug), { recursive: true, force: true }).catch(() => {});
       await removeFromLibraryBySlug(body.slug);
       return Response.json({ ok: true });
+    }
+    if (body?.action === "translate" && body.slug) {
+      const dir = path.join(PAPERS_DIR, body.slug);
+      try {
+        const meta: PaperMeta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf-8"));
+        const pages: string[] = [];
+        for (let i = 1; i <= meta.pages; i++) {
+          pages.push(await fs.readFile(path.join(dir, `page_${String(i).padStart(2, "0")}.txt`), "utf-8").catch(() => ""));
+        }
+        if (pages.length === 0 || pages.every((p) => !p.trim())) {
+          return Response.json({ error: "页面原文缺失，无法翻译" }, { status: 422 });
+        }
+        const alreadyRunning = await translationRunning(dir);
+        if (!alreadyRunning) {
+          await markTranslationRunning(dir);
+          void translateInBackground(dir, pages);
+        }
+        return Response.json({ ok: true, running: alreadyRunning });
+      } catch {
+        return Response.json({ error: "论文不存在" }, { status: 404 });
+      }
     }
     return Response.json({ error: "未知 action" }, { status: 400 });
   }
@@ -119,12 +186,29 @@ export async function POST(request: Request) {
   if (!(file instanceof File) || !file.name.toLowerCase().endsWith(".pdf")) {
     return Response.json({ error: "请上传 PDF 文件" }, { status: 400 });
   }
+  const projectId = String(form.get("projectId") ?? "").trim();
+  if (projectId && !(await getProject(projectId))) {
+    return Response.json({ error: "目标项目不存在，请返回项目列表后重试" }, { status: 404 });
+  }
+
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const sha256 = crypto.createHash("sha256").update(buf).digest("hex");
+
+  // 内容级去重：同一份 PDF 之前导入过 → 不再重复入库（旧记录含时间戳 slug，按文件名判断不住）
+  const dup = await findDuplicateByHash(sha256);
+  if (dup) {
+    try {
+      const project = projectId ? await attachPaperToProject(projectId, { slug: dup.slug, title: dup.title }) : await ensureProjectForPaper({ slug: dup.slug, title: dup.title });
+      return Response.json({ ok: true, duplicate: true, slug: dup.slug, title: dup.title, project });
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : "无法关联论文项目" }, { status: 409 });
+    }
+  }
 
   const slug = slugify(file.name);
   const dir = path.join(PAPERS_DIR, slug);
   await fs.mkdir(dir, { recursive: true });
 
-  const buf = new Uint8Array(await file.arrayBuffer());
   const pdfPath = path.join(dir, "original.pdf");
   await fs.writeFile(pdfPath, buf);
 
@@ -154,29 +238,29 @@ export async function POST(request: Request) {
     title: file.name.replace(/\.pdf$/i, ""),
     pages: pages.length,
     importedAt: new Date().toISOString(),
+    sha256,
   };
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
 
   // 写进论文库 library.json，让「论文库」视图能看到这篇（否则只存在于 data/papers，精读页能看、库里看不到）
   await addToLibraryBySlug(meta);
+  let project;
+  try {
+    project = projectId ? await attachPaperToProject(projectId, { slug: meta.slug, title: meta.title }) : await ensureProjectForPaper({ slug: meta.slug, title: meta.title });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "无法关联论文项目" }, { status: 409 });
+  }
 
   // 整篇中文翻译后台生成（分钟级，不等它；导入立即完成，稍后精读页即可见 translation.md）
-  void (async () => {
-    try {
-      const translation = await translateDocument(pages);
-      if (translation && !translation.startsWith("（未配置") && !translation.includes("（翻译失败")) {
-        await fs.writeFile(path.join(dir, "translation.md"), translation, "utf-8");
-      }
-    } catch { /* 忽略 */ }
-  })();
+  void translateInBackground(dir, pages);
 
   // 术语抽查：导入后后台从全文抽核心术语，记入术语卡（数量不限，需要的才抽；已存在的跳过）
   extractTermsInBackground(pages, { slug, title: meta.title });
 
-  return Response.json({ ok: true, meta });
+  return Response.json({ ok: true, meta, project });
 }
 
-export async function GET(request: Request) {
+async function observedGET(request: Request) {
   const url = new URL(request.url);
   const slug = url.searchParams.get("slug");
 
@@ -206,10 +290,15 @@ export async function GET(request: Request) {
       const zh = await fs.readFile(path.join(dir, `page_${n}.zh.md`), "utf-8").catch(() => "");
       pages.push({ n: i, original, zh });
     }
-    // 整篇中文翻译（上传时生成；旧论文可能没有）
+    // 整篇中文翻译 + 失败原因（旧论文可能都没有）
     const translation = await fs.readFile(path.join(dir, "translation.md"), "utf-8").catch(() => "");
-    return Response.json({ meta, pages, translation });
+    const translationError = await readTranslationError(dir);
+    return Response.json({ meta, pages, translation, translationError });
   } catch {
     return Response.json({ error: "论文不存在" }, { status: 404 });
   }
 }
+
+export const POST=withToolObservation({source:"论文阅读与导入",scene:"paper",conversation:false},observedPOST);
+
+export const GET=withToolObservation({source:"论文阅读与导入",scene:"paper",conversation:false},observedGET);
