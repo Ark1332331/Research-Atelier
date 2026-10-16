@@ -7,14 +7,33 @@
  * - KV 首次为空时自动从 data/ 种子文件播种，保证部署后数据不丢
  * 依据：node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md
  */
-import { promises as fs } from "node:fs";
+import { promises as fs, cpSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// 本地 dev 与 Electron 共用用户数据目录；否则 `npm run dev` 会退回仓库内
-// 的种子 data/，看起来就像项目、分组和复现记录全部丢失。部署环境仍使用
-// 随应用提供的 data/（或 Vercel KV），也可用 RA_DATA_DIR 显式覆盖。
-const localUserData = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "Research Atelier", "data");
+/**
+ * 本地 dev 与 Electron 共用用户数据目录，避免 `npm run dev` 和桌面版各自维护一套数据。
+ * - Windows：%APPDATA%\Research Atelier\data（与 Electron app.getPath('userData') 一致）
+ * - macOS/Linux：~/.config/Research Atelier/data（XDG，不变）
+ * 旧版 Windows 曾把 dev 数据写在 ~/.config 下——检测到旧目录且有数据时自动迁移一次。
+ * 部署环境仍使用随应用提供的 data/（或 Vercel KV），也可用 RA_DATA_DIR 显式覆盖。
+ */
+function resolveLocalUserData(): string {
+  const legacy = path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "Research Atelier", "data");
+  if (process.platform === "win32") {
+    const appData = process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
+    const dir = path.join(appData, "Research Atelier", "data");
+    // 一次性迁移：旧 .config 目录里有数据、新目录还没初始化 → 整目录拷过去
+    try {
+      if (existsSync(path.join(legacy, "projects.json")) && !existsSync(path.join(dir, "projects.json"))) {
+        cpSync(legacy, dir, { recursive: true });
+      }
+    } catch { /* 迁移失败不阻塞：继续用新目录（可能为空库） */ }
+    return dir;
+  }
+  return legacy;
+}
+const localUserData = resolveLocalUserData();
 const deployed = Boolean(process.env.VERCEL);
 export const DATA_DIR = process.env.RA_DATA_DIR ?? (deployed ? path.join(process.cwd(), "data") : localUserData);
 const KV_URL = process.env.VERCEL_KV_REST_API_URL;

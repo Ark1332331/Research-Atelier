@@ -13,9 +13,10 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { getReproduction, upsertReproduction, idFor } from "@/lib/reproduction";
+import { resolveSqlite } from "@/lib/platform";
 
 const execFileAsync = promisify(execFile);
-const SQLITE = process.env.RA_SQLITE_BIN ?? path.join(os.homedir(), "miniconda3", "bin", "sqlite3");
+const SQLITE = resolveSqlite();
 const CODEX_DB = path.join(os.homedir(), ".codex", "state_5.sqlite");
 
 const EXTRACT_SYSTEM =
@@ -67,7 +68,7 @@ async function sourceText(link?: string, text?: string): Promise<string> {
   if (text && text.trim()) return text.slice(0, 30000);
   if (link) {
     const m = link.match(/threads\/([\w-]+)/);
-    if (m) {
+    if (m && SQLITE) {
       try {
         const { stdout } = await execFileAsync(SQLITE, [CODEX_DB, `SELECT rollout_path FROM threads WHERE id='${m[1]}'`]);
         const fp = stdout.trim();

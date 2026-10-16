@@ -145,7 +145,7 @@ export default function ReproStageMaterials({
           <span className="mono-label" style={{ opacity: 0.6 }}>（弹系统对话框，点选目标代码库文件夹）</span>
         </div>
         <div className="mono-label" style={{ opacity: 0.7 }}>或手动输入本地目录路径（任意位置 / 非 git 均可）：</div>
-        <input className="field field--mini" placeholder="/home/ark/projects/IsaacLab（绝对路径）" value={manualRepo} onChange={(e) => setManualRepo(e.target.value)} />
+        <input className="field field--mini" placeholder="D:\projects\IsaacLab 或 /home/you/projects/IsaacLab（绝对路径）" value={manualRepo} onChange={(e) => setManualRepo(e.target.value)} />
         <button className="btn btn--primary" disabled={busy || !paperPick || (!repoPick && !manualRepo.trim())} onClick={() => void bind()}>
           {busy ? "绑定中…" : ready ? "更新绑定" : "绑定论文与仓库"}
         </button>

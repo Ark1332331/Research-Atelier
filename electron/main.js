@@ -325,6 +325,27 @@ function createWindow(url) {
 
 /* ---------- 生命周期 ---------- */
 
+/**
+ * 跨平台清理 Next server 子进程。
+ * Windows 上 Node 的 kill() 只能终止直接子进程且不可靠，用 taskkill /T /F 杀整棵进程树；
+ * POSIX 先 SIGTERM，3 秒后仍存活再 SIGKILL。
+ */
+function killServer() {
+  if (!serverProc || serverProc.exitCode !== null) return;
+  const pid = serverProc.pid;
+  try { serverProc.kill(); } catch { /* 已退出 */ }
+  if (process.platform === "win32") {
+    if (pid) {
+      try { spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }); } catch { /* 兜底失败 */ }
+    }
+  } else {
+    try { serverProc.kill("SIGTERM"); } catch { /* 已退出 */ }
+    setTimeout(() => {
+      try { if (serverProc && serverProc.exitCode === null) serverProc.kill("SIGKILL"); } catch { /* 已退出 */ }
+    }, 3000).unref();
+  }
+}
+
 app.on("second-instance", () => {
   const w = BrowserWindow.getAllWindows()[0];
   if (w) {
@@ -335,8 +356,17 @@ app.on("second-instance", () => {
 
 app.on("before-quit", () => {
   quitting = true;
-  if (serverProc && serverProc.exitCode === null) {
-    try { serverProc.kill("SIGTERM"); } catch { /* 已退出 */ }
+  killServer();
+});
+
+app.on("will-quit", () => {
+  killServer();
+});
+
+// 进程被外部终止（任务管理器杀主进程、系统关机）时的最后兜底
+process.on("exit", () => {
+  if (serverProc && serverProc.exitCode === null && process.platform === "win32" && serverProc.pid) {
+    try { spawn("taskkill", ["/pid", String(serverProc.pid), "/T", "/F"], { stdio: "ignore" }); } catch { /* */ }
   }
 });
 

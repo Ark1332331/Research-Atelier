@@ -9,12 +9,13 @@ import { withToolObservation } from "@/lib/learning/tool-observation";
  * GET  /api/environments?name=<env> → { env, packages: [{name,version,build}] }
  * POST { name, purpose?, stage? }   → 存用途/阶段；返回 { ok, envs }
  */
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readStore, writeStore } from "@/lib/store";
+import { resolveConda, systemInfo } from "@/lib/platform";
 
 const execFileAsync = promisify(execFile);
-const CONDA = process.env.RA_CONDA_BIN ?? "/home/ark/miniconda3/bin/conda";
+const CONDA = resolveConda();
 const FILE = "environments.json";
 
 /** 简易内存缓存：conda 取样较慢（每次几秒），跨请求缓存 60s，避免反复刷新卡顿。 */
@@ -44,37 +45,22 @@ async function writeMeta(m: EnvStore): Promise<void> {
   await writeStore(FILE, JSON.stringify(m, null, 2));
 }
 
-/** 全局系统环境（Ubuntu/内核/GPU/驱动/架构/系统 Python） */
+/** 全局系统环境（OS/内核/GPU/驱动/架构/系统 Python），跨平台（见 src/lib/platform.ts） */
 function collectSystem(): Record<string, string> {
-  const out: Record<string, string> = {};
-  try {
-    const rel = execFileSync("cat", ["/etc/os-release"], { encoding: "utf-8" });
-    const m = rel.match(/PRETTY_NAME="([^"]+)"/);
-    if (m) out.os = m[1];
-  } catch { /* */ }
-  try { out.arch = execFileSync("uname", ["-m"], { encoding: "utf-8" }).trim(); } catch { /* */ }
-  try { out.kernel = execFileSync("uname", ["-r"], { encoding: "utf-8" }).trim(); } catch { /* */ }
-  try {
-    const s = execFileSync("nvidia-smi", ["--query-gpu=name,driver_version", "--format=csv,noheader"], { encoding: "utf-8", timeout: 8000 });
-    const line = s.split("\n")[0] || "";
-    const parts = line.split(",");
-    if (parts[0]) out.gpu = parts[0].trim();
-    if (parts[1]) out.driver = parts[1].trim();
-  } catch {
-    try {
-      const v = execFileSync("cat", ["/proc/driver/nvidia/version"], { encoding: "utf-8" }).trim().split("\n")[0] || "";
-      out.driver = v.replace(/^NVRM version:/, "").trim().slice(0, 40);
-    } catch { /* */ }
-  }
-  try { out.python = execFileSync("python3", ["--version"], { encoding: "utf-8" }).trim().replace(/^Python /, ""); } catch { /* */ }
+  const info = systemInfo();
+  const out: Record<string, string> = { os: info.os, arch: info.arch, kernel: info.kernel };
+  if (info.gpu) out.gpu = info.gpu;
+  if (info.driver) out.driver = info.driver;
+  if (info.python) out.python = info.python;
   return out;
 }
 
 async function condaList(): Promise<{ name: string; prefix: string }[]> {
+  if (!CONDA) return [];
   try {
     const { stdout } = await execFileAsync(CONDA, ["env", "list", "--json"], { timeout: 20000 });
     const d = JSON.parse(stdout);
-    return ((d.envs as string[]) ?? []).map((p) => ({ name: p.split("/").pop() || p, prefix: p }));
+    return ((d.envs as string[]) ?? []).map((p) => ({ name: p.split(/[\\/]/).pop() || p, prefix: p }));
   } catch {
     return [];
   }
@@ -109,6 +95,7 @@ const CORE_WEIGHT: [RegExp, number][] = [
 /** 取样一个环境的包。优先按环境名 `-n`；base 环境的目录名是前缀 basename（如 miniconda3），
  *  `conda list -n <basename>` 会失败，此时用 `-p <prefix>` 回退。 */
 async function pkgListOf(name: string, prefix?: string): Promise<{ name: string; version: string; build_string?: string }[]> {
+  if (!CONDA) return [];
   const run = (args: string[]) => execFileAsync(CONDA, args, { timeout: 30000 }).then((r) => r.stdout);
   try {
     const stdout = await run(["list", "-n", name, "--json"]);

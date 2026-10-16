@@ -9,6 +9,7 @@
  *  4. 确定性结构扫描 → Repository Snapshot 分类（candidate 语义，凭证据非文件名猜测）。
  */
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -274,7 +275,7 @@ export interface RepoDiscover { id: string; name: string; root: string; git: boo
 export async function discoverLocalRepos(extraDirs: string[] = []): Promise<RepoDiscover[]> {
   const out: RepoDiscover[] = [];
   const seen = new Set<string>();
-  const home = process.env.HOME ?? "/home/ark";
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
   const bases = (extraDirs.length ? extraDirs : [
     path.join(home, "projects"),
     path.join(home, "repos"),

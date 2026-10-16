@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
+import { resolveSqlite } from "@/lib/platform";
 import type { ExecutionSession } from "@/lib/project";
 const execFileAsync = promisify(execFile);
-const SQLITE = process.env.RA_SQLITE_BIN ?? path.join(os.homedir(), "miniconda3", "bin", "sqlite3");
+const SQLITE = resolveSqlite();
 const CODEX_DB = path.join(os.homedir(), ".codex", "state_5.sqlite");
 export interface SessionMessage { role: "user" | "assistant"; text: string }
 export async function bindExecutionSession(deepLink: string): Promise<ExecutionSession> {
@@ -16,6 +17,7 @@ export async function bindExecutionSession(deepLink: string): Promise<ExecutionS
   throw new Error("仅支持 codex://threads/<id> 或本地 .jsonl 会话文件");
 }
 async function rolloutPath(threadId: string): Promise<string | null> {
+  if (!SQLITE) return null;
   try { const escaped = threadId.replace(/'/g, "''"); const { stdout } = await execFileAsync(SQLITE, [CODEX_DB, "SELECT rollout_path FROM threads WHERE id='" + escaped + "'"], { timeout: 6000 }); return stdout.trim() || null; } catch { return null; }
 }
 function readLines(text: string, dsh: boolean): SessionMessage[] {

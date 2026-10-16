@@ -15,6 +15,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { readStore, writeStore } from "@/lib/store";
 import { isAllowedFile, checkReadable, scanTree } from "@/lib/code-reader";
+import { resolvePython } from "@/lib/platform";
 
 interface RootConfig { id: string; name: string; root: string }
 
@@ -41,11 +42,13 @@ async function listDir(root: string): Promise<{ name: string; path: string; line
 }
 
 function pythonChain(absFullPath: string): Record<string, unknown> {
+  const py = resolvePython();
+  if (!py) return { available: false };
   const dir = path.dirname(absFullPath);
   const base = path.basename(absFullPath);
   const script = path.join(process.cwd(), "scripts", "py_chain.py");
   try {
-    const stdout = execFileSync("python3", [script, dir, base], {
+    const stdout = execFileSync(py.cmd, [...py.args, script, dir, base], {
       cwd: process.cwd(), maxBuffer: 8 * 1024 * 1024, timeout: 8000, encoding: "utf-8",
     });
     const parsed = JSON.parse(stdout);
