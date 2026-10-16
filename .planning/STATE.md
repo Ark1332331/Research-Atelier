@@ -1,6 +1,6 @@
 ---
 gsd_state_version: '1.0'
-status: planning
+status: ready-to-execute
 progress:
   total_phases: 5
   completed_phases: 0
@@ -21,9 +21,9 @@ See: .planning/PROJECT.md (updated 2026-10-16)
 ## Current Position
 
 Phase: 1 of 5 (Windows 一等公民)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-10-16 — v1.1 里程碑初始化（调研 + ROADMAP 创建）
+Plan: 01-02 of 3 in current phase (wave 1: 01-02; wave 2: 01-01, 01-03)
+Status: Ready to execute
+Last activity: 2026-10-16 — Phase 1 计划生成（3 PLAN.md）
 
 Progress: [░░░░░░░░░░] 0%
 

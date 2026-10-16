@@ -27,7 +27,7 @@ v1.1 里程碑把已基本成形的科研入门学习工作台改造为 Windows 
   2. 环境探测 API（environments/code-read）在 Windows 上返回真实结果（探测 conda/python），无 Linux 硬编码路径残留（grep 不到 `/home/ark`、`miniconda3/bin`、`/etc/os-release`）
   3. 退出应用后任务管理器中无残留 node/next 子进程
   4. 数据目录落 `%APPDATA%/research-atelier`，README 有 Windows 与 Linux 双平台快速开始
-**Plans**: TBD (3 plans 预估)
+**Plans**: 3 plans
 
 Plans:
 - [ ] 01-01: electron-builder 增加 win/nsis target + 打包脚本 + 打包后冒烟验证
