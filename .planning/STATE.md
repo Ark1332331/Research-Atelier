@@ -22,8 +22,8 @@ See: .planning/PROJECT.md (updated 2026-10-16)
 
 Phase: 2 of 5 (工程化地基)
 Plan: 02-01 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-10-17 — Phase 1 完成（Windows 打包+冒烟、跨平台层、文档）
+Status: Ready to execute
+Last activity: 2026-10-17 — Phase 2 规划完成（3 plans：清理/typecheck+CI/路由测试）；死代码可达性分析已做（~37 文件不可达）
 
 Progress: [██░░░░░░░░] 21%
 

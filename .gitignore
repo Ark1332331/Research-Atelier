@@ -49,3 +49,4 @@ electron/runtime-config.json
 .build-cache/
 
 !.env.local.example
+.electron-dist/

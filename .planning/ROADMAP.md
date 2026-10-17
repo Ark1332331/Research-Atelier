@@ -43,12 +43,12 @@ Plans:
   2. `npm run typecheck` 本地零错误
   3. 死代码与 .orig 清除后应用行为不变（冒烟验证）；冻结模块归档到明确的 frozen 目录
   4. sync/projects/handoff 路由测试存在且通过
-**Plans**: TBD (3 plans 预估)
+**Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: typecheck/lint 脚本 + CI workflow（windows-latest）
-- [ ] 02-02: 死代码清理 + .orig 清除 + 冻结归档 + scripts/ 整理
-- [ ] 02-03: sync/projects/handoff 核心 API 路由测试补齐
+- [ ] 02-01: 死代码清理 + .orig 清除 + atelier 变体归档 src/frozen/ + scripts/ 只留工具（含 19 个手工 test-*.mjs 整理）
+- [ ] 02-02: typecheck/lint 脚本 + lint 错误清零 + CI workflow（windows-latest）
+- [ ] 02-03: sync/projects/handoff 核心 API 路由测试补齐（node:test 直调 handler）
 
 ### Phase 3: AI 讲解闭环真实化
 **Goal**: Paper Project 讲解由 DeepSeek 真实生成，带引用锚定与诚实的不确定性，配置零门槛 —— 兑现"越用越懂你"的产品主张
