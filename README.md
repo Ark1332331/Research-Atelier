@@ -15,7 +15,7 @@
 
 新增“学习与记忆”及 `/learning` 入口：反馈候选 → 人工审核 → 按场景/项目应用 → 回答记录 → 效果反馈。支持修正/回退/停用/遗忘、同题基线、Markdown 交接与 JSON 导出。完整启动、参考开源项目、验收证据与适用边界见 [DELIVERY_LEARNING.md](DELIVERY_LEARNING.md)。
 
-本次仅交付本地开发模式：运行 `npm run dev`，打开 `/learning`。数据默认在 `~/.config/Research Atelier/data`（`RA_DATA_DIR` 可覆盖），模型配置使用项目 `.env.local`。下面早期说明中的“开发读仓库 data/”和“画像自动掌握”已被新版本替代。
+本次仅交付本地开发模式：运行 `npm run dev`，打开 `/learning`。数据默认在用户数据目录（Windows：`%APPDATA%\Research Atelier\data`；Linux/macOS：`~/.config/Research Atelier/data`，`RA_DATA_DIR` 可覆盖），模型配置使用项目 `.env.local`。下面早期说明中的“开发读仓库 data/”和“画像自动掌握”已被新版本替代。
 
 ## 功能
 
@@ -37,6 +37,15 @@
 
 ## 快速开始（开发模式）
 
+Windows（PowerShell）：
+
+```powershell
+npm install
+npm run dev          # http://localhost:3000
+```
+
+Linux / macOS：
+
 ```bash
 npm install
 npm run dev          # http://localhost:3000
@@ -44,8 +53,8 @@ npm run dev          # http://localhost:3000
 
 依赖与配置：
 
-- 对话/翻译需要 DeepSeek API Key：复制 `.env.local.example` 为 `.env.local` 填入 `DEEPSEEK_API_KEY`
-- 代码导读的跨文件调用链需要本机 `python3`（`scripts/py_chain.py`）
+- 对话/翻译需要 DeepSeek API Key：复制 `.env.local.example` 为项目根目录的 `.env.local`，填入 `DEEPSEEK_API_KEY`（获取入口：platform.deepseek.com → API Keys）。`.env.local` 已被 git 忽略，不会入库
+- 代码导读的跨文件调用链需要本机 Python：Windows 会自动找 `python` / `py`，Linux/macOS 找 `python3`（`scripts/py_chain.py`）
 
 ## 桌面壳（Electron）— 双击即开
 
@@ -55,20 +64,22 @@ npm run dev          # http://localhost:3000
 
 ```bash
 npm run desktop:dev   # 开发热更：next dev + electron 直连（concurrently 一起跑）
-npm run desktop:dir   # next build + electron-builder --dir（linux-unpacked，最快验证）
-npm run desktop       # 完整分发：AppImage + deb（产物在 release/）
+npm run desktop:dir   # next build + electron-builder --dir（当前平台免安装版，最快验证）
+npm run desktop       # 完整分发（当前平台）：Windows 出 NSIS 安装包，Linux 出 AppImage + deb
 ```
+
+> Windows 上 `npm run desktop` 即产出 NSIS 安装包；需要单独指定时用 `npx electron-builder --win` / `--linux`。
 
 产物：
 
-- `release/Research Atelier-<version>.AppImage` — 双击运行（需可执行权限 + FUSE）
-- `release/<name>_<version>_amd64.deb` — 安装后从应用菜单打开
-- `release/linux-unpacked/` — 免安装调试版
+- Windows：`release/Research Atelier-Setup-<version>-x64.exe` — NSIS 安装包，双击安装
+- Linux：`release/Research Atelier-<version>.AppImage`（需可执行权限 + FUSE）、`release/<name>_<version>_amd64.deb`
+- `<平台>-unpacked/` — 免安装调试版
 
 ### 数据在哪（重要）
 
-- **打包后**：数据目录 = 系统用户数据目录（Linux 为 `~/.config/Research Atelier/data`）。首次启动自动把随包 `data/` 种子拷贝过去，之后所有改动都写用户目录，持久不丢；重装/更新不覆盖。
-- **开发时**：读写项目内 `data/`（与 `npm run dev` 完全一致）。
+- **打包后**：数据目录 = 系统用户数据目录。Windows 为 `%APPDATA%\Research Atelier\data`（资源管理器地址栏粘贴即达），Linux 为 `~/.config/Research Atelier/data`。首次启动自动把随包 `data/` 种子拷贝过去，之后所有改动都写用户目录，持久不丢；重装/更新不覆盖。
+- **开发时（npm run dev）**：与桌面版共用同一个用户数据目录（Windows 上旧版曾写在 `~/.config`，首次运行会自动迁移到 `%APPDATA%`）。
 - 注意：GitHub 仓库**不含** `data/`（个人数据，已被 `.gitignore` 排除）。克隆后首次运行会得到空数据目录，把本机旧 `data/` 拷进用户数据目录（或直接在应用里重新导入论文）即可恢复。
 
 ### 代码导读的「代码根」
@@ -145,7 +156,7 @@ workflow-app/
 
 - **DeepSeek 网络接入**：对话与翻译由服务端调用 `api.deepseek.com`。若出现「错误：fetch failed」，通常是**直连 DeepSeek 不通或网络需走代理**（Node fetch 默认忽略系统代理）。解决：
   - **桌面 App**：在 `.env.local` 里加 `HTTPS_PROXY=http://127.0.0.1:<端口>`（如 mihomo/Clash 的 `7890`），应用已启用 `NODE_USE_ENV_PROXY` 会自动走该代理。
-  - **开发模式**：运行前 `export HTTPS_PROXY=http://127.0.0.1:7890` 再 `npm run dev`。
+  - **开发模式**：运行前设代理再 `npm run dev`（PowerShell：`$env:HTTPS_PROXY="http://127.0.0.1:7890"`；bash：`export HTTPS_PROXY=http://127.0.0.1:7890`）。
   - 失败时界面会附带具体原因（DNS/连接/超时）与上述提示。
 - **论文检索与下载**：论文筛选会联网检索（OpenAlex，需能访问 `api.openalex.org`）。开放获取的论文可在 App 里一键下载并导入论文库；**非开放获取**的（需学校/出版社订阅）只会给出 `publisher_url`，无法在 App 自动下载——若你有学校图书馆账号，用校园网/学校 [VPN](https://guide.nju.edu.cn/faq/3e/d2/c44793a540370/page.htm) 打开该链接下载 PDF，再导入 App（「论文库」支持上传 PDF）。
 - **字体**：界面字体走 Google Fonts（`globals.css` 的 `@import`），离线时回退系统字体，不影响功能。
