@@ -30,9 +30,9 @@ v1.1 里程碑把已基本成形的科研入门学习工作台改造为 Windows 
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: electron-builder 增加 win/nsis target + 打包脚本 + 打包后冒烟验证
-- [ ] 01-02: 跨平台命令/路径探测层（conda/python/sqlite/GPU/zenity→无则降级）+ Windows 数据目录 + 进程清理
-- [ ] 01-03: 文档与 .env.local.example 修正（Windows 快速开始）
+- [x] 01-01: electron-builder 增加 win/nsis target + 打包脚本 + 打包后冒烟验证
+- [x] 01-02: 跨平台命令/路径探测层（conda/python/sqlite/GPU/zenity→无则降级）+ Windows 数据目录 + 进程清理
+- [x] 01-03: 文档与 .env.local.example 修正（Windows 快速开始）
 
 ### Phase 2: 工程化地基
 **Goal**: CI 绿灯 + 类型安全 + 代码库清理，为后续功能改动提供兜底
@@ -104,7 +104,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Windows 一等公民 | 0/3 | Not started | - |
+| 1. Windows 一等公民 | 3/3 | Complete | 2026-10-17 |
 | 2. 工程化地基 | 0/3 | Not started | - |
 | 3. AI 讲解闭环真实化 | 0/3 | Not started | - |
 | 4. 学习记忆升级 | 0/3 | Not started | - |

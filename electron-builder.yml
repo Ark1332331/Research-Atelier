@@ -26,3 +26,15 @@ linux:
   maintainer: ark
   synopsis: Research Atelier · 本地论文工作台（论文库 / 复现检查点 / 代码导读）
   description: 个人论文学习一体化桌面应用：论文库、复现检查点、代码导读、术语卡与精读。数据保存在用户目录。
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Research Atelier

@@ -16,6 +16,7 @@ console.warn = (...a) => origWarn("[pdf:warn]", ...a);
 
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 
 const workerPath = path.join(
@@ -26,7 +27,8 @@ const workerPath = path.join(
   "build",
   "pdf.worker.mjs",
 );
-pdfjs.GlobalWorkerOptions.workerSrc = workerPath;
+// Windows 绝对路径必须转成 file:// URL，否则 pdfjs fake worker 的 ESM import 会报 "protocol 'c:'"
+pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href;
 
 const [pdfPath, outDir] = process.argv.slice(2);
 if (!pdfPath) {
