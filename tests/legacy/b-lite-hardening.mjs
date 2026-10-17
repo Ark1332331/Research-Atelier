@@ -3,9 +3,9 @@
  *  - ④ candidates 变化后旧 triage/seeds 必须清空（stale）
  *  - ① triage 收到 session.question（经由 handleTriage）
  *  - 同 record 合成 + 别名合并（端到端：title+arXiv+DOI 一条候选）
- * 运行：RA_DATA_DIR=<tmp> node scripts/test-b-lite-hardening.mjs
+ * 运行：RA_DATA_DIR=<tmp> node tests/legacy/b-lite-hardening.mjs
  */
-import { handlePlan, handleImport, handleTriage, handleAction, handleSessionGet } from "../src/lib/search/literature-api.ts";
+import { handlePlan, handleImport, handleTriage, handleAction, handleSessionGet } from "../../src/lib/search/literature-api.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }

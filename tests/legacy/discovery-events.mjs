@@ -1,9 +1,9 @@
 /**
  * v1.5 发现过程记录测试：ResearchSession.events 事件日志（append-only、顺序、刷新不丢）。
- * 运行：RA_DATA_DIR=<tmp> node scripts/test-discovery-events.mjs
+ * 运行：RA_DATA_DIR=<tmp> node tests/legacy/discovery-events.mjs
  * 说明：RA_CONCEPT_MOCK 走真实 map→ladder 路径（plan 带 conceptMap/ladder，可 advance-tier）。
  */
-import { handlePlan, handleImport, handleTriage, handleAction, handleSessionGet } from "../src/lib/search/literature-api.ts";
+import { handlePlan, handleImport, handleTriage, handleAction, handleSessionGet } from "../../src/lib/search/literature-api.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }

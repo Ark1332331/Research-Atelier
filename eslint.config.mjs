@@ -17,6 +17,7 @@ const eslintConfig = defineConfig([
     "public/pdf.worker*.mjs",
     ".build-cache/**",
     "next-env.d.ts",
+    "src/frozen/**",
   ]),
 ]);
 

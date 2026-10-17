@@ -1,11 +1,11 @@
 /**
  * Phase B-lite B4/B5 纯逻辑测试：applyEnrichment provenance、evidenceLevelFor、
  * normalizeTriage 绑定 + 边界强制（evidenceLevel !== fulltext → keySections 强制空）。
- * 运行：node scripts/test-enrich-triage.mjs
+ * 运行：node tests/legacy/enrich-triage.mjs
  */
-import { applyEnrichment, emptyEvidence, rebuildAbstract } from "../src/lib/search/enrich.ts";
-import { evidenceLevelFor, enforceTriageEvidenceBoundary, normalizeTriage, buildTriageUserPrompt } from "../src/lib/search/triage.ts";
-import { dedupeCandidates } from "../src/lib/search/inbox.ts";
+import { applyEnrichment, emptyEvidence, rebuildAbstract } from "../../src/lib/search/enrich.ts";
+import { evidenceLevelFor, enforceTriageEvidenceBoundary, normalizeTriage, buildTriageUserPrompt } from "../../src/lib/search/triage.ts";
+import { dedupeCandidates } from "../../src/lib/search/inbox.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }

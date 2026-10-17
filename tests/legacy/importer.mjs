@@ -1,8 +1,8 @@
 /**
  * Phase B-lite B2 验收测试：混贴自动拆分（deterministic，无 LLM）。
- * 运行：node scripts/test-importer.mjs   （Node ≥ 22.6 直接跑 TS）
+ * 运行：node tests/legacy/importer.mjs   （Node ≥ 22.6 直接跑 TS）
  */
-import { parseCandidateBlob } from "../src/lib/search/importer.ts";
+import { parseCandidateBlob } from "../../src/lib/search/importer.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }

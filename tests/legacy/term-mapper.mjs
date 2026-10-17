@@ -1,10 +1,10 @@
 /**
  * Phase A.5 验收测试（v1.4）：Academic Term Mapper + Query Ladder + term calibration。
  * 真实回归案例：机器人大击剑 —— 不允许再直接生成 "robotic fencing" "human motion recognition"。
- * 运行：node scripts/test-term-mapper.mjs
+ * 运行：node tests/legacy/term-mapper.mjs
  */
-import { normalizeConceptMap, buildLadderFromMap, intentForTier, calibrateTerms } from "../src/lib/search/terms.ts";
-import { planFromIntent } from "../src/lib/search/plan.ts";
+import { normalizeConceptMap, buildLadderFromMap, intentForTier, calibrateTerms } from "../../src/lib/search/terms.ts";
+import { planFromIntent } from "../../src/lib/search/plan.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }

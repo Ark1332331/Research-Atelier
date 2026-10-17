@@ -1,9 +1,9 @@
 /**
  * Step 6 验收测试（resolution-chain hardening）：fixed-point engine + effective view + Decision 生命周期。
- * 运行：node scripts/test-gaps.mjs   （Node ≥ 22.6 直接跑 TS）
+ * 运行：node tests/legacy/gaps.mjs   （Node ≥ 22.6 直接跑 TS）
  */
-import { detectGaps, blockingGaps, resolvableGaps, decisionForGap, isDecisionStale, resolveToFixedPoint, detectWithDecisions, gapFingerprint, resolvedFactId } from "../src/lib/gap-detector.ts";
-import { normalizeFacts } from "../src/lib/fact-extract.ts";
+import { detectGaps, blockingGaps, resolvableGaps, decisionForGap, isDecisionStale, resolveToFixedPoint, detectWithDecisions, gapFingerprint, resolvedFactId } from "../../src/lib/gap-detector.ts";
+import { normalizeFacts } from "../../src/lib/fact-extract.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) {

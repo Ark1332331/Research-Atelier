@@ -2,13 +2,13 @@
  * v1.6 证据门控 + Screening 重定义测试（handler 级，mock，无网络）：
  * gateForCandidate 四级；screen 只对有摘要候选出 AI rec；无摘要 → 不可筛；
  * 全无摘要 → 400；userDecision Keep/Maybe/Exclude；calibration 证据门槛（≥8 有摘要）。
- * 运行：RA_DATA_DIR=<tmp> node scripts/test-screening-gate.mjs
+ * 运行：RA_DATA_DIR=<tmp> node tests/legacy/screening-gate.mjs
  */
-import { createSession } from "../src/lib/search/session.ts";
-import { saveSession } from "../src/lib/search/session-storage.ts";
-import { handleScreen, handleAction } from "../src/lib/search/literature-api.ts";
-import { gateForCandidate } from "../src/lib/search/resolve.ts";
-import { calibrateTerms, normalizeConceptMap } from "../src/lib/search/terms.ts";
+import { createSession } from "../../src/lib/search/session.ts";
+import { saveSession } from "../../src/lib/search/session-storage.ts";
+import { handleScreen, handleAction } from "../../src/lib/search/literature-api.ts";
+import { gateForCandidate } from "../../src/lib/search/resolve.ts";
+import { calibrateTerms, normalizeConceptMap } from "../../src/lib/search/terms.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }

@@ -1,19 +1,19 @@
 /**
  * Paper Search Phase A 验收测试（v1.1 guardrail #1/#2/#4 + v1.1.1 hardening：
  * conceptGroups 组语义、resolveYearRange 年份注入、goal→primary 规则）。
- * 运行：node scripts/test-search-plan.mjs   （Node ≥ 22.6 直接跑 TS）
+ * 运行：node tests/legacy/search-plan.mjs   （Node ≥ 22.6 直接跑 TS）
  */
 import {
   compileWosQuery, topicGroup, excludeGroup, yearClause, MAX_YEAR_SPAN,
-} from "../src/lib/search/compile-wos.ts";
-import { googleScholarUrl, arxivSearchUrl } from "../src/lib/search/gs-link.ts";
+} from "../../src/lib/search/compile-wos.ts";
+import { googleScholarUrl, arxivSearchUrl } from "../../src/lib/search/gs-link.ts";
 import {
   normalizeSearchPlan, normalizeIntent, planFromIntent, deriveNextStep, displayDbName,
   resolveYearRange, gsQueriesFromIntent, primaryDbForGoal,
-} from "../src/lib/search/plan.ts";
+} from "../../src/lib/search/plan.ts";
 import {
   createSession, normalizeSession, transitionStage, SESSION_SCHEMA_VERSION,
-} from "../src/lib/search/session.ts";
+} from "../../src/lib/search/session.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }

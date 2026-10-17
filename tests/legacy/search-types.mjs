@@ -1,6 +1,6 @@
 /**
  * Paper Search Step 1 验收测试：src/lib/search/types.ts（纯类型 + 纯函数）。
- * 运行：node scripts/test-search-types.mjs   （Node ≥ 22.6 直接跑 TS）
+ * 运行：node tests/legacy/search-types.mjs   （Node ≥ 22.6 直接跑 TS）
  * 覆盖（PAPER_SEARCH_IMPLEMENTATION.md §4.1 / §12）：
  *   - 归一化：normalizeDoi / normalizeArxivId / normalizedTitle / canonicalIdFor 优先级
  *   - coverage 语义（v0.2 封板补丁）：完整筛选 = GS 已覆盖 AND WoS 已覆盖；
@@ -16,7 +16,7 @@ import {
   partialRetrievalWarning,
   coverageStatusLabel,
   HARD_SOURCES,
-} from "../src/lib/search/types.ts";
+} from "../../src/lib/search/types.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) {

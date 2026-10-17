@@ -1,9 +1,9 @@
 /**
  * v1.1.2 API 级测试：goal → primary 路由 + landingUrl 全覆盖 + deep-link 区分 + context 不污染 WoS。
- * 运行：RA_DATA_DIR=<tmp> node scripts/test-literature-goals.mjs
+ * 运行：RA_DATA_DIR=<tmp> node tests/legacy/literature-goals.mjs
  * 说明：RA_PLANNER_MOCK 在脚本内按 goal 设置（plannerIntent 每次请求时读取 env，无需真实 key/网络）。
  */
-import { handlePlan, handleAction } from "../src/lib/search/literature-api.ts";
+import { handlePlan, handleAction } from "../../src/lib/search/literature-api.ts";
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }
