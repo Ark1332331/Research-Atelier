@@ -26,7 +26,13 @@
 1. `npm run typecheck` 零错误
 2. `npm run lint` 0 error 0 warning
 3. `npm test` 54/54 全绿
-4. GitHub Actions windows-latest 首跑结果：见下方 CI 记录
+4. GitHub Actions windows-latest 结果：**success**（run 39391281592，第 4 次尝试）
+
+### CI 调试记录（3 次失败 → 成功）
+- run#1/#2：`npm ci` EUSAGE——lock 缺 `@emnapi/core@1.11.3`、`@emnapi/runtime@1.11.3`。根因：`@tailwindcss/oxide-wasm32-wasi`、`@img/sharp-wasm32` 等 wasm 平台包在 lock 中声明了 `@emnapi/*` 依赖，但本地 npm 11.6.2 生成 lock 时不解析平台限定 optional 包的传递依赖；CI 上较新的 npm 校验全树一致性
+- run#3：锁 CI node 到 24.18.0 无效（本地 `npm ci` 通过但 CI 校验逻辑不同）
+- 最终修法：`npx npm@latest install --package-lock-only --allow-remote=all`（npm 12.2.0）重新生成 lock——补全全部缺失条目，脚本自检 "LOCK FULLY CONSISTENT"；npm 12 默认禁 remote 抓取需显式放行；本地 npm 11.6.2 的 `npm ci` 与新 lock 兼容
+- 提交 614b9df 后 CI success
 
 ## Notes for Future Work
 
