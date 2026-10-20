@@ -14,7 +14,7 @@
     "dist:win": "node scripts/gen-runtime-config.mjs && next build && node scripts/flatten-next-junctions.mjs && electron-builder --win",
     "test:learning": "node --experimental-strip-types --test tests/learning*.test.mjs",
     "test:study": "node --experimental-strip-types --test tests/study.test.mjs",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test": "node --experimental-strip-types --import ./tests/helpers/alias-hooks.mjs --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint && npm test"
   },

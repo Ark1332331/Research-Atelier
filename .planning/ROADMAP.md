@@ -10,8 +10,8 @@ v1.1 里程碑把已基本成形的科研入门学习工作台改造为 Windows 
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 1: Windows 一等公民** - 可安装、可运行、可分发
-- [ ] **Phase 2: 工程化地基** - CI、类型安全、清理、关键测试
+- [x] **Phase 1: Windows 一等公民** - 可安装、可运行、可分发
+- [x] **Phase 2: 工程化地基** - CI、类型安全、清理、关键测试
 - [ ] **Phase 3: AI 讲解闭环真实化** - 规则模板 → 真 AI，带引用锚定
 - [ ] **Phase 4: 学习记忆升级** - FSRS、标注一键变卡、glossary 预扫
 - [ ] **Phase 5: 单篇闭环打磨与发布** - 冷启动引导、golden path 实测、v1.1 发布
@@ -46,9 +46,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: 死代码清理 + .orig 清除 + atelier 变体归档 src/frozen/ + scripts/ 只留工具（含 19 个手工 test-*.mjs 整理）
-- [ ] 02-02: typecheck/lint 脚本 + lint 错误清零 + CI workflow（windows-latest）
-- [ ] 02-03: sync/projects/handoff 核心 API 路由测试补齐（node:test 直调 handler）
+- [x] 02-01: 死代码清理 + .orig 清除 + atelier 变体归档 src/frozen/ + scripts/ 只留工具（含 19 个手工 test-*.mjs 整理）
+- [x] 02-02: typecheck/lint 脚本 + lint 错误清零 + CI workflow（windows-latest）
+- [x] 02-03: sync/projects/handoff 核心 API 路由测试补齐（node:test 直调 handler）
 
 ### Phase 3: AI 讲解闭环真实化
 **Goal**: Paper Project 讲解由 DeepSeek 真实生成，带引用锚定与诚实的不确定性，配置零门槛 —— 兑现"越用越懂你"的产品主张
@@ -105,7 +105,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Windows 一等公民 | 3/3 | Complete | 2026-10-17 |
-| 2. 工程化地基 | 0/3 | Not started | - |
+| 2. 工程化地基 | 3/3 | Complete | 2026-10-20 |
 | 3. AI 讲解闭环真实化 | 0/3 | Not started | - |
 | 4. 学习记忆升级 | 0/3 | Not started | - |
 | 5. 单篇闭环打磨与发布 | 0/2 | Not started | - |
