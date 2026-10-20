@@ -91,7 +91,7 @@ function slugify(name: string): string {
  *  和联网下载（downloadPaper）都必须落到 library.json，否则「论文库」视图看不到。 */
 async function addToLibraryBySlug(meta: PaperMeta): Promise<void> {
   const raw = await readStore("library.json");
-  let lib: { groups: unknown[]; papers: any[] };
+  let lib: { groups: unknown[]; papers: Record<string, unknown>[] };
   try {
     lib = raw ? JSON.parse(raw) : { groups: [], papers: [] };
     if (!Array.isArray(lib.papers)) lib.papers = [];
@@ -99,7 +99,7 @@ async function addToLibraryBySlug(meta: PaperMeta): Promise<void> {
   } catch {
     lib = { groups: [], papers: [] };
   }
-  if (lib.papers.some((p: { slug?: string }) => p?.slug === meta.slug)) return; // 已导入过
+  if (lib.papers.some((p) => p?.slug === meta.slug)) return; // 已导入过
   lib.papers.push({
     id: `p-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
     title: meta.title,

@@ -13,6 +13,8 @@ export default function SystemPanel() {
       setSystem(d.system ?? {});
     } catch { /* */ }
   }
+  // 挂载/依赖变化时拉取数据；setState 在异步完成后执行，规则误报
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load(); }, []);
 
   if (Object.keys(system).length === 0) return null;

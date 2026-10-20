@@ -25,7 +25,7 @@ export { suggestTargetFromFacts } from "@/lib/fact-extract";
 import { proposeMappings } from "@/lib/mapping";
 import { blockingGaps, resolvableGaps, detectWithDecisions } from "@/lib/gap-detector";
 import { buildRepositorySnapshot, getRepoRevision } from "@/lib/code-reader";
-import type { ReproductionSpec, AnalysisState, Gap, Target } from "@/lib/reproduction-spec";
+import type { ReproductionSpec, AnalysisState, Gap } from "@/lib/reproduction-spec";
 
 /** 读论文正文页（按页码数字排序），返回 { pages, hash } */
 export async function readPaperPages(slug: string, altTitle?: string): Promise<{ pages: string[]; hash: string }> {
@@ -118,7 +118,7 @@ export async function runAnalysis(
 
     // 5) gaps：**用 detectWithDecisions（effective）**——当前 facts + 已有 decisions，避免 raw 与 effective 不一致
     const allFacts = [...paperFacts, ...repoFacts].map((f) => ({ ...f, runId }));
-    const { effectiveGaps, staleDecisions } = detectWithDecisions(allFacts, rec.decisions ?? []);
+    const { effectiveGaps } = detectWithDecisions(allFacts, rec.decisions ?? []);
     const blocking = blockingGaps(effectiveGaps);
     const { needScan, needDecision } = classifyGaps(effectiveGaps);
 

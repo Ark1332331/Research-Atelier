@@ -16,7 +16,12 @@
  *   delete {slug}                          删整篇
  * 数据：data/reproduction.json（见 src/lib/reproduction.ts）
  */
-import { listReproductions, getReproduction, upsertReproduction, deleteReproduction, idFor, isDefinitionComplete, type Reproduction, type ReproductionStep } from "@/lib/reproduction";
+import { listReproductions, getReproduction, upsertReproduction, deleteReproduction, idFor, isDefinitionComplete, type Target, type Constraints, type Acceptance } from "@/lib/reproduction";
+
+/** JSON 请求体字段兜底收窄：仅类型层用，非对象（含 undefined/null）返回 undefined */
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : undefined;
+}
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -31,7 +36,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  let body: Record<string, any>;
+  let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
@@ -55,8 +60,9 @@ export async function POST(request: Request) {
 
   switch (action) {
     case "update": {
-      if (typeof body.patch?.title === "string") r.title = body.patch.title;
-      if (typeof body.patch?.note === "string") r.note = body.patch.note;
+      const p = asRecord(body.patch);
+      if (p && typeof p.title === "string") r.title = p.title;
+      if (p && typeof p.note === "string") r.note = p.note;
       break;
     }
     case "setTitle": { if (typeof body.title === "string") r.title = body.title; break; }
@@ -64,7 +70,8 @@ export async function POST(request: Request) {
     case "setRepo": { if (typeof body.repoUrl === "string") r.repoUrl = body.repoUrl; break; }
     case "setNote": { if (typeof body.note === "string") r.note = body.note; break; }
     case "setGoalIntent": {
-      if (["run_first", "main_result", "figure", "full", "unknown"].includes(body.goalIntent)) r.goalIntent = body.goalIntent;
+      const gi = (["run_first", "main_result", "figure", "full", "unknown"] as const).find((g) => g === body.goalIntent);
+      if (gi) r.goalIntent = gi;
       break;
     }
     case "bindArtifacts": {
@@ -75,22 +82,22 @@ export async function POST(request: Request) {
     }
     case "setDefinition": {
       // 原子式一次写入 target/constraints/acceptance（对应 UI 的「保存目标与验收」单动作）
-      if (body.target && typeof body.target === "object") r.target = body.target;
-      if (body.constraints && typeof body.constraints === "object") r.constraints = body.constraints;
-      if (body.acceptance && typeof body.acceptance === "object") r.acceptance = body.acceptance;
+      if (body.target && typeof body.target === "object") r.target = body.target as Target;
+      if (body.constraints && typeof body.constraints === "object") r.constraints = body.constraints as Constraints;
+      if (body.acceptance && typeof body.acceptance === "object") r.acceptance = body.acceptance as Acceptance;
       break;
     }
     case "setTarget": {
-      if (body.target && typeof body.target === "object") r.target = body.target;
+      if (body.target && typeof body.target === "object") r.target = body.target as Target;
       else if (body.target === null) r.target = undefined;
       break;
     }
     case "setConstraints": {
-      if (body.constraints && typeof body.constraints === "object") r.constraints = body.constraints;
+      if (body.constraints && typeof body.constraints === "object") r.constraints = body.constraints as Constraints;
       break;
     }
     case "setAcceptance": {
-      if (body.acceptance && typeof body.acceptance === "object") r.acceptance = body.acceptance;
+      if (body.acceptance && typeof body.acceptance === "object") r.acceptance = body.acceptance as Acceptance;
       break;
     }
     case "addStep": {
@@ -98,19 +105,21 @@ export async function POST(request: Request) {
       if (!isDefinitionComplete(r)) {
         return Response.json({ error: "先完成“你想复现什么”（目标 + 约束 + 验收），再添加复现步骤。" }, { status: 400 });
       }
-      const status = ["todo", "doing", "done"].includes(body.status) ? body.status : "todo";
-      r.path.push({ id: idFor("st"), title: String(body.title ?? "未命名步骤"), status, note: body.note ?? "" });
+      const status = (["todo", "doing", "done"] as const).find((s) => s === body.status) ?? "todo";
+      r.path.push({ id: idFor("st"), title: String(body.title ?? "未命名步骤"), status, note: (body.note ?? "") as string });
       break;
     }
     case "updateStep": {
       const st = r.path.find((x) => x.id === body.id);
-      if (st && typeof body.patch?.title === "string") st.title = body.patch.title;
-      if (st && typeof body.patch?.note === "string") st.note = body.patch.note;
+      const p = asRecord(body.patch);
+      if (st && p && typeof p.title === "string") st.title = p.title;
+      if (st && p && typeof p.note === "string") st.note = p.note;
       break;
     }
     case "setStepStatus": {
       const st = r.path.find((x) => x.id === body.id);
-      if (st && ["todo", "doing", "done"].includes(body.status)) st.status = body.status;
+      const status = (["todo", "doing", "done"] as const).find((s) => s === body.status);
+      if (st && status) st.status = status;
       break;
     }
     case "deleteStep": { r.path = r.path.filter((x) => x.id !== body.id); break; }

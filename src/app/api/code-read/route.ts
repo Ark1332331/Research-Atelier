@@ -91,7 +91,7 @@ async function observedGET(request: Request) {
   if (!full || !isAllowedFile(path.basename(full))) {
     return Response.json({ error: "非法路径或扩展名" }, { status: 400 });
   }
-  const ck = await checkReadable(full, rel);
+  const ck = await checkReadable(full);
   if (!ck.read) {
     return Response.json({ error: `文件被安全规则跳过（${ck.reason}）` }, { status: 403 });
   }

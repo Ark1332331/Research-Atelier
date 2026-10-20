@@ -21,7 +21,6 @@ export default function ProjectRepro({ projectId, onBack }: { projectId: string;
   const [handoff, setHandoff] = useState("");
   const [message, setMessage] = useState("");
   const [syncing, setSyncing] = useState(false);
-  const [rebuildingHistory, setRebuildingHistory] = useState(false);
   const [importingPdf, setImportingPdf] = useState(false);
   const pdfInput = useRef<HTMLInputElement>(null);
   const load = async () => {
@@ -29,6 +28,9 @@ export default function ProjectRepro({ projectId, onBack }: { projectId: string;
     const data = await response.json();
     if (response.ok) { setProject(data.project); setWorkspace(data.project.workspace?.repoPath ?? ""); }
   };
+  // 挂载时拉取项目数据；setState 在异步完成后执行，规则误报；
+  // load 每次渲染都会重建，加入 deps 会导致每次渲染都重复请求——保持按 projectId 触发
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { void load(); void fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "setLastModule", id: projectId, module: "repro" }) }); }, [projectId]);
   const post = async (url: string, body: Record<string, unknown>) => {
     const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

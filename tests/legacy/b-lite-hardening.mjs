@@ -36,7 +36,7 @@ const triBody = await tri.json();
 ok(tri.status === 200 && triBody.session.triage.length === 1, "triage 有结果");
 ok(triBody.triage[0].paperId === c0.canonicalId, "triage 绑定真实候选");
 await handleAction({ sessionId: s0.id, action: "select-seeds", seedPaperIds: [c0.canonicalId] });
-const afterSeed = await handleAction({ sessionId: s0.id, action: "returned-import" }); // 无意义动作？不，直接查 session
+await handleAction({ sessionId: s0.id, action: "returned-import" }); // 无意义动作？不，直接查 session
 const s1 = await (await handleAction({ sessionId: s0.id, action: "select-seeds", seedPaperIds: [c0.canonicalId] })).json();
 ok(s1.session.seedPapers.length === 1, "种子已保存");
 

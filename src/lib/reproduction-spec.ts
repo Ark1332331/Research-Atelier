@@ -14,7 +14,6 @@
  *  - gaps/readiness/tasks 是 derived state，不在本文件持久化（§2 原则），由后续步骤动态计算。
  */
 
-const FILE = "reproduction.json";
 export const SPEC_VERSION = 2 as const;
 
 /* ================= 类型（v2） ================= */
@@ -236,15 +235,13 @@ export interface ReproductionSpec {
 /** 旧类型别名：兼容现有 import（route.ts 里 type Reproduction） */
 export type Reproduction = ReproductionSpec;
 
-interface Store { records: ReproductionSpec[] }
-
 /* ================= normalizeReproduction（幂等迁移） ================= */
 
-const isObj = (v: unknown): v is Record<string, any> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const notNull = <T,>(x: T | null): x is T => x !== null;
 
 /** Fact.source 归一化（显式返回类型，避免联合类型窄化丢失） */
-function normFactSource(s: any): FactSource | undefined {
+function normFactSource(s: unknown): FactSource | undefined {
   if (!isObj(s)) return undefined;
   if (s.kind === "paper") return { kind: "paper", section: typeof s.section === "string" ? s.section : undefined, page: typeof s.page === "number" ? s.page : undefined, quote: typeof s.quote === "string" ? s.quote : undefined };
   if (s.kind === "user") return { kind: "user", note: typeof s.note === "string" ? s.note : undefined };
@@ -252,9 +249,9 @@ function normFactSource(s: any): FactSource | undefined {
 }
 
 /** Evidence.source 归一化 */
-function normEvidenceSource(s: any): Evidence["source"] {
+function normEvidenceSource(s: unknown): Evidence["source"] {
   if (!isObj(s)) return { kind: "code" };
-  const kind: EvidenceType = (["paper", "code", "command", "metric", "artifact"] as const).includes(s.kind) ? s.kind : "code";
+  const kind: EvidenceType = (["paper", "code", "command", "metric", "artifact"] as const).includes(s.kind as EvidenceType) ? (s.kind as EvidenceType) : "code";
   return { kind, ref: typeof s.ref === "string" ? s.ref : undefined, commit: typeof s.commit === "string" ? s.commit : undefined };
 }
 
@@ -262,15 +259,15 @@ function normEvidenceSource(s: any): Evidence["source"] {
 export function normalizeReproduction(raw: unknown): ReproductionSpec {
   const r = isObj(raw) ? raw : {};
   const path = Array.isArray(r.path)
-    ? r.path.map((s: any) => isObj(s) ? {
+    ? r.path.map((s) => isObj(s) ? {
         id: typeof s.id === "string" ? s.id : `st-${Math.random().toString(36).slice(2, 8)}`,
         title: String(s.title ?? "未命名步骤"),
-        status: (["todo", "doing", "done"] as const).includes(s.status) ? s.status : "todo",
+        status: (["todo", "doing", "done"] as const).includes(s.status as StepStatus) ? (s.status as StepStatus) : "todo",
         note: typeof s.note === "string" ? s.note : undefined,
       } : null).filter(notNull)
     : [];
   const pitfalls = Array.isArray(r.pitfalls)
-    ? r.pitfalls.map((p: any) => isObj(p) ? {
+    ? r.pitfalls.map((p) => isObj(p) ? {
         id: typeof p.id === "string" ? p.id : `pf-${Math.random().toString(36).slice(2, 8)}`,
         text: String(p.text ?? ""),
         env: Boolean(p.env),
@@ -319,10 +316,10 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           dirty: typeof r.repoArtifact.dirty === "boolean" ? r.repoArtifact.dirty : undefined,
         }
       : undefined,
-    goalIntent: (["run_first", "main_result", "figure", "full", "unknown"] as const).includes(r.goalIntent) ? r.goalIntent : undefined,
+    goalIntent: (["run_first", "main_result", "figure", "full", "unknown"] as const).includes(r.goalIntent as GoalIntent) ? (r.goalIntent as GoalIntent) : undefined,
     analysis: isObj(r.analysis)
       ? {
-          status: (["running", "done", "failed"] as const).includes(r.analysis.status) ? r.analysis.status : "failed",
+          status: (["running", "done", "failed"] as const).includes(r.analysis.status as AnalysisState["status"]) ? (r.analysis.status as AnalysisState["status"]) : "failed",
           ranAt: typeof r.analysis.ranAt === "string" ? r.analysis.ranAt : new Date().toISOString(),
           paperRevision: typeof r.analysis.paperRevision === "string" ? r.analysis.paperRevision : undefined,
           repoRevision: isObj(r.analysis.repoRevision)
@@ -331,10 +328,10 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
           error: typeof r.analysis.error === "string" ? r.analysis.error : undefined,
           suggestedTarget: isObj(r.analysis.suggestedTarget)
             ? {
-                scope: (["table", "figure", "metric", "full", "custom"] as const).includes(r.analysis.suggestedTarget.scope) ? r.analysis.suggestedTarget.scope : "table",
+                scope: (["table", "figure", "metric", "full", "custom"] as const).includes(r.analysis.suggestedTarget.scope as TargetScope) ? (r.analysis.suggestedTarget.scope as TargetScope) : "table",
                 name: String(r.analysis.suggestedTarget.name ?? ""),
                 metrics: Array.isArray(r.analysis.suggestedTarget.metrics)
-                  ? r.analysis.suggestedTarget.metrics.map((m: any) => isObj(m) ? { name: String(m.name ?? ""), expected: m.expected, tolerance: typeof m.tolerance === "number" ? m.tolerance : undefined, unit: typeof m.unit === "string" ? m.unit : undefined } : null).filter((x): x is NonNullable<typeof x> => Boolean(x))
+                  ? r.analysis.suggestedTarget.metrics.map((m) => isObj(m) ? { name: String(m.name ?? ""), expected: m.expected as number | string | undefined, tolerance: typeof m.tolerance === "number" ? m.tolerance : undefined, unit: typeof m.unit === "string" ? m.unit : undefined } : null).filter((x): x is NonNullable<typeof x> => Boolean(x))
                   : [],
               }
             : r.analysis.suggestedTarget === null ? null : undefined,
@@ -345,12 +342,12 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
       : undefined,
     target: isObj(r.target)
       ? {
-          scope: (["table", "figure", "metric", "full", "custom"] as const).includes(r.target.scope) ? r.target.scope : "custom",
+          scope: (["table", "figure", "metric", "full", "custom"] as const).includes(r.target.scope as TargetScope) ? (r.target.scope as TargetScope) : "custom",
           name: String(r.target.name ?? ""),
           metrics: Array.isArray(r.target.metrics)
-            ? r.target.metrics.map((m: any) => isObj(m) ? {
+            ? r.target.metrics.map((m) => isObj(m) ? {
                 name: String(m.name ?? ""),
-                expected: m.expected,
+                expected: m.expected as number | string | undefined,
                 tolerance: typeof m.tolerance === "number" ? m.tolerance : undefined,
                 unit: typeof m.unit === "string" ? m.unit : undefined,
               } : null).filter(notNull)
@@ -363,7 +360,7 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
             ? { gpu: typeof r.constraints.hardware.gpu === "string" ? r.constraints.hardware.gpu : undefined, memoryGb: typeof r.constraints.hardware.memoryGb === "number" ? r.constraints.hardware.memoryGb : undefined }
             : undefined,
           timeBudgetHours: typeof r.constraints.timeBudgetHours === "number" ? r.constraints.timeBudgetHours : undefined,
-          modificationPolicy: (["none", "minimal", "allowed"] as const).includes(r.constraints.modificationPolicy) ? r.constraints.modificationPolicy : "allowed",
+          modificationPolicy: (["none", "minimal", "allowed"] as const).includes(r.constraints.modificationPolicy as Constraints["modificationPolicy"]) ? (r.constraints.modificationPolicy as Constraints["modificationPolicy"]) : "allowed",
           computeBudget: typeof r.constraints.computeBudget === "number" ? r.constraints.computeBudget : undefined,
           dataPolicy: typeof r.constraints.dataPolicy === "string" ? r.constraints.dataPolicy : undefined,
         }
@@ -371,42 +368,42 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
     acceptance: isObj(r.acceptance)
       ? {
           criteria: Array.isArray(r.acceptance.criteria)
-            ? r.acceptance.criteria.map((c: any) => isObj(c) ? {
+            ? r.acceptance.criteria.map((c) => isObj(c) ? {
                 id: typeof c.id === "string" ? c.id : `ac-${Math.random().toString(36).slice(2, 8)}`,
                 text: String(c.text ?? ""),
-                kind: (["metric", "behavior", "artifact"] as const).includes(c.kind) ? c.kind : "behavior",
+                kind: (["metric", "behavior", "artifact"] as const).includes(c.kind as AcceptanceCriterion["kind"]) ? (c.kind as AcceptanceCriterion["kind"]) : "behavior",
                 satisfied: typeof c.satisfied === "boolean" ? c.satisfied : undefined,
               } : null).filter(notNull)
             : [],
         }
       : undefined,
     facts: Array.isArray(r.facts)
-      ? r.facts.map((f: any) => isObj(f) ? {
+      ? r.facts.map((f) => isObj(f) ? {
           id: typeof f.id === "string" ? f.id : `f-${Math.random().toString(36).slice(2, 8)}`,
           key: String(f.key ?? ""),
           side: (f.side === "repo" ? "repo" : "paper") as "paper" | "repo",
           value: f.value,
           normalizedValue: f.normalizedValue,
           unit: typeof f.unit === "string" ? f.unit : undefined,
-          status: (["observed", "inferred", "missing"] as const).includes(f.status) ? f.status : "observed",
-          confidence: (["high", "medium", "low"] as const).includes(f.confidence) ? f.confidence : "medium",
-          importance: (["required", "recommended", "optional"] as const).includes(f.importance) ? f.importance : "recommended",
+          status: (["observed", "inferred", "missing"] as const).includes(f.status as FactStatus) ? (f.status as FactStatus) : "observed",
+          confidence: (["high", "medium", "low"] as const).includes(f.confidence as FactConfidence) ? (f.confidence as FactConfidence) : "medium",
+          importance: (["required", "recommended", "optional"] as const).includes(f.importance as FactImportance) ? (f.importance as FactImportance) : "recommended",
           missingReason: typeof f.missingReason === "string" ? f.missingReason : undefined,
-          missingType: (["not_found", "not_scanned", "ambiguous", "not_applicable"] as const).includes(f.missingType) ? f.missingType : undefined,
+          missingType: (["not_found", "not_scanned", "ambiguous", "not_applicable"] as const).includes(f.missingType as FactMissingType) ? (f.missingType as FactMissingType) : undefined,
           runId: typeof f.runId === "string" ? f.runId : undefined,
           source: normFactSource(f.source),
         } : null).filter(notNull)
       : [],
     mappings: Array.isArray(r.mappings)
-      ? r.mappings.map((m: any) => isObj(m) ? {
+      ? r.mappings.map((m) => isObj(m) ? {
           id: typeof m.id === "string" ? m.id : `m-${Math.random().toString(36).slice(2, 8)}`,
           concept: String(m.concept ?? ""),
-          paperRefs: Array.isArray(m.paperRefs) ? m.paperRefs.map((p: any) => isObj(p) ? { section: typeof p.section === "string" ? p.section : undefined, page: typeof p.page === "number" ? p.page : undefined, quote: typeof p.quote === "string" ? p.quote : undefined } : null).filter(notNull) : [],
-          codeRefs: Array.isArray(m.codeRefs) ? m.codeRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined, dirty: typeof c.dirty === "boolean" ? c.dirty : undefined } : null).filter(notNull) : [],
-          configRefs: Array.isArray(m.configRefs) ? m.configRefs.map((c: any) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined, dirty: typeof c.dirty === "boolean" ? c.dirty : undefined } : null).filter(notNull) : undefined,
-          relation: (["implements", "configures", "preprocesses", "trains", "evaluates"] as const).includes(m.relation) ? m.relation : "implements",
+          paperRefs: Array.isArray(m.paperRefs) ? m.paperRefs.map((p) => isObj(p) ? { section: typeof p.section === "string" ? p.section : undefined, page: typeof p.page === "number" ? p.page : undefined, quote: typeof p.quote === "string" ? p.quote : undefined } : null).filter(notNull) : [],
+          codeRefs: Array.isArray(m.codeRefs) ? m.codeRefs.map((c) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined, dirty: typeof c.dirty === "boolean" ? c.dirty : undefined } : null).filter(notNull) : [],
+          configRefs: Array.isArray(m.configRefs) ? m.configRefs.map((c) => isObj(c) ? { file: String(c.file ?? ""), lineStart: typeof c.lineStart === "number" ? c.lineStart : undefined, lineEnd: typeof c.lineEnd === "number" ? c.lineEnd : undefined, symbol: typeof c.symbol === "string" ? c.symbol : undefined, commit: typeof c.commit === "string" ? c.commit : undefined, dirty: typeof c.dirty === "boolean" ? c.dirty : undefined } : null).filter(notNull) : undefined,
+          relation: (["implements", "configures", "preprocesses", "trains", "evaluates"] as const).includes(m.relation as MappingRelation) ? (m.relation as MappingRelation) : "implements",
           status: (m.status === "confirmed" ? "confirmed" : "proposed") as "proposed" | "confirmed",
-          confidence: (["high", "medium", "low"] as const).includes(m.confidence) ? m.confidence : "medium",
+          confidence: (["high", "medium", "low"] as const).includes(m.confidence as FactConfidence) ? (m.confidence as FactConfidence) : "medium",
           evidenceIds: Array.isArray(m.evidenceIds) ? m.evidenceIds.map(String) : [],
           paperFactIds: Array.isArray(m.paperFactIds) ? m.paperFactIds.map(String) : [],
           codeAnchorIds: Array.isArray(m.codeAnchorIds) ? m.codeAnchorIds.map(String) : [],
@@ -414,10 +411,10 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
         } : null).filter(notNull)
       : [],
     decisions: Array.isArray(r.decisions)
-      ? r.decisions.map((d: any) => isObj(d) ? {
+      ? r.decisions.map((d) => isObj(d) ? {
           id: typeof d.id === "string" ? d.id : `d-${Math.random().toString(36).slice(2, 8)}`,
           gapId: typeof d.gapId === "string" ? d.gapId : undefined,
-          gapType: (["value_conflict","source_conflict","not_found","not_scanned","uncomparable","missing_required"] as const).includes(d.gapType) ? d.gapType : undefined,
+          gapType: (["value_conflict","source_conflict","not_found","not_scanned","uncomparable","missing_required"] as const).includes(d.gapType as GapType) ? (d.gapType as GapType) : undefined,
           gapFingerprint: typeof d.gapFingerprint === "string" ? d.gapFingerprint : undefined,
           key: String(d.key ?? ""),
           paperFactIds: Array.isArray(d.paperFactIds) ? d.paperFactIds.map(String) : [],
@@ -436,20 +433,20 @@ export function normalizeReproduction(raw: unknown): ReproductionSpec {
       : [],
     environment: isObj(r.environment)
       ? {
-          desired: isObj(r.environment.desired) ? { ...r.environment.desired } : undefined,
-          actual: isObj(r.environment.actual) ? { ...r.environment.actual } : undefined,
-          diff: Array.isArray(r.environment.diff) ? r.environment.diff.map((x: any) => isObj(x) ? { key: String(x.key ?? ""), desired: typeof x.desired === "string" ? x.desired : undefined, actual: typeof x.actual === "string" ? x.actual : undefined, ok: Boolean(x.ok) } : null).filter(notNull) : undefined,
-          plan: Array.isArray(r.environment.plan) ? r.environment.plan.map((p: any) => isObj(p) ? { id: String(p.id ?? ""), label: String(p.label ?? ""), confidence: typeof p.confidence === "number" ? p.confidence : 0, recommended: typeof p.recommended === "boolean" ? p.recommended : undefined } : null).filter(notNull) : undefined,
+          desired: isObj(r.environment.desired) ? { ...r.environment.desired } as Record<string, string> : undefined,
+          actual: isObj(r.environment.actual) ? { ...r.environment.actual } as Record<string, string> : undefined,
+          diff: Array.isArray(r.environment.diff) ? r.environment.diff.map((x) => isObj(x) ? { key: String(x.key ?? ""), desired: typeof x.desired === "string" ? x.desired : undefined, actual: typeof x.actual === "string" ? x.actual : undefined, ok: Boolean(x.ok) } : null).filter(notNull) : undefined,
+          plan: Array.isArray(r.environment.plan) ? r.environment.plan.map((p) => isObj(p) ? { id: String(p.id ?? ""), label: String(p.label ?? ""), confidence: typeof p.confidence === "number" ? p.confidence : 0, recommended: typeof p.recommended === "boolean" ? p.recommended : undefined } : null).filter(notNull) : undefined,
           blockingIssues: typeof r.environment.blockingIssues === "number" ? r.environment.blockingIssues : 0,
         }
       : undefined,
     evidence: Array.isArray(r.evidence)
-      ? r.evidence.map((e: any) => isObj(e) ? {
+      ? r.evidence.map((e) => isObj(e) ? {
           id: typeof e.id === "string" ? e.id : `e-${Math.random().toString(36).slice(2, 8)}`,
-          type: (["paper", "code", "command", "metric", "artifact"] as const).includes(e.type) ? e.type : "code",
+          type: (["paper", "code", "command", "metric", "artifact"] as const).includes(e.type as EvidenceType) ? (e.type as EvidenceType) : "code",
           observation: String(e.observation ?? ""),
           source: normEvidenceSource(e.source),
-          supports: Array.isArray(e.supports) ? e.supports.map((s: any) => isObj(s) ? { kind: (["task", "decision", "fact", "mapping"] as const).includes(s.kind) ? s.kind : "task", id: String(s.id ?? "") } : null).filter(notNull) : [],
+          supports: Array.isArray(e.supports) ? e.supports.map((s) => isObj(s) ? { kind: (["task", "decision", "fact", "mapping"] as const).includes(s.kind as EntityRef["kind"]) ? (s.kind as EntityRef["kind"]) : "task", id: String(s.id ?? "") } : null).filter(notNull) : [],
           createdAt: typeof e.createdAt === "string" ? e.createdAt : new Date().toISOString(),
         } : null).filter(notNull)
       : [],

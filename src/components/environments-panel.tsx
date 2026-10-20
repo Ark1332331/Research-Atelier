@@ -26,6 +26,9 @@ export default function EnvironmentsPanel() {
       setEnvs(d.envs ?? []);
     } catch { /* */ }
   }
+  // 挂载/依赖变化时拉取数据；setState 在异步完成后执行，规则误报；
+  // load 每次渲染都会重建，加入 deps 会导致每次渲染都重复请求——保持按 baseline 触发
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { void load(); }, [baseline]);
 
   async function openEnv(name: string) {

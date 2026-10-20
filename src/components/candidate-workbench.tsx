@@ -1,6 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import type { CanonicalPaper, CandidateResolution, CandidateInput, PendingRow, ResearchSession, ScreeningRecord } from "@/lib/search/types";
+
+/** API 响应的本地形态（只声明本组件实际消费的字段，缺省字段视为可选） */
+type ApiError = { error?: string };
+type ApiResponse = ApiError & {
+  session?: ResearchSession;
+  resolution?: CandidateResolution;
+};
+type PreviewResponse = ApiError & { recognized: number; items: CandidateInput[]; unparsed?: CandidateInput[] };
+type CandidateRow = { inputId: string; raw: string; busy?: boolean; resolution?: CandidateResolution };
 
 /**
  * v1.6 Candidate Screening 重定义：
@@ -18,31 +28,31 @@ const GATE_LABEL: Record<string, string> = {
   fulltext: "全文",
 };
 
-export default function CandidateWorkbench({ session, onSession }: { session: any; onSession: (s: any) => void }) {
-  const [rows, setRows] = useState<{ inputId: string; raw: string; busy?: boolean; resolution?: any }[]>([{ inputId: "r" + Date.now().toString(36), raw: "" }]);
+export default function CandidateWorkbench({ session, onSession }: { session: ResearchSession; onSession: (s: ResearchSession) => void }) {
+  const [rows, setRows] = useState<CandidateRow[]>(() => [{ inputId: "r" + Date.now().toString(36), raw: "" }]);
   const [batchRaw, setBatchRaw] = useState("");
-  const [preview, setPreview] = useState<any>(null);
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [seedSel, setSeedSel] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const candidates: any[] = session?.candidates ?? [];
-  const pending: any[] = session?.pending ?? [];
-  const screening: any[] = session?.screening ?? [];
+  const candidates: CanonicalPaper[] = session?.candidates ?? [];
+  const pending: PendingRow[] = session?.pending ?? [];
+  const screening: ScreeningRecord[] = session?.screening ?? [];
   const calibration = session?.termCalibration;
-  const withAbstract = candidates.filter((c: any) => c.abstract && c.abstract.trim()).length;
+  const withAbstract = candidates.filter((c) => c.abstract && c.abstract.trim()).length;
 
-  async function post(path: string, body: any): Promise<any> {
+  async function post<T extends ApiError>(path: string, body: unknown): Promise<T | null> {
     setBusy(true); setError("");
     try {
       const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const d = await res.json();
+      const d = (await res.json()) as T;
       if (!res.ok) { setError(d.error ?? "失败"); return null; }
       return d;
     } finally { setBusy(false); }
   }
 
-  function sync(d: any) {
+  function sync(d: ApiResponse | null) {
     if (d?.session) { onSession(d.session); }
     return d;
   }
@@ -51,7 +61,7 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
     const row = rows[idx];
     if (!row.raw.trim()) return;
     setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, busy: true } : r)));
-    const d = await post("/api/literature/resolve", {
+    const d = await post<ApiResponse>("/api/literature/resolve", {
       sessionId: session.id,
       input: { raw: row.raw, importId: row.inputId },
     });
@@ -65,39 +75,39 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
 
   async function runPreview() {
     if (!batchRaw.trim()) return;
-    const d = await post("/api/literature/preview", { raw: batchRaw });
+    const d = await post<PreviewResponse>("/api/literature/preview", { raw: batchRaw });
     if (d) setPreview(d);
   }
 
   async function confirmBatch() {
     if (!preview?.items?.length) return;
-    const d = await post("/api/literature/import", { sessionId: session.id, items: preview.items });
+    const d = await post<ApiResponse>("/api/literature/import", { sessionId: session.id, items: preview.items });
     if (d) { sync(d); setPreview(null); setBatchRaw(""); }
   }
 
   async function runScreen() {
-    const d = await post("/api/literature/screen", { sessionId: session.id });
+    const d = await post<ApiResponse>("/api/literature/screen", { sessionId: session.id });
     if (d) sync(d);
   }
 
   async function decide(canonicalId: string, decision: string) {
-    const d = await post("/api/literature/action", { sessionId: session.id, action: "set-decision", canonicalId, decision });
+    const d = await post<ApiResponse>("/api/literature/action", { sessionId: session.id, action: "set-decision", canonicalId, decision });
     if (d) sync(d);
   }
 
   async function chooseIdentity(inputId: string, choiceIndex: number) {
-    const d = await post("/api/literature/action", { sessionId: session.id, action: "choose-identity", inputId, choiceIndex });
+    const d = await post<ApiResponse>("/api/literature/action", { sessionId: session.id, action: "choose-identity", inputId, choiceIndex });
     if (d) sync(d);
   }
 
   async function dropPending(inputId: string) {
-    const d = await post("/api/literature/action", { sessionId: session.id, action: "drop-pending", inputId });
+    const d = await post<ApiResponse>("/api/literature/action", { sessionId: session.id, action: "drop-pending", inputId });
     if (d) sync(d);
   }
 
   async function saveSeeds() {
     if (seedSel.length === 0) return;
-    const d = await post("/api/literature/action", { sessionId: session.id, action: "select-seeds", seedPaperIds: seedSel });
+    const d = await post<ApiResponse>("/api/literature/action", { sessionId: session.id, action: "select-seeds", seedPaperIds: seedSel });
     if (d) sync(d);
   }
 
@@ -140,8 +150,8 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
           </div>
           {preview && (
             <div style={{ fontSize: "0.8rem", color: "var(--muted-foreground)" }}>
-              识别到 {preview.recognized} 篇{preview.unparsed?.length > 0 && <span style={{ color: "#c0392b" }}>（{preview.unparsed.length} 条无法识别，导入后会进入待处理）</span>}：
-              {preview.items.map((it: any, i: number) => (
+              识别到 {preview.recognized} 篇{(preview.unparsed?.length ?? 0) > 0 && <span style={{ color: "#c0392b" }}>（{preview.unparsed?.length} 条无法识别，导入后会进入待处理）</span>}：
+              {preview.items.map((it, i: number) => (
                 <p key={i} style={{ margin: "0.15rem 0" }}>· [{it.detectedType}] {it.title ?? it.doi ?? it.arxivId ?? it.url ?? it.raw.slice(0, 50)}</p>
               ))}
             </div>
@@ -153,13 +163,13 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
       {pending.length > 0 && (
         <div style={{ fontSize: "0.82rem", border: "1px solid var(--border)", borderRadius: 6, padding: "0.6rem 0.8rem" }}>
           <p className="mono-label" style={{ margin: 0, color: "var(--muted-foreground)" }}>待处理行（{pending.length}）——不进入候选，需你确认</p>
-          {pending.map((p: any, i: number) => (
+          {pending.map((p, i: number) => (
             <div key={i} style={{ marginTop: "0.4rem", borderTop: "1px solid var(--border)", paddingTop: "0.4rem" }}>
               <div>{p.input.raw.slice(0, 120)}</div>
               {p.resolution.status === "ambiguous" ? (
                 <div>
                   <div style={{ color: "#c0392b", fontSize: "0.75rem" }}>存在 {p.resolution.choices?.length ?? 0} 篇同名候选，请选择真实身份：</div>
-                  {(p.resolution.choices ?? []).map((c: any, ci: number) => (
+                  {(p.resolution.choices ?? []).map((c, ci: number) => (
                     <button key={ci} className="btn btn--ghost" style={{ margin: "0.2rem 0.2rem 0 0" }} onClick={() => void chooseIdentity(p.input.importId, ci)}>
                       {c.title} {c.year ? "(" + c.year + ")" : ""}
                     </button>
@@ -182,7 +192,7 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
           <p className="mono-label" style={{ color: "var(--muted-foreground)" }}>
             候选 {candidates.length} 篇 · 具备摘要 {withAbstract} / {candidates.length} {withAbstract > 0 ? "（可开始初筛）" : "（不足，无法初筛）"}
           </p>
-          {candidates.map((c: any) => (
+          {candidates.map((c) => (
             <div key={c.canonicalId} style={{ padding: "0.5rem 0.7rem", border: "1px solid var(--border)", borderRadius: 6, fontSize: "0.8rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem" }}>
                 <strong>{c.title}</strong>
@@ -219,8 +229,8 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
       {screening.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
           <p className="mono-label" style={{ color: "var(--muted-foreground)" }}>筛选结果（AI 只做建议；你决定 Keep / Maybe / Exclude）</p>
-          {screening.map((r: any) => {
-            const c = candidates.find((x: any) => x.canonicalId === r.canonicalId);
+          {screening.map((r) => {
+            const c = candidates.find((x) => x.canonicalId === r.canonicalId);
             if (!c) return null;
             return (
               <div key={r.canonicalId} style={{ padding: "0.5rem 0.7rem", border: "1px solid var(--border)", borderRadius: 6, fontSize: "0.8rem" }}>
@@ -258,7 +268,7 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
       {screening.length > 0 && candidates.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
           <p className="mono-label" style={{ color: "var(--muted-foreground)" }}>筛选完成 → 选出种子论文（≤3，供下一步展开）</p>
-          {candidates.map((c: any) => (
+          {candidates.map((c) => (
             <label key={c.canonicalId} style={{ fontSize: "0.8rem", display: "flex", gap: "0.4rem", alignItems: "center" }}>
               <input type="checkbox" checked={seedSel.includes(c.canonicalId)} onChange={(ev) => setSeedSel((s) => ev.target.checked ? [...s, c.canonicalId].slice(0, 3) : s.filter((x) => x !== c.canonicalId))} />
               {c.title}
@@ -280,11 +290,11 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
               <p className="mono-label" style={{ margin: 0, color: "var(--muted-foreground)" }}>
                 术语校准（基于本轮 {calibration.basedOn} 篇有摘要候选，仅建议，不改研究目标）
               </p>
-              {calibration.termsConfirmed?.length > 0 && <p style={{ margin: "0.3rem 0 0" }}>confirmed：{calibration.termsConfirmed.map((t: any) => t.term).join("、")}</p>}
-              {calibration.termsSuggested?.length > 0 && <p style={{ margin: "0.2rem 0 0", color: "var(--muted-foreground)" }}>suggested：{calibration.termsSuggested.map((t: any) => t.term).join("、")}</p>}
-              {calibration.termsWeakOrRare?.length > 0 && (
-                <p style={{ margin: "0.2rem 0 0", color: "#c0392b" }}>weakOrRare（建议下一轮换词）：{calibration.termsWeakOrRare.map((t: any) => t.term).join("、")}</p>
-              )}
+              {calibration.termsConfirmed?.length ? <p style={{ margin: "0.3rem 0 0" }}>confirmed：{calibration.termsConfirmed.map((t) => t.term).join("、")}</p> : null}
+              {calibration.termsSuggested?.length ? <p style={{ margin: "0.2rem 0 0", color: "var(--muted-foreground)" }}>suggested：{calibration.termsSuggested.map((t) => t.term).join("、")}</p> : null}
+              {calibration.termsWeakOrRare?.length ? (
+                <p style={{ margin: "0.2rem 0 0", color: "#c0392b" }}>weakOrRare（建议下一轮换词）：{calibration.termsWeakOrRare.map((t) => t.term).join("、")}</p>
+              ) : null}
             </>
           )}
         </div>
@@ -293,7 +303,7 @@ export default function CandidateWorkbench({ session, onSession }: { session: an
   );
 }
 
-function gateOf(c: any): string {
+function gateOf(c: CanonicalPaper): string {
   if (c.abstract && c.abstract.trim()) return "abstract";
   if (c.year !== undefined || c.venue || (c.authors?.length ?? 0) > 0 || c.doi || c.arxivId) return "metadata";
   return "title-only";

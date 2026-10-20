@@ -132,7 +132,6 @@ function featurePkgs(pkgs: { name: string; version: string }[], baseMap: Map<str
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const name = url.searchParams.get("name");
-  const baseline = url.searchParams.get("baseline"); // 基线环境名（对比式特征包）
   const meta = await readMeta();
 
   // 只要全局系统信息（快，不碰 conda）——给 global env 卡片专用，避免等 conda 取样。

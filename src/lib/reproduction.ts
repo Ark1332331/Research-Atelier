@@ -4,7 +4,7 @@
  * 本文件负责：读写 JSON、摘要列表、增删改查——全部经过 normalize 保证 v2 结构。
  */
 import { readStore, writeStore } from "@/lib/store";
-import { normalizeReproduction, SPEC_VERSION, type ReproductionSpec } from "@/lib/reproduction-spec";
+import { normalizeReproduction, type ReproductionSpec } from "@/lib/reproduction-spec";
 
 export * from "@/lib/reproduction-spec";
 

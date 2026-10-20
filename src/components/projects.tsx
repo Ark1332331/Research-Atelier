@@ -23,6 +23,8 @@ export default function Projects({ onOpen }: { onOpen: (project: PaperProject) =
       setError(reason instanceof Error ? reason.message : "项目列表读取失败");
     }
   };
+  // 挂载/依赖变化时拉取数据；setState 在异步完成后执行，规则误报
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load(); }, []);
   const create = async () => {
     const value = title.trim();

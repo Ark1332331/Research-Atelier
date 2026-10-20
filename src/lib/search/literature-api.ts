@@ -14,8 +14,6 @@ import { buildLadderFromMap, intentForTier, calibrateTerms } from "./terms.ts";
 import { createSession, withPlan, transitionStage, recordDatabaseAction, withImport, recordEvent } from "./session.ts";
 import { loadSession, saveSession } from "./session-storage.ts";
 import { parseCandidateBlob } from "./importer.ts";
-import { dedupeCandidates } from "./inbox.ts";
-import { enrichAll } from "./enrich.ts";
 import { runTriage } from "./triage.ts";
 import { resolveCandidate, mergeResolvedInto, gateForCandidate } from "./resolve.ts";
 import type { ResearchSession, CandidateInput, PendingRow, ScreeningRecord, UserDecision } from "./types.ts";
@@ -215,7 +213,7 @@ export async function handleImport(body: Record<string, unknown>): Promise<Respo
   const session = await loadSession(sessionId);
   if (!session) return Response.json({ error: "会话不存在" }, { status: 404 });
   let items: CandidateInput[] = Array.isArray(body.items) ? (body.items as CandidateInput[]) : [];
-  let raw = String(body.raw ?? "");
+  const raw = String(body.raw ?? "");
   if (items.length === 0 && raw) {
     // legacy：raw 混贴 → parse（边界由 parse 决定；仅向后兼容，新 UI 不用）
     items = parseCandidateBlob(raw);

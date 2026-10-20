@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { clearPendingSync, collectPendingSync, explainPendingSync, readPendingSync, type PendingSync } from "@/lib/sync";
+import { clearPendingSync, collectPendingSync, readPendingSync, type PendingSync } from "@/lib/sync";
 import { explainSyncWithAI } from "@/lib/sync-explain";
 import { readNewMessages } from "@/lib/execution-session";
 import { buildReproductionChainWithAI } from "@/lib/reproduction-chain";

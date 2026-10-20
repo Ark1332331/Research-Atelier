@@ -17,7 +17,7 @@ import { withToolObservation } from "@/lib/learning/tool-observation";
  *   - 同侧 source_conflict 解决后继续跨侧比较（effective view），避免假 Ready。
  */
 import { getReproduction, upsertReproduction } from "@/lib/reproduction";
-import { detectGaps, detectWithDecisions, blockingGaps, resolvableGaps, decisionForGap, isDecisionStale, gapFingerprint } from "@/lib/gap-detector";
+import { detectWithDecisions, blockingGaps, resolvableGaps, decisionForGap, isDecisionStale, gapFingerprint } from "@/lib/gap-detector";
 import type { DecisionChoice } from "@/lib/reproduction-spec";
 
 const PROPOSABLE = ["value_conflict", "source_conflict", "not_found", "uncomparable"];

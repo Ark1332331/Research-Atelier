@@ -3,7 +3,7 @@
  * normalizeTriage 绑定 + 边界强制（evidenceLevel !== fulltext → keySections 强制空）。
  * 运行：node tests/legacy/enrich-triage.mjs
  */
-import { applyEnrichment, emptyEvidence, rebuildAbstract } from "../../src/lib/search/enrich.ts";
+import { applyEnrichment } from "../../src/lib/search/enrich.ts";
 import { evidenceLevelFor, enforceTriageEvidenceBoundary, normalizeTriage, buildTriageUserPrompt } from "../../src/lib/search/triage.ts";
 import { dedupeCandidates } from "../../src/lib/search/inbox.ts";
 

@@ -2,7 +2,7 @@
  * Step 6 验收测试（resolution-chain hardening）：fixed-point engine + effective view + Decision 生命周期。
  * 运行：node tests/legacy/gaps.mjs   （Node ≥ 22.6 直接跑 TS）
  */
-import { detectGaps, blockingGaps, resolvableGaps, decisionForGap, isDecisionStale, resolveToFixedPoint, detectWithDecisions, gapFingerprint, resolvedFactId } from "../../src/lib/gap-detector.ts";
+import { detectGaps, blockingGaps, resolvableGaps, decisionForGap, isDecisionStale, resolveToFixedPoint, detectWithDecisions, resolvedFactId } from "../../src/lib/gap-detector.ts";
 import { normalizeFacts } from "../../src/lib/fact-extract.ts";
 
 let pass = 0, fail = 0;
@@ -127,10 +127,6 @@ const { effectiveGaps: effR2 } = detectWithDecisions(fR2, [oldDec]);
 ok(effR2.some((g) => g.key === "training.lr" && g.type === "value_conflict"), "stale decision 不隐藏重新出现的冲突（effective 仍含）");
 
 console.log("== 10. 回归：repo 值改动后旧自动 fact 不污染当前 view（③ replace 语义） ==");
-const run1 = [
-  { key: "training.lr", side: "paper", value: "1e-4", status: "observed", runId: "run-1" },
-  { key: "training.lr", side: "repo", value: "1e-4", status: "observed", runId: "run-1" },
-];
 const run2 = [
   { key: "training.lr", side: "paper", value: "1e-4", status: "observed", runId: "run-2" },
   { key: "training.lr", side: "repo", value: "5e-4", status: "observed", runId: "run-2" },

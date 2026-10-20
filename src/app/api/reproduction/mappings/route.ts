@@ -11,7 +11,7 @@ import { withToolObservation } from "@/lib/learning/tool-observation";
 import path from "node:path";
 import { readStore } from "@/lib/store";
 import { getReproduction, upsertReproduction } from "@/lib/reproduction";
-import { proposeMappings, mergeMappings, normalizeMapping, confirmMapping, rejectMapping } from "@/lib/mapping";
+import { proposeMappings, mergeMappings, normalizeMapping, confirmMapping, rejectMapping, type NormalizeMappingInput } from "@/lib/mapping";
 import { buildRepositorySnapshot } from "@/lib/code-reader";
 
 interface RootConfig { id: string; name: string; root: string }
@@ -50,7 +50,7 @@ async function observedPOST(request: Request) {
   if (action === "save") {
     if (!Array.isArray(body.mappings)) return Response.json({ error: "mappings 必须是数组" }, { status: 400 });
     // 普通 save 不携带状态意图：incoming 一律归一化为 proposed；已 confirmed 的 identity 在 merge 时保留 confirmed
-    const incoming = (body.mappings as never[]).map((m: any) => normalizeMapping({ ...m, status: undefined })).filter((m): m is NonNullable<typeof m> => Boolean(m));
+    const incoming = (body.mappings as NormalizeMappingInput[]).map((m) => normalizeMapping({ ...m, status: undefined })).filter((m): m is NonNullable<typeof m> => Boolean(m));
     rec.mappings = mergeMappings(rec.mappings ?? [], incoming);
     await upsertReproduction(rec);
     return Response.json({ mappings: rec.mappings, saved: incoming.length });

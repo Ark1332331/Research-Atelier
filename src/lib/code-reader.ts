@@ -75,7 +75,7 @@ const GENERATED_LOCK_RE = /^(package-lock\.json|yarn\.lock|poetry\.lock|uv\.lock
 
 /** 判断一个相对文件该不该读正文；返回 { read: true, abs } 或 { read: false, reason }。
  *  用 lstat 判定：symlink 一律不跟随（防 root 边界逃逸），目录内部大文件按大小拦。 */
-export async function checkReadable(absPath: string, rel: string): Promise<{ read: true } | { read: false; reason: SkipReason["reason"] }> {
+export async function checkReadable(absPath: string): Promise<{ read: true } | { read: false; reason: SkipReason["reason"] }> {
   const base = path.basename(absPath);
   if (SECRET_DENYLIST.some((re) => re.test(base))) return { read: false, reason: "secret" };
   if (GENERATED_LOCK_RE.test(base)) return { read: false, reason: "generated" };
@@ -208,7 +208,7 @@ export async function scanTree(root: string, revision?: RepoRevisionInfo): Promi
         if (inDataRoot && SKIP_DATA_ASSET_SUBDIRS.has(e)) { omitted.push({ path: rel, reason: "data_asset" }); continue; }
         await walk(full, rel, inDataRoot);
       } else if (st.isFile()) {
-        const ck = await checkReadable(full, rel);
+        const ck = await checkReadable(full);
         if (!ck.read) { omitted.push({ path: rel, reason: ck.reason }); continue; }
         let content = "";
         try { content = await fs.readFile(full, "utf-8"); } catch { continue; }

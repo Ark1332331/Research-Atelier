@@ -130,7 +130,7 @@ export async function POST(request: Request) {
     const r = await deepseekChat(apiKey, convo);
     if (!r.ok) {await finishLearning(learning,"",r.error);return Response.json({ error: r.error, hint: r.hint }, { status: 502 });}
     const data = r.data!;
-    const first = Array.isArray((data as { choices?: unknown }).choices) ? ((data as { choices: any[] }).choices[0] as { message?: unknown }) : undefined;
+    const first = Array.isArray((data as { choices?: unknown }).choices) ? ((data as { choices: { message?: unknown }[] }).choices[0]) : undefined;
     const msg: ChatMsg = (first?.message as ChatMsg) ?? {};
     const toolCalls = (msg.tool_calls as { id: string; function: { name: string; arguments?: string } }[] | undefined);
 

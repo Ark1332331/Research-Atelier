@@ -55,13 +55,25 @@ function rebuildAbstract(inv?: Record<string, number[]>): string {
   return pos.map((x) => x[1]).join(" ").slice(0, 600);
 }
 
+/** OpenAlex works API 响应条目（只声明本文件实际消费的字段，缺省字段视为可选） */
+type OpenAlexWork = {
+  id?: unknown;
+  doi?: unknown;
+  display_name?: unknown;
+  publication_year?: unknown;
+  open_access?: { is_oa?: unknown; oa_url?: unknown };
+  primary_location?: { pdf_url?: unknown; landing_page_url?: unknown; source?: { display_name?: unknown } };
+  authorships?: { author?: { display_name?: unknown } }[];
+  abstract_inverted_index?: Record<string, number[]>;
+};
+
 /** 用 OpenAlex 检索论文（带重试：网络波动/429 限流时指数退避重试） */
 export async function searchPapers(query: string, max = 6): Promise<PaperHit[]> {
   const q = (query || "").trim();
   const url =
     `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=${Math.min(max, 10)}&mailto=research@atelier.local` +
     `&select=id,doi,display_name,publication_year,open_access,primary_location,authorships,abstract_inverted_index`;
-  let d: { results?: unknown[] } = {};
+  let d: { results?: OpenAlexWork[] } = {};
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 800 * 2 ** (attempt - 2)));
@@ -77,9 +89,9 @@ export async function searchPapers(query: string, max = 6): Promise<PaperHit[]> 
   if (lastErr || !d?.results) {
     throw lastErr instanceof Error ? lastErr : new Error("检索失败：网络到 api.openalex.org 不稳定");
   }
-  return ((d.results as any[]) ?? []).map((p) => {
-    const authors = ((p.authorships as any[]) ?? []).slice(0, 4).map((a) => a?.author?.display_name).filter(Boolean).join(", ");
-    const oaPdf = p?.open_access?.oa_url || p?.primary_location?.pdf_url || undefined;
+  return ((d.results ?? [])).map((p) => {
+    const authors = ((p.authorships ?? []).slice(0, 4)).map((a) => a?.author?.display_name).filter(Boolean).map(String).join(", ");
+    const oaPdf = (p?.open_access?.oa_url || p?.primary_location?.pdf_url || undefined) as string | undefined;
     const isOa = Boolean(p?.open_access?.is_oa || oaPdf);
     const landing = p?.primary_location?.landing_page_url || p?.doi || "";
     const arxivMatch = String(oaPdf || landing || "").match(/arxiv\.org\/(?:abs|pdf)\/([^/#?]+)/);
@@ -119,7 +131,7 @@ export async function downloadPaper(opts: {
   title?: string;
 }): Promise<{ slug: string; title: string; pages: number; url: string; imported: boolean }> {
   let url = (opts.pdfUrl || "").trim();
-  let arxivId = (opts.arxivId || "").trim().replace(/^https?:\/\/arxiv\.org\/(?:abs|pdf)\//, "").replace(/\.pdf$/, "");
+  const arxivId = (opts.arxivId || "").trim().replace(/^https?:\/\/arxiv\.org\/(?:abs|pdf)\//, "").replace(/\.pdf$/, "");
   const title = (opts.title || "").trim().slice(0, 200);
 
   const isOaPdf = (u: string) => u.startsWith("http://") || u.startsWith("https://");
@@ -193,7 +205,7 @@ export async function downloadPaper(opts: {
 /** 把导入的论文写进论文库 data/library.json（去重：同 slug 不重复加） */
 async function addToLibrary(meta: PaperMeta): Promise<void> {
   const raw = await readStore("library.json");
-  let lib: { groups: unknown[]; papers: any[] };
+  let lib: { groups: unknown[]; papers: Record<string, unknown>[] };
   try {
     lib = raw ? JSON.parse(raw) : { groups: [], papers: [] };
     if (!Array.isArray(lib.papers)) lib.papers = [];

@@ -12,7 +12,6 @@ import type {
   SearchIntent, CanonicalPaper, TermCalibration,
 } from "./types.ts";
 
-const ROLES: ConceptRole[] = ["coreTask", "method", "broaderField", "application", "adjacent"];
 const CONF = ["high", "medium", "low"];
 
 function str(v: unknown): string { return typeof v === "string" ? v.trim() : ""; }

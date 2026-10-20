@@ -7,8 +7,20 @@
  */
 import type { CanonicalPaper, CandidateInput, CandidateResolution, EvidenceGate } from "./types.ts";
 import { canonicalFromImport } from "./inbox.ts";
-import { enrichCandidate, applyEnrichment, emptyEvidence, rebuildAbstract } from "./enrich.ts";
+import { enrichCandidate, applyEnrichment, emptyEvidence, rebuildAbstract, type EnrichmentResult } from "./enrich.ts";
 import { normalizedTitle, normalizeDoi, normalizeArxivId } from "./types.ts";
+
+/** OpenAlex works API 响应条目（只声明本文件实际消费的字段，缺省字段视为可选） */
+type OpenAlexHit = {
+  display_name?: unknown;
+  publication_year?: unknown;
+  cited_by_count?: unknown;
+  abstract_inverted_index?: Record<string, number[]>;
+  authorships?: { author?: { display_name?: unknown } }[];
+  primary_location?: { source?: { display_name?: unknown } };
+  open_access?: { oa_url?: unknown };
+  ids?: { doi?: unknown; arxiv?: unknown };
+};
 
 const OPENALEX = "https://api.openalex.org/works";
 const UA = "ResearchAtelier/0.1 (mailto:research@atelier.local)";
@@ -102,7 +114,7 @@ export async function resolveCandidate(input: CandidateInput): Promise<ResolveOu
       );
       if (res.ok) {
         const d = await res.json();
-        const results: any[] = (d?.results ?? []).filter((r: any) => normalizedTitle(r?.display_name) === normalizedTitle(title));
+        const results = ((d as { results?: OpenAlexHit[] })?.results ?? []).filter((r) => normalizedTitle(String(r?.display_name ?? "")) === normalizedTitle(title));
         if (results.length === 0) {
           warnings.push("OpenAlex 无严格标题匹配：真实身份未解析（不猜）");
           const r0: CandidateResolution = { status: "unresolved", matchConfidence: "low", resolvedAt: new Date().toISOString(), warnings };
@@ -127,15 +139,15 @@ export async function resolveCandidate(input: CandidateInput): Promise<ResolveOu
         // 唯一命中 → resolved（构造 enrichment 结果）
         const hit = results[0];
         const evidence = emptyEvidence();
-        const patch: any = {};
-        const authors = (hit.authorships ?? []).slice(0, 10).map((a: any) => a?.author?.display_name).filter(Boolean);
+        const patch: EnrichmentResult["patch"] = {};
+        const authors = (hit.authorships ?? []).slice(0, 10).map((a) => a?.author?.display_name).filter(Boolean).map(String);
         if (hit.display_name) { patch.title = String(hit.display_name); evidence.title.push("openalex"); }
         if (authors.length) { patch.authors = authors; evidence.authors.push("openalex"); }
         if (hit.publication_year) { patch.year = Number(hit.publication_year); evidence.year.push("openalex"); }
         if (hit.primary_location?.source?.display_name) { patch.venue = String(hit.primary_location.source.display_name); evidence.venue.push("openalex"); }
         if (hit.abstract_inverted_index) { patch.abstract = rebuildAbstract(hit.abstract_inverted_index); evidence.abstract.push("openalex"); }
-        if (hit.ids?.doi) { const nd = normalizeDoi(hit.ids.doi); if (nd) { patch.doi = nd; evidence.doi.push("openalex"); } }
-        if (hit.ids?.arxiv) { const na = normalizeArxivId(hit.ids.arxiv); if (na) patch.arxivId = na; }
+        if (hit.ids?.doi) { const nd = normalizeDoi(String(hit.ids.doi)); if (nd) { patch.doi = nd; evidence.doi.push("openalex"); } }
+        if (hit.ids?.arxiv) { const na = normalizeArxivId(String(hit.ids.arxiv)); if (na) patch.arxivId = na; }
         if (typeof hit.cited_by_count === "number") evidence.citations.openAlex = hit.cited_by_count;
         if (hit.open_access?.oa_url) { patch.oaPdfUrl = String(hit.open_access.oa_url); evidence.oa.push("openalex"); }
         const paper = applyEnrichment(base, { patch, evidence, warnings: [] });

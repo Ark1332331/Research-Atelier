@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import CandidateWorkbench from "@/components/candidate-workbench";
+import type { AcademicConceptMap, DatabaseStrategy, DiscoveryEvent, NextStep, QueryLadderTier, ResearchSession } from "@/lib/search/types";
+
+/** API 响应的本地形态（只声明本组件实际消费的字段；成功响应必含 session） */
+type ApiResponse = { error?: string; hint?: string; session: ResearchSession; nextStep?: NextStep };
 
 /**
  * Literature Discovery · Phase A + Phase B-lite UI（v1.2 + v1.6）：
@@ -19,8 +23,8 @@ const STAGE_LABEL: Record<string, string> = {
 
 export default function Discovery() {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [session, setSession] = useState<any>(null);
-  const [nextStep, setNextStep] = useState<any>(null);
+  const [session, setSession] = useState<ResearchSession | null>(null);
+  const [nextStep, setNextStep] = useState<NextStep | null | undefined>(null);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -37,7 +41,7 @@ export default function Discovery() {
       .catch(() => {});
   }, []);
 
-  async function post(path: string, body: any): Promise<any> {
+  async function post(path: string, body: unknown): Promise<ApiResponse | null> {
     setBusy(true); setError("");
     try {
       const res = await fetch(path, {
@@ -45,7 +49,7 @@ export default function Discovery() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const d = await res.json();
+      const d = (await res.json()) as ApiResponse;
       if (!res.ok) { setError((d.error ?? "失败") + (d.hint ? " — " + d.hint : "")); return null; }
       return d;
     } finally { setBusy(false); }
@@ -59,13 +63,13 @@ export default function Discovery() {
     setSessionId(d.session.id); setSession(d.session); setNextStep(d.nextStep);
   }
 
-  async function act(action: string, extra: any = {}) {
+  async function act(action: string, extra: Record<string, unknown> = {}) {
     if (!sessionId) return;
     const d = await post("/api/literature/action", { sessionId, action, ...extra });
     if (d) { setSession(d.session); setNextStep(d.nextStep); }
   }
 
-  async function copyAndOpen(db: any) {
+  async function copyAndOpen(db: DatabaseStrategy) {
     const query = db.recommendedFirst ?? db.queries?.[0];
     const url = db.deepLinkUrl ?? db.landingUrl;
     let opened: Window | null = null;
@@ -81,8 +85,8 @@ export default function Discovery() {
 
   const stage: string = session?.stage ?? "planning";
   const plan = session?.plan;
-  const primary = (plan?.databases ?? []).find((d: any) => d.recommendedNow) ?? plan?.databases?.[0];
-  const others = (plan?.databases ?? []).filter((d: any) => d !== primary);
+  const primary = (plan?.databases ?? []).find((d) => d.recommendedNow) ?? plan?.databases?.[0];
+  const others = (plan?.databases ?? []).filter((d) => d !== primary);
 
   return (
     <div style={{ maxWidth: 760, padding: "1.5rem 1.5rem 3rem", display: "flex", flexDirection: "column", gap: "1.1rem" }}>
@@ -164,19 +168,19 @@ export default function Discovery() {
                 </ol>
               </div>
 
-              {(others.length > 0 || plan?.ladder?.tiers.length > 1) && (
+              {(others.length > 0 || (plan?.ladder?.tiers.length ?? 0) > 1) && (
                 <details style={{ fontSize: "0.82rem" }}>
                   <summary className="mono-label" style={{ cursor: "pointer", color: "var(--muted-foreground)" }}>之后可以（折叠）</summary>
                   <ul style={{ margin: "0.5rem 0 0 1.1rem", display: "flex", flexDirection: "column", gap: "0.4rem" }}>
-                    {plan?.ladder?.tiers.slice(plan.ladder.activeTier + 1).map((t: any, i: number) => (
+                    {plan?.ladder?.tiers.slice(plan.ladder.activeTier + 1).map((t: QueryLadderTier, i: number) => (
                       <li key={i}>
-                        <strong>第 {plan.ladder.activeTier + 2 + i} 层 · {t.label}</strong> — {t.why}
+                        <strong>第 {plan!.ladder!.activeTier + 2 + i} 层 · {t.label}</strong> — {t.why}
                         <div className="mono-label" style={{ color: "var(--muted-foreground)" }}>
                           {t.conceptGroups.map((g: string[]) => g.join(" OR ")).join(" AND ")}
                         </div>
                       </li>
                     ))}
-                    {others.map((db: any) => (
+                    {others.map((db: DatabaseStrategy) => (
                       <li key={db.id}>
                         <strong>{dbName(db.id)}</strong> — {db.why}
                         <div className="mono-label" style={{ color: "var(--muted-foreground)" }}>{db.queries?.[0]}</div>
@@ -200,7 +204,7 @@ export default function Discovery() {
                 发现过程（{(session.events ?? []).length} 步）
               </summary>
               <ol style={{ margin: "0.5rem 0 0 1.1rem", display: "flex", flexDirection: "column", gap: "0.3rem" }}>
-                {(session.events ?? []).map((ev: any, i: number) => (
+                {(session.events ?? []).map((ev: DiscoveryEvent, i: number) => (
                   <li key={i}>
                     <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>{evLabel(ev.kind)}{evDetail(ev)}</span>
                   </li>
@@ -214,12 +218,12 @@ export default function Discovery() {
   );
 }
 
-function ConceptMapView({ map }: { map: any }) {
-  const bucket = (key: string, label: string) =>
+function ConceptMapView({ map }: { map: AcademicConceptMap }) {
+  const bucket = (key: "coreTasks" | "methods" | "broaderFields" | "applicationTerms" | "adjacentTerms", label: string) =>
     (map[key] ?? []).length > 0 ? (
       <p style={{ margin: "0.15rem 0" }}>
         <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>{label}　</span>
-        {(map[key] ?? []).map((c: any) => c.canonical ?? c.term).join("、")}
+        {(map[key] ?? []).map((c) => c.canonical).join("、")}
       </p>
     ) : null;
   return (
@@ -232,12 +236,12 @@ function ConceptMapView({ map }: { map: any }) {
       {bucket("adjacentTerms", "邻近概念")}
       {(map.ambiguousTerms ?? []).length > 0 && (
         <p style={{ margin: "0.2rem 0 0", color: "#c0392b" }}>
-          歧义/非标准表达（第一轮不锁定）：{(map.ambiguousTerms ?? []).map((a: any) => a.term + (a.suggestedCanonical ? " → " + a.suggestedCanonical : "")).join("、")}
+          歧义/非标准表达（第一轮不锁定）：{(map.ambiguousTerms ?? []).map((a) => a.term + (a.suggestedCanonical ? " → " + a.suggestedCanonical : "")).join("、")}
         </p>
       )}
       {(map.applicationTerms ?? []).length > 0 && (
         <p style={{ margin: "0.2rem 0 0", color: "var(--muted-foreground)" }}>
-          应用场景（如 {(map.applicationTerms ?? []).map((a: any) => a.canonical).join("、")}）第一轮不直接锁死——先建立上位领域/核心任务的候选池，再逐层收窄。
+          应用场景（如 {(map.applicationTerms ?? []).map((a) => a.canonical).join("、")}）第一轮不直接锁死——先建立上位领域/核心任务的候选池，再逐层收窄。
         </p>
       )}
     </div>
@@ -260,18 +264,18 @@ function evLabel(kind: string): string {
   return m[kind] ?? kind;
 }
 
-function evDetail(ev: any): string {
+function evDetail(ev: DiscoveryEvent): string {
   const d = ev?.detail ?? {};
   switch (ev?.kind) {
-    case "plan-generated": return "（第 " + (d.tier ?? 1) + "/" + (d.totalTiers ?? 1) + " 层 · " + (d.tierLabel ?? "") + "）";
-    case "tier-advanced": return "（第 " + d.from + " → 第 " + d.to + " 层 · " + (d.toLabel ?? "") + "）";
-    case "external-opened": return "（" + (d.database ?? "") + "）";
-    case "batch-imported": return "（" + (d.rawItems ?? 0) + " 条 → 候选 " + (d.unique ?? 0) + " 篇）";
-    case "candidate-resolved": return "（" + (d.title ?? "") + " · " + (d.confidence ?? "") + (d.merged ? " · 合并" : "") + "）";
-    case "candidate-pending": return "（" + (d.status ?? "") + "）";
-    case "calibration": return "（confirmed: " + ((d.confirmed ?? []).length) + " · suggested: " + ((d.suggested ?? []).length) + " · weakOrRare: " + ((d.weakOrRare ?? []).length) + "）";
-    case "triage-computed": return "（" + (d.count ?? 0) + "/" + (d.total ?? 0) + " 篇有摘要可筛）";
-    case "seeds-selected": return "（" + ((d.ids ?? []).length) + " 篇）";
+    case "plan-generated": return "（第 " + String(d.tier ?? 1) + "/" + String(d.totalTiers ?? 1) + " 层 · " + String(d.tierLabel ?? "") + "）";
+    case "tier-advanced": return "（第 " + String(d.from) + " → 第 " + String(d.to) + " 层 · " + String(d.toLabel ?? "") + "）";
+    case "external-opened": return "（" + String(d.database ?? "") + "）";
+    case "batch-imported": return "（" + String(d.rawItems ?? 0) + " 条 → 候选 " + String(d.unique ?? 0) + " 篇）";
+    case "candidate-resolved": return "（" + String(d.title ?? "") + " · " + String(d.confidence ?? "") + (d.merged ? " · 合并" : "") + "）";
+    case "candidate-pending": return "（" + String(d.status ?? "") + "）";
+    case "calibration": return "（confirmed: " + ((d.confirmed ?? []) as unknown[]).length + " · suggested: " + ((d.suggested ?? []) as unknown[]).length + " · weakOrRare: " + ((d.weakOrRare ?? []) as unknown[]).length + "）";
+    case "triage-computed": return "（" + String(d.count ?? 0) + "/" + String(d.total ?? 0) + " 篇有摘要可筛）";
+    case "seeds-selected": return "（" + ((d.ids ?? []) as unknown[]).length + " 篇）";
     default: return "";
   }
 }

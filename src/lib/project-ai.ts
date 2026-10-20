@@ -56,7 +56,7 @@ async function changedReadableFiles(root: string): Promise<{ files: string[]; om
   const omitted: string[] = [];
   for (const rel of names.slice(0, 80)) {
     const normalized = rel.replace(/\\/g, "/");
-    const readable = await checkReadable(path.join(root, normalized), normalized);
+    const readable = await checkReadable(path.join(root, normalized));
     if (readable.read) files.push(normalized);
     else omitted.push(`${normalized} (${readable.reason})`);
   }
@@ -94,7 +94,7 @@ async function untrackedSnippets(root: string, status: string): Promise<string> 
     if (used >= 12000) break;
     const normalized = rel.replace(/\\/g, "/");
     const full = path.join(root, normalized);
-    const readable = await checkReadable(full, normalized);
+    const readable = await checkReadable(full);
     if (!readable.read) {
       snippets.push(`### ${normalized}\n（跳过：${readable.reason}）`);
       continue;
@@ -119,7 +119,7 @@ async function codeContext(project: PaperProject): Promise<string> {
     for (const file of candidates) {
       if (used >= 26000) break;
       const full = path.join(root, file.path);
-      const readable = await checkReadable(full, file.path);
+      const readable = await checkReadable(full);
       if (!readable.read) continue;
       const content = await fs.readFile(full, "utf-8").catch(() => "");
       if (!content) continue;

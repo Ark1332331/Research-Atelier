@@ -16,7 +16,7 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { factDef, KNOWN_FACTS, type FactCategory } from "./fact-taxonomy.ts";
+import { factDef } from "./fact-taxonomy.ts";
 import { CATEGORY_SNAPSHOT } from "./fact-extract.ts";
 import type { Fact, Mapping, MappingRelation, FactConfidence, CodeRef, PaperRef } from "@/lib/reproduction-spec";
 
@@ -59,7 +59,7 @@ function extractSymbols(content: string, isPy: boolean): { symbol: string; line:
 
 /** 从 snapshot 候选文件构建 code anchors（安全 snippet；同文件多 symbol → 多 anchor，不错误去重） */
 export async function buildCodeAnchors(
-  snapshot: Record<string, any>,
+  snapshot: Record<string, unknown>,
   baseRoot: string,
   scope: { categories: string[]; maxPerFact: number },
 ): Promise<CodeAnchor[]> {
@@ -218,7 +218,7 @@ export function rejectMapping(mappings: Mapping[], id: string): Mapping[] {
 /** 每个 paper fact 按 category 路由到 snapshot categories，再按证据强度排序取 top N（5–15） */
 export function routeFactCandidates(
   fact: Fact,
-  snapshot: Record<string, any>,
+  snapshot: Record<string, unknown>,
 ): { file: string; score: number }[] {
   const def = factDef(fact.key);
   if (!def) return [];
@@ -243,7 +243,7 @@ export function routeFactCandidates(
 /** 为一批 paper facts 构建候选 anchors + 每 fact 的 allowed anchor set（5–15 个/ fact）。 */
 export async function buildAnchorsForFacts(
   facts: Fact[],
-  snapshot: Record<string, any>,
+  snapshot: Record<string, unknown>,
   baseRoot: string,
 ): Promise<{ anchors: CodeAnchor[]; factAllowed: Map<string, Set<string>> }> {
   // 收集被路由到的文件集合（按 fact 去重），并记录每个 fact 允许的文件
@@ -254,7 +254,7 @@ export async function buildAnchorsForFacts(
     factFiles.set(f.id, new Set(files));
     for (const file of files) wanted.add(file);
   }
-  const limitedSnapshot: Record<string, any> = {};
+  const limitedSnapshot: Record<string, unknown> = {};
   for (const sc of ["entrypoints", "training", "evaluation", "datasets", "configs", "dependencies"]) {
     const items = ((snapshot[sc] ?? []) as { path?: string }[]).filter((it) => it.path && wanted.has(it.path));
     if (items.length) limitedSnapshot[sc] = items;
@@ -302,7 +302,7 @@ interface RawProposal {
 export async function proposeMappings({
   facts, snapshot, root,
 }: {
-  facts: Fact[]; snapshot: Record<string, any>; root: string;
+  facts: Fact[]; snapshot: Record<string, unknown>; root: string;
 }): Promise<Mapping[]> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) return [];

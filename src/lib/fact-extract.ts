@@ -213,7 +213,7 @@ function repoKeyFromToken(rawKey: string): string | undefined {
 /** 从 snapshot 的候选文件里按 taxonomy→snapshot 映射确定性抽取 fact。
  *  返回 { facts, scannedCategories }：没扫描到的 category 的 required key 会判 not_scanned。 */
 export async function extractRepoFacts(
-  snapshot: Record<string, any>,
+  snapshot: Record<string, unknown>,
   baseRoot: string,
 ): Promise<{ facts: Fact[]; scannedCategories: Set<FactCategory> }> {
   const hits: RepoFactHit[] = [];
@@ -413,7 +413,7 @@ export async function extractPaperFacts(
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) return { facts: [], coverage: { complete: false, totalPages: pageTexts.length, coveredPages: 0, totalChunks: 0, scannedChunks: 0, failedChunks: [], droppedFragments: 0 } };
 
-  const { frags, oversizePages } = pageFragments(pageTexts);
+  const { frags } = pageFragments(pageTexts);
   const chunks = makeChunks(frags);
 
   const allRaw: PaperExtractRaw[] = [];

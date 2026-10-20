@@ -59,6 +59,18 @@ export function applyEnrichment(c: CanonicalPaper, r: EnrichmentResult): Canonic
   };
 }
 
+/** OpenAlex / Crossref API 响应条目（只声明本文件实际消费的字段，缺省字段视为可选） */
+type OpenAlexHit = {
+  display_name?: unknown;
+  publication_year?: unknown;
+  cited_by_count?: unknown;
+  abstract_inverted_index?: Record<string, number[]>;
+  authorships?: { author?: { display_name?: unknown } }[];
+  primary_location?: { source?: { display_name?: unknown } };
+  open_access?: { oa_url?: unknown };
+  ids?: { doi?: unknown; arxiv?: unknown };
+};
+
 /** 单篇 enrichment；失败只记 warnings，不抛错 */
 export async function enrichCandidate(c: CanonicalPaper): Promise<{ paper: CanonicalPaper; warnings: string[] }> {
   const patch: EnrichmentResult["patch"] = {};
@@ -73,15 +85,15 @@ export async function enrichCandidate(c: CanonicalPaper): Promise<{ paper: Canon
       });
       if (res.ok) {
         const d = await res.json();
-        const m = d?.message;
+        const m = (d as { message?: Record<string, unknown> })?.message;
         if (m) {
           const t = Array.isArray(m.title) ? String(m.title[0] ?? "") : String(m.title ?? "");
           if (t) { patch.title = t; evidence.title.push("crossref"); }
-          const auths = (Array.isArray(m.author) ? m.author : []).slice(0, 10)
-            .map((a: any) => [a?.given, a?.family].filter(Boolean).join(" "))
+          const auths = ((Array.isArray(m.author) ? m.author : []) as { given?: unknown; family?: unknown }[]).slice(0, 10)
+            .map((a) => [a?.given, a?.family].filter(Boolean).join(" "))
             .filter(Boolean);
           if (auths.length) { patch.authors = auths; evidence.authors.push("crossref"); }
-          const dp = m?.published?.["date-parts"]?.[0];
+          const dp = (((m.published as { "date-parts"?: unknown[][] } | undefined)?.["date-parts"]) ?? [])[0];
           if (Array.isArray(dp) && dp[0]) { patch.year = Number(dp[0]); evidence.year.push("crossref"); }
           const cont = Array.isArray(m["container-title"]) ? String(m["container-title"][0] ?? "") : "";
           if (cont) { patch.venue = cont; evidence.venue.push("crossref"); }
@@ -100,12 +112,12 @@ export async function enrichCandidate(c: CanonicalPaper): Promise<{ paper: Canon
     const res = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { "User-Agent": UA } });
     if (res.ok) {
       const d = await res.json();
-      const results: any[] = d?.results ?? [];
-      const hit = doi ? results[0] : results.find((r) => normalizedTitle(r?.display_name) === normalizedTitle(c.title));
+      const results: OpenAlexHit[] = (d as { results?: OpenAlexHit[] })?.results ?? [];
+      const hit = doi ? results[0] : results.find((r) => normalizedTitle(String(r?.display_name ?? "")) === normalizedTitle(c.title));
       if (hit) {
         if (!patch.title && hit.display_name) { patch.title = String(hit.display_name); evidence.title.push("openalex"); }
         if (!patch.authors?.length) {
-          const auths = (hit.authorships ?? []).slice(0, 10).map((a: any) => a?.author?.display_name).filter(Boolean);
+          const auths = (hit.authorships ?? []).slice(0, 10).map((a) => a?.author?.display_name).filter(Boolean).map(String);
           if (auths.length) { patch.authors = auths; evidence.authors.push("openalex"); }
         }
         if (patch.year === undefined && hit.publication_year) { patch.year = Number(hit.publication_year); evidence.year.push("openalex"); }
@@ -113,8 +125,8 @@ export async function enrichCandidate(c: CanonicalPaper): Promise<{ paper: Canon
         if (!patch.abstract && hit.abstract_inverted_index) { patch.abstract = rebuildAbstract(hit.abstract_inverted_index); evidence.abstract.push("openalex"); }
         if (typeof hit.cited_by_count === "number") evidence.citations.openAlex = hit.cited_by_count;
         if (hit.open_access?.oa_url) { patch.oaPdfUrl = String(hit.open_access.oa_url); evidence.oa.push("openalex"); }
-        if (hit.ids?.doi && !doi) { const nd = normalizeDoi(hit.ids.doi); if (nd) { patch.doi = nd; evidence.doi.push("openalex"); } }
-        if (hit.ids?.arxiv && !c.arxivId) { const na = normalizeArxivId(hit.ids.arxiv); if (na) patch.arxivId = na; }
+        if (hit.ids?.doi && !doi) { const nd = normalizeDoi(String(hit.ids.doi)); if (nd) { patch.doi = nd; evidence.doi.push("openalex"); } }
+        if (hit.ids?.arxiv && !c.arxivId) { const na = normalizeArxivId(String(hit.ids.arxiv)); if (na) patch.arxivId = na; }
       } else {
         warnings.push(doi ? "OpenAlex 未核实（DOI 无结果）" : "OpenAlex 未核实（无严格标题匹配）");
       }

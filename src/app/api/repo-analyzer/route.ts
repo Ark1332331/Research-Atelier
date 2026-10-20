@@ -12,7 +12,7 @@ import { withToolObservation } from "@/lib/learning/tool-observation";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildRepositorySnapshot } from "@/lib/code-reader";
-import { readStore, writeStore } from "@/lib/store";
+import { readStore } from "@/lib/store";
 
 interface RootConfig { id: string; name: string; root: string }
 

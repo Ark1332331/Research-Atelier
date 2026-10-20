@@ -5,6 +5,7 @@
    "point cloud / locomotion / voxel grid" 等词的字形上。 */
 
 import type { Term } from "@/app/api/terms/route";
+import type { PDFPageProxy, PageViewport } from "pdfjs-dist";
 
 export function engName(t: Term) { return t.name.split("/")[0].trim(); }
 export function norm(s: string) { return s.toLowerCase().replace(/[^a-z0-9]/g, ""); }
@@ -19,7 +20,7 @@ const HEADER_RE = /^IEEE ROBOTICS|^arXiv/i;
 const MARKER_RE = /^[\u2022\u25aa\u25cf\u25e6\u00b7*\-\u2013\u2014\s]+$/;
 
 // 读取页文本 + 每项真实 CSS px 框
-export async function getPageItems(page: any, vp: any): Promise<TextItem[]> {
+export async function getPageItems(page: PDFPageProxy, vp: PageViewport): Promise<TextItem[]> {
   const tc = await page.getTextContent();
   const out: TextItem[] = [];
   for (const raw of tc.items) {
@@ -137,7 +138,7 @@ export function matchTerms(items: TextItem[], terms: Term[]): TermBox[] {
       if (!seen.has(key)) { seen.add(key); boxes.push({ x: it.x, y: it.y, w: it.w, h: it.h, term: exact.t }); }
       continue;
     }
-    const sub = termList.find(({ n, eng }) => n.length >= 4 && tnorm.includes(n));
+    const sub = termList.find(({ n }) => n.length >= 4 && tnorm.includes(n));
     if (sub && !seen.has(`${sub.eng}|${Math.round(it.baseline)}`)) {
       seen.add(`${sub.eng}|${Math.round(it.baseline)}`);
       const idx = it.text.toLowerCase().indexOf(sub.eng.toLowerCase());

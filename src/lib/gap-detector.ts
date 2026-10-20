@@ -42,7 +42,7 @@ function severityOf(key: string, type: GapType): Gap["severity"] {
 }
 
 /** required not_scanned → Ready blocker（但 resolvableGaps 排除它，不能 Decision 消解） */
-function blocksReadyOf(key: string, type: GapType): boolean {
+function blocksReadyOf(key: string): boolean {
   const def = factDef(key);
   const importance = def?.importance ?? "recommended";
   return importance === "required"; // value/source/not_found/not_scanned/uncomparable/missing_required 的 required 都阻塞
@@ -58,7 +58,7 @@ function mkGap(o: {
   const category = def?.category ?? "training";
   return {
     id: gapId(o.key, o.type, o.salt), key: o.key, category,
-    type: o.type, severity: severityOf(o.key, o.type), blocksReady: blocksReadyOf(o.key, o.type),
+    type: o.type, severity: severityOf(o.key, o.type), blocksReady: blocksReadyOf(o.key),
     paperFacts: o.paperFacts, repoFacts: o.repoFacts,
     paperValue: o.paperValue, repoValue: o.repoValue, paperNormalized: o.paperNormalized, repoNormalized: o.repoNormalized,
     description: o.description,
