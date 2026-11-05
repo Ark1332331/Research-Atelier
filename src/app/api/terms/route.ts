@@ -4,10 +4,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "@/lib/store";
-import { readTerms, mutateTerms, mergeExtractedTerms } from "@/lib/terms-store";
+import { readTerms, mutateTerms } from "@/lib/terms-store";
 import { reviewTerm, termKey, TERM_STATUSES, type Term, type TermAssessment } from "@/lib/terms";
 import { studyJson, modelText } from "@/lib/study-model";
 import { prepareLearning, finishLearning, mutateLearning, addProposal } from "@/lib/learning/store";
+import { listProjects } from '@/lib/project';
 
 export type { Term } from "@/lib/terms";
 export const runtime = "nodejs";
@@ -19,17 +20,28 @@ async function observedPOST(request: Request) {
 
     if(body.action === "capture") {
       if(typeof body.slug!=="string"||!/^[\p{L}\p{N}_.-]{1,180}$/u.test(body.slug)||body.slug==="."||body.slug===".."||!Number.isInteger(body.page)||body.page<1||body.page>10000||typeof body.text!=="string"||body.text.length<2||body.text.length>160)throw Error("请选择当前论文中的术语");
+      if(typeof body.meaning!=='string'||!body.meaning.trim()||body.meaning.length>4000)throw Error('请先完成翻译，再收藏释义（最多 4000 字符）');
       const dir=path.join(DATA_DIR,"papers",body.slug);const meta=JSON.parse(await fs.readFile(path.join(dir,"meta.json"),"utf8"));
+      if(body.docId!==undefined&&createHash('sha256').update(await fs.readFile(path.join(dir,'original.pdf'))).digest('hex')!==body.docId)throw Error('论文文件已变化，请刷新后重新选择');
       const original=await fs.readFile(path.join(dir,`page_${String(body.page).padStart(2,"0")}.txt`),"utf8");
       const escaped=body.text.trim().replace(/[.*+?^${}()|[\]\\]/g,"\\$&").replace(/\s+/g,"\\s+");const m=new RegExp(escaped,"i").exec(original);if(!m)throw Error("无法在该页原文中核对所选术语，请换一处选区");
-      const quote=original.slice(Math.max(0,m.index-100),m.index+m[0].length+180);const pages=Array.from({length:body.page},()=>"");pages[body.page-1]=original;
-      const terms=await mergeExtractedTerms([{name:body.text,quote}],{slug:body.slug,title:meta.title??body.slug},pages);
-      return Response.json({terms,saved:terms.find(t=>termKey(t.name)===termKey(body.text))});
+      const quote=original.slice(Math.max(0,m.index-100),m.index+m[0].length+180),meaning=body.meaning.trim();
+      return Response.json(await mutateTerms(items=>{
+        let saved=items.find(t=>termKey(t.name)===termKey(body.text));
+        if(!saved){saved={id:randomUUID(),name:body.text.trim(),role:'科研术语',status:'未接触',reuse:'通用',note:'',source:meta.title??body.slug,links:'',updatedAt:'',collection:'manual'};items.push(saved);}
+        saved.collection='manual';saved.meaning ||= meaning;saved.updatedAt=new Date().toISOString();saved.contexts??=[];saved.papers??=[];
+        if(!saved.papers.some(p=>p.slug===body.slug))saved.papers.push({slug:body.slug,title:meta.title??body.slug});
+        const context=saved.contexts.find(c=>c.slug===body.slug&&c.page===body.page&&c.quote===quote);
+        if(context)context.meaning=meaning;else saved.contexts.push({slug:body.slug,title:meta.title??body.slug,page:body.page,quote,meaning});
+        return {terms:items,saved};
+      }));
     }
     if (body.action === "explain" || body.action === "assess") {
       const term = (await readTerms()).find(t => t.id === body.id); if (!term) throw Error("术语不存在");
       const context = term.contexts?.find(c => c.slug === body.slug);
-      const learning = await prepareLearning(`解释术语 ${term.name}`, "paper", null);
+      if(body.action==='assess'&&(typeof body.answer!=='string'||!body.answer.trim()||body.answer.length>5000))throw Error('先写下你的真实复述');
+      const projectId=context?.slug?(await listProjects()).find(p=>p.paperSlug===context.slug)?.id??null:null;
+      const learning = await prepareLearning(body.action==='assess'?body.answer.trim():`解释术语 ${term.name}`, "paper", projectId, true, context?.slug??null);
       try {
         if(body.action === "assess") {
           if(typeof body.answer!=="string" || !body.answer.trim() || body.answer.length>5000) throw Error("先写下你的真实复述");
@@ -40,7 +52,7 @@ async function observedPOST(request: Request) {
           const result=await mutateTerms(items=>{const current=items.find(t=>t.id===term.id);if(!current)throw Error("术语已删除");if(current.updatedAt!==term.updatedAt)throw Error("笔记已变化，请重新检查复述");current.assessments??=[];current.assessments.push(assessment);current.updatedAt=new Date().toISOString();return {terms:items,assessment,saved:current};});
           const candidateIds:string[]=[];
           if(assessment.verdict==="needs-work") await mutateLearning(state=>{const m=addProposal(state,{key:`term-gap:${term.id}:${context?.slug??"global"}`,kind:"gap",text:`讲解 ${term.name} 时先针对本次复述的卡点解释：${assessment.feedback}。用一个最小例子澄清，再问：${assessment.nextQuestion}。这是模型从一次复述提出的改法，不能据此断言永久能力不足。`,quote:assessment.answer,scene:"paper",projectId:null,source:`术语复述检查 ${assessment.id} / 模型推断 / 待用户确认`});if(m)candidateIds.push(m.id);});
-          await recordObservation({traceId:learning.id,source:"术语复述检查",scene:"paper",resourceId:context?.slug,kind:"recall",action:assessment.verdict==="needs-work"?"发现可能的概念误解":"完成复述核对",userText:assessment.answer,candidateIds});
+          await recordObservation({traceId:learning.id,source:"术语复述检查",scene:"paper",projectId,resourceId:context?.slug,kind:"recall",action:assessment.verdict==="needs-work"?"发现可能的概念误解":"完成复述核对",userText:assessment.answer,context:[{role:'assistant',content:`请复述术语：${term.name}。本次核对意见（仅作上下文）：${assessment.feedback}`}],candidateIds});
           await finishLearning(learning,JSON.stringify(assessment));return Response.json(result);
         }
         const d = await studyJson('给科研学习者解释术语。返回 {"note":"一句话中文定义","mechanism":"机制：具体输入如何变化为输出，不能只说提取特征","example":"一个最小具体例子，绑定到真实对象","nextAction":"一条可复述或在论文中定位的检查问题"}。区分通用定义与该论文的实现；没有原文证据不得断言输入是否网格化、网络操作或输出结构。材料不足时明确说是假设例子，不编造论文结论。' + learning.prompt, { term: term.name, role: term.role, context: context ?? { meaning: term.note, source: term.source }, existingNote:term.note, existingMechanism:term.mechanism });
@@ -69,8 +81,8 @@ async function observedPOST(request: Request) {
       if (input.status && !TERM_STATUSES.includes(input.status)) throw Error("理解状态无效");
       if (i >= 0 && input.status && input.status !== terms[i].status) throw Error("请通过复述回顾记录理解状态");
       const old: Term = i >= 0 ? terms[i] : { id: randomUUID(), name: input.name, role: "领域背景", reuse: "通用", status: "未接触", note: "", source: "手动建卡", links: "", updatedAt: "" };
-      const saved = { ...old, updatedAt: new Date().toISOString() };
-      for (const key of ["name","role","reuse","note","source","links","mechanism","example","nextAction","explanationSource"] as const) { if (input[key] !== undefined) { if (typeof input[key] !== "string" || input[key].length > 5000) throw Error("卡片字段格式无效"); saved[key] = input[key].trim(); } }
+      const saved:Term = { ...old, collection:'manual', updatedAt: new Date().toISOString() };
+      for (const key of ["name","meaning","role","reuse","note","source","links","mechanism","example","nextAction","explanationSource"] as const) { if (input[key] !== undefined) { if (typeof input[key] !== "string" || input[key].length > 5000) throw Error("卡片字段格式无效"); saved[key] = input[key].trim(); } }
       if (i >= 0) terms[i] = saved; else terms.push(saved); return { terms, saved };
     }));
   } catch (e) { return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 }); }

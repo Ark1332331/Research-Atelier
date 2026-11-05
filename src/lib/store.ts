@@ -1,6 +1,6 @@
 /**
  * 存储适配器（数据层地基）：
- * - 本地开发：读写 data/ 文件（现状不变，data/ 仍是本地真相源与种子数据）
+ * - 本地开发：读写固定用户数据目录；构建缓存只能在明确的隔离测试中使用
  * - 桌面壳（Electron）：环境变量 RA_DATA_DIR 指向用户可写目录（app.getPath('userData')/data），
  *   打包后数据落在用户目录、不写死在安装目录；dev 不设该变量则行为与现状完全一致
  * - 生产（Vercel）：读写 Vercel KV（配置 VERCEL_KV_REST_API_URL + VERCEL_KV_REST_API_TOKEN 即自动切换）
@@ -10,6 +10,7 @@
 import { promises as fs, cpSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveDataDirectory } from './data-directory.ts';
 
 /**
  * 本地 dev 与 Electron 共用用户数据目录，避免 `npm run dev` 和桌面版各自维护一套数据。
@@ -26,7 +27,7 @@ function resolveLocalUserData(): string {
     // 一次性迁移：旧 .config 目录里有数据、新目录还没初始化 → 整目录拷过去
     try {
       if (existsSync(path.join(legacy, "projects.json")) && !existsSync(path.join(dir, "projects.json"))) {
-        cpSync(legacy, dir, { recursive: true });
+        cpSync(legacy, dir, { recursive: true, force: false });
       }
     } catch { /* 迁移失败不阻塞：继续用新目录（可能为空库） */ }
     return dir;
@@ -34,8 +35,7 @@ function resolveLocalUserData(): string {
   return legacy;
 }
 const localUserData = resolveLocalUserData();
-const deployed = Boolean(process.env.VERCEL);
-export const DATA_DIR = process.env.RA_DATA_DIR ?? (deployed ? path.join(process.cwd(), "data") : localUserData);
+export const DATA_DIR = resolveDataDirectory(process.env, process.cwd(), localUserData);
 const KV_URL = process.env.VERCEL_KV_REST_API_URL;
 const KV_TOKEN = process.env.VERCEL_KV_REST_API_TOKEN;
 const useKV = Boolean(KV_URL && KV_TOKEN);

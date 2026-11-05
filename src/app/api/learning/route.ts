@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       return Response.json({state:await readLearning(),queued:true,observationId:observation.id});
     }
     const state=await manageLearning(body);
-    if(body.action==="feedback"&&body.helpful===false&&typeof body.note==="string"&&body.note.trim()){const run=state.runs.find(r=>r.id===body.runId);if(run)await recordObservation({source:"回答反馈",scene:run.scene,projectId:run.projectId,kind:"feedback",action:"换个讲法",userText:body.note,context:observationContext([{role:"user",content:run.query},{role:"assistant",content:run.answer}])});}
+    if(body.action==="feedback"&&body.helpful===false&&typeof body.note==="string"&&body.note.trim()){const run=state.runs.find(r=>r.id===body.runId);if(run)await recordObservation({source:"回答反馈",scene:run.scene,projectId:run.projectId,resourceId:run.resourceId??undefined,kind:"feedback",action:"换个讲法",userText:body.note,context:observationContext([{role:"user",content:run.query},{role:"assistant",content:run.answer}])});}
     return Response.json(await readLearning());
   }
   catch (e) { const error = e instanceof Error ? e.message : "请求失败"; return Response.json({ error }, { status: error.includes("其他窗口") ? 409 : 400 }); }

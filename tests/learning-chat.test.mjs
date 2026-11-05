@@ -48,8 +48,23 @@ test('failed provider call is visible in the run log', async () => {
   globalThis.fetch = async () => Response.json({ error: { message: 'test provider denied' } }, { status: 401 });
   try {
     assert.equal((await POST(request(true))).status, 401);
-    const run = (await readLearning()).runs.at(-1); assert.equal(run.outcome, 'failed'); assert.equal(run.error, 'test provider denied');
+    const run = (await readLearning()).runs.at(-1); assert.equal(run.outcome, 'failed'); assert.match(run.error, /HTTP 401/); assert.ok(!run.error.includes('test provider denied'));
   } finally { globalThis.fetch = realFetch; }
+});
+
+test('a saved answer can restore its original session by message identity without crossing tools',async()=>{
+  const {GET,POST:history}=await import('../src/app/api/session-history/route.ts');
+  const saved=await (await history(new Request('http://localhost/api/session-history',{method:'POST',body:JSON.stringify({tool:'read-test',action:'upsert',msgs:[{id:'answer-for-note',role:'assistant',content:'供笔记返回的回答',time:'12:00'}]})}))).json();
+  const found=await GET(new Request('http://localhost/api/session-history?tool=read-test&messageId=answer-for-note'));
+  assert.equal(found.status,200);const result=await found.json();assert.equal(result.session.id,saved.id);assert.equal(result.session.msgs[0].content,'供笔记返回的回答');
+  assert.equal((await GET(new Request('http://localhost/api/session-history?tool=other&messageId=answer-for-note'))).status,404);
+  await history(new Request('http://localhost/api/session-history',{method:'POST',body:JSON.stringify({tool:'read-test',action:'delete',id:saved.id})}));
+  assert.equal((await GET(new Request('http://localhost/api/session-history?tool=read-test&messageId=answer-for-note'))).status,404);
+});
+test('chat injects the separate user profile and includes its exact version in response metadata',async()=>{
+ const s=await manageLearning({action:'profile-add',dimension:'background',topic:'语言经历',text:'我有 Java 基础，正在学 Python',scene:'code'});
+ const realFetch=globalThis.fetch;let input;globalThis.fetch=async(_url,options)=>{input=JSON.parse(options.body);return Response.json({choices:[{message:{role:'assistant',content:'用 Java 类比 Python 对象。'}}]});};
+ try{const r=await POST(request(true)),data=await r.json();assert.equal(r.status,200);assert.match(JSON.stringify(input.messages),/Java 基础/);assert.equal(data.learning.profile[0].id,s.profiles[0].id);assert.equal((await readLearning()).runs.at(-1).profile[0].version,s.profiles[0].version);}finally{globalThis.fetch=realFetch;}
 });
 test('ordinary conversational corrections create evidence-backed pending rules without an extra dashboard step',async()=>{
  const realFetch=globalThis.fetch;const quote='你刚才跳过了符号和执行边界，讲得太快';let calls=0;

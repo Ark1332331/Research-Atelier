@@ -2,19 +2,27 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import {ModelControl} from '@/components/model-settings';
+import { useRouter, useSearchParams } from "next/navigation";
 import { FullPdfPage, type WordSelection } from "@/components/full-pdf-page";
+import {useReadingNotes} from "./reading-notes";
+import type {ReadingAnchor} from "@/lib/reading-memory";
+import FloatingPanel from './floating-panel';
+import PaperActions from './paper-actions';
+import {watchPaperChanges} from '@/lib/paper-events';
 import ChatPanel from "@/components/chat-panel";
 import Markdown from "@/components/markdown";
-import { STATUS_COLOR } from "@/components/terms";
+import { useReadingMemory } from "@/components/reading-memory";
 import { termsForPaper, type Term } from "@/lib/terms";
 import type { VocabularyEntry } from "@/lib/vocabulary";
+import { captureReaderSelection, classifySelection, MAX_SELECTION_LENGTH } from "@/lib/reader-selection";
+import ReaderTranslation, { ReaderSelectionToolbar } from "@/components/reader-translation";
 
 /* 全屏阅读器 /read/<slug>。
    点击任意论文标题进入：占满整个视口，左栏可切换文章；所有阅读功能都在这里：
-   术语高亮(落在词上)、缩放(Ctrl+滚轮/按钮/捏合)、连续滚动、
+   手动收藏术语高亮(落在词上)、缩放(Ctrl+滚轮/按钮/捏合)、连续滚动、
    AI 讲解抽屉（复用 ChatPanel，附带论文译文，可拖动/缩放/记住位置）、
-   左栏底部的能力画像（术语状态分布 + 已读进度）、
+   左栏底部的阅读收藏与进度、
    左栏每篇论文的「中」按钮 → 主区切换到上传时生成的整篇中文翻译（/read/<slug>?view=zh）。
 
    缩放契约：纸张定宽（frameWidth = 适应宽度，不随 zoom 变），缩放只放大内容比例；
@@ -22,71 +30,44 @@ import type { VocabularyEntry } from "@/lib/vocabulary";
    段落圆点已按用户要求移除（对齐成本高）；段落级翻译由上传时的全文翻译替代。 */
 
 interface Popover { x: number; y: number; term: Term; }
-interface PaperItem { slug: string; title: string; pages: number; }
-
-/* 与 /api/terms 的 STATUS_OPTIONS 一致（客户端本地副本，避免把服务端 route 模块打进 client bundle） */
-const STATUS_ORDER = ["未接触", "有直觉", "能解释", "能对应论文", "能实现"];
-const STATUS_DOT: Record<string, string> = {
-  "未接触": "#6b7280",
-  "有直觉": "#d9a441",
-  "能解释": "#c8cdd4",
-  "能对应论文": "#7fd08a",
-  "能实现": "#3ecf6e",
-};
-
-const CHAT_BOX_KEY = "reader-chat-box";
-const CHAT_MIN_W = 320, CHAT_MIN_H = 240;
-
-interface ChatBox { x: number; y: number; w: number; h: number; }
-
-function defaultChatBox(): ChatBox {
-  const w = Math.min(440, window.innerWidth - 32);
-  const h = Math.max(320, Math.min(window.innerHeight - 48, 720));
-  return { x: window.innerWidth - w - 16, y: 16, w, h };
-}
-
-function readChatBox(): ChatBox | null {
-  try {
-    const raw = localStorage.getItem(CHAT_BOX_KEY);
-    if (!raw) return null;
-    const b = JSON.parse(raw) as ChatBox;
-    if (typeof b.x !== "number" || typeof b.y !== "number" || typeof b.w !== "number" || typeof b.h !== "number") return null;
-    b.w = Math.min(b.w, window.innerWidth - 8);
-    b.h = Math.min(b.h, window.innerHeight - 8);
-    b.x = Math.min(Math.max(b.x, -b.w + 140), window.innerWidth - 140);
-    b.y = Math.min(Math.max(b.y, 0), window.innerHeight - 48);
-    return b;
-  } catch { return null; }
-}
+interface PaperItem { slug: string; title: string; pages: number; projectId?:string; }
 
 export default function FullReader({ slug }: { slug: string }) {
-  const router=useRouter();
+  const router=useRouter(),searchParams=useSearchParams();
+  const requestedProject=searchParams.get('project');
+  const memory=useReadingMemory();
+  const notes=useReadingNotes();
   const [railOpen,setRailOpen] = useState(false);
   const [words,setWords] = useState<VocabularyEntry[]>([]);
   const [wordLookup,setWordLookup]=useState(false);
   useEffect(()=>{let gone=false;queueMicrotask(()=>{try{if(!gone)setWordLookup(localStorage.getItem("ra-reader-word-lookup")==="true");}catch{/* reading preference is optional */}});return()=>{gone=true;};},[]);
   const [docId,setDocId] = useState(""); const [wordSelection,setWordSelection] = useState<WordSelection | null>(null);
+  const [translationSelection, setTranslationSelection] = useState<WordSelection | null>(null);
+  const latestSelectionRef = useRef<WordSelection | null>(null);
+  const documentScopeRef = useRef('');
   const [wordPop,setWordPop] = useState<{entry:VocabularyEntry;x:number;y:number} | null>(null);
-  const wordCloseRef=useRef<ReturnType<typeof setTimeout>|null>(null);
-  function keepWordOpen(){if(wordCloseRef.current)clearTimeout(wordCloseRef.current);}
-  function closeWordSoon(){keepWordOpen();wordCloseRef.current=setTimeout(()=>setWordPop(null),250);}
-  useEffect(()=>()=>{if(wordCloseRef.current)clearTimeout(wordCloseRef.current);},[]);
-  const [wordBusy,setWordBusy] = useState(false); const [wordError,setWordError] = useState(""); const [showWords,setShowWords] = useState(false);
-  const [pdfError,setPdfError] = useState("");
-  useEffect(() => { let cancelled=false; queueMicrotask(()=>{if(!cancelled){setWords([]);setDocId("");setWordSelection(null);setWordPop(null);setWordError("");}});
-    fetch(`/api/vocabulary?slug=${encodeURIComponent(slug)}`).then(async r => {const d=await r.json();if(!r.ok)throw Error(d.error);if(!cancelled){setWords(d.entries);setDocId(d.docId);}}).catch(e=>{if(!cancelled)setWordError(e.message);});return()=>{cancelled=true;}; },[slug]);
-  async function translateWord() {
-    if(!wordSelection||!docId||wordBusy)return;setWordBusy(true);setWordError("");
-    try { const r=await fetch("/api/vocabulary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"translate",slug,docId,...wordSelection})});const d=await r.json();if(!r.ok)throw Error(d.error);setWords(d.entries);setWordPop({entry:d.saved,x:wordSelection.x,y:wordSelection.y});setWordSelection(null);window.getSelection()?.removeAllRanges(); }
-    catch(e){setWordError(e instanceof Error?e.message:String(e));}finally{setWordBusy(false);}
+  function closeWord(nextTarget?: EventTarget | null) {
+    if (nextTarget instanceof Element && nextTarget.closest('.word-popover-hover')) return;
+    setWordPop(null);
   }
-  async function captureTerm() {
-    if(!wordSelection||wordBusy)return;setWordBusy(true);setWordError("");
-    try {const r=await fetch("/api/terms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"capture",slug,page:wordSelection.page,text:wordSelection.text})});const d=await r.json();if(!r.ok)throw Error(d.error);setTerms(d.terms);setWordSelection(null);window.getSelection()?.removeAllRanges();router.push(`/terms/${d.saved.id}?paper=${encodeURIComponent(slug)}`);}
-    catch(e){setWordError(e instanceof Error?e.message:String(e));}finally{setWordBusy(false);}
+  const [wordError,setWordError] = useState(""); const [showWords,setShowWords] = useState(false);
+  const [pdfError,setPdfError] = useState("");
+  useEffect(() => { let cancelled=false; documentScopeRef.current = slug; queueMicrotask(()=>{if(!cancelled){setWords([]);setDocId("");setWordSelection(null);setTranslationSelection(null);latestSelectionRef.current=null;setWordPop(null);setWordError("");}});
+    let version=0;const refresh=()=>{const token=++version;fetch(`/api/vocabulary?slug=${encodeURIComponent(slug)}`).then(async r => {const d=await r.json();if(!r.ok)throw Error(d.error);if(!cancelled&&token===version){setWords(d.entries);setDocId(d.docId);}}).catch(e=>{if(!cancelled)setWordError(e.message);});};refresh();window.addEventListener('reading-words-changed',refresh);return()=>{cancelled=true;window.removeEventListener('reading-words-changed',refresh);}; },[slug]);
+  function translateSelection() {
+    if (!wordSelection || wordSelection.text.length > MAX_SELECTION_LENGTH) return;
+    setTranslationSelection(wordSelection); setWordSelection(null); setWordPop(null);
+  }
+  async function saveCollection(selection: WordSelection, meaning: string, kind: 'term' | 'word') {
+    if (!docId) throw Error('论文尚未加载完成，请稍后保存。');
+    const r = await fetch(kind==='term'?'/api/terms':'/api/vocabulary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: kind==='term'?'capture':'save', slug, docId, ...selection, meaning }) });
+    const d = await r.json();
+    if (!r.ok) throw Error(d.error || '保存失败，请重试。');
+    if (documentScopeRef.current === slug) {if(kind==='term')setTerms(d.terms);else setWords(d.entries);}
+    window.dispatchEvent(new Event(kind==='term'?'reading-terms-changed':'reading-words-changed'));
   }
   async function removeWord(entry:VocabularyEntry) {
-    try {const r=await fetch("/api/vocabulary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"delete",slug,docId,id:entry.id})});const d=await r.json();if(!r.ok)throw Error(d.error);setWords(d.entries);setWordPop(null);}catch(e){setWordError(e instanceof Error?e.message:String(e));}
+    try {const r=await fetch("/api/vocabulary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"delete",slug,docId,id:entry.id})});const d=await r.json();if(!r.ok)throw Error(d.error);setWords(d.entries);setWordPop(null);window.dispatchEvent(new Event("reading-words-changed"));}catch(e){setWordError(e instanceof Error?e.message:String(e));}
   }
   const [doc, setDoc] = useState<{ getPage: (n: number) => Promise<unknown>; numPages: number } | null>(null);
   const [papers, setPapers] = useState<PaperItem[]>([]);
@@ -95,21 +76,92 @@ export default function FullReader({ slug }: { slug: string }) {
   const [containerW, setContainerW] = useState(0);
   const [pop, setPop] = useState<Popover | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
-  const [chatBox, setChatBox] = useState<ChatBox | null>(null);
+  const [chatVisited,setChatVisited]=useState(false);
   const [paperText, setPaperText] = useState("");
   const [translation, setTranslation] = useState("");
   const [translationError, setTranslationError] = useState("");
   const [zhGenerating, setZhGenerating] = useState(false);
   const [view, setView] = useState<"pdf" | "zh">("pdf");
+  useEffect(()=>{const locate=(event:Event)=>{const anchor=(event as CustomEvent<ReadingAnchor>).detail;if(anchor.slug!==slug)return;if(anchor.origin?.kind==='chat'){setChatVisited(true);setChatOpen(true);}else if(anchor.rects&&anchor.docId===docId){setView('pdf');}};window.addEventListener('reading-open-source',locate);return()=>window.removeEventListener('reading-open-source',locate);},[slug,docId]);
   const [readSet, setReadSet] = useState<Set<number>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
-  const paperDataLoaded = useRef<string | null>(null);
+  const [paperDataLoaded,setPaperDataLoaded]=useState(false);
   const zhTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
-  const dragRef = useRef<{ mode: "move" | "resize"; sx: number; sy: number; box: ChatBox } | null>(null);
+  const translationGeneration=useRef(0);
+  const cancelTranslation=useCallback(()=>{translationGeneration.current++;if(zhTimerRef.current){clearInterval(zhTimerRef.current);zhTimerRef.current=null;}},[]);
 
   const src = `/api/paper/pdf?slug=${encodeURIComponent(slug)}`;
+
+  const receiveSelection = useCallback((selection: WordSelection) => {
+    const old = latestSelectionRef.current;
+    if (old && old.text === selection.text && old.page === selection.page && old.x === selection.x && old.y === selection.y) return;
+    latestSelectionRef.current = selection;
+    setWordSelection(selection); setTranslationSelection(null); setWordPop(null); setPop(null); setWordError('');
+  }, []);
+
+  useEffect(() => {
+    if (view !== 'pdf') return;
+    let dragging = false, frame = 0, timer: ReturnType<typeof setTimeout> | undefined, settledRange: Range | null = null;
+    const capture = () => {
+      if (!scrollRef.current) return;
+      const native = window.getSelection();
+      if (!native?.rangeCount || native.isCollapsed) return;
+      const range = native.getRangeAt(0);
+      if (settledRange && range.startContainer === settledRange.startContainer && range.startOffset === settledRange.startOffset && range.endContainer === settledRange.endContainer && range.endOffset === settledRange.endOffset) return;
+      const selected = captureReaderSelection(scrollRef.current);
+      if (selected) { settledRange = range.cloneRange(); receiveSelection(selected); }
+    };
+    const pointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Element) || !scrollRef.current?.contains(event.target) || !event.target.closest('.reader-text-layer') || event.button !== 0) return;
+      dragging = true; latestSelectionRef.current = null; settledRange = null;
+      cancelAnimationFrame(frame); clearTimeout(timer);
+      setWordSelection(null); setTranslationSelection(null); setWordPop(null);
+    };
+    const pointerUp = () => {
+      if (!dragging) return;
+      dragging = false; cancelAnimationFrame(frame); frame = requestAnimationFrame(capture);
+    };
+    const selectionChange = () => {
+      if (dragging) return;
+      clearTimeout(timer); timer = setTimeout(capture, 120);
+    };
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      clearTimeout(timer); cancelAnimationFrame(frame);
+      setWordSelection(null); setTranslationSelection(null); setWordPop(null);
+      latestSelectionRef.current = null;
+      const native = window.getSelection();
+      if (native?.anchorNode && scrollRef.current?.contains(native.anchorNode)) native.removeAllRanges();
+    };
+    const cancelDrag = () => { dragging = false; clearTimeout(timer); cancelAnimationFrame(frame); };
+    const resize = () => {
+      clearTimeout(timer); cancelAnimationFrame(frame);
+      setWordSelection(null); setWordPop(null);
+      setTranslationSelection(s => s && classifySelection(s.text) === 'word' ? null : s);
+    };
+    const scroller = scrollRef.current;
+    scroller?.addEventListener('scroll', resize, true);
+    document.addEventListener('pointerdown', pointerDown);
+    document.addEventListener('pointerup', pointerUp);
+    document.addEventListener('pointercancel', cancelDrag);
+    document.addEventListener('selectionchange', selectionChange);
+    document.addEventListener('keydown', keyDown);
+    window.addEventListener('blur', cancelDrag);
+    window.addEventListener('resize', resize);
+    return () => {
+      cancelDrag();
+      scroller?.removeEventListener('scroll', resize, true);
+      document.removeEventListener('pointerdown', pointerDown);
+      document.removeEventListener('pointerup', pointerUp);
+      document.removeEventListener('pointercancel', cancelDrag);
+      document.removeEventListener('selectionchange', selectionChange);
+      document.removeEventListener('keydown', keyDown);
+      window.removeEventListener('blur', cancelDrag);
+      window.removeEventListener('resize', resize);
+    };
+  }, [receiveSelection, view]);
 
   // 视图模式：URL ?view=zh 决定（切换论文时跟着 URL 走）
   useEffect(() => {
@@ -117,52 +169,38 @@ export default function FullReader({ slug }: { slug: string }) {
     return()=>{cancelled=true;};
   }, [slug]);
 
-  // 论文列表（左栏切换）
+  // Local edits and changes in another window refresh the same library.
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/paper")
-      .then((r) => r.json())
-      .then((d) => { if (!cancelled) setPapers(d.papers ?? []); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+    let gone=false,version=0,listed=false;
+    const refresh=()=>{const token=++version;fetch('/api/paper').then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'论文库加载失败');if(!gone&&token===version){const items:PaperItem[]=d.papers??[];if(listed&&!items.some(p=>p.slug===slug)){router.replace("/");return;}listed=items.some(p=>p.slug===slug);setPapers(items);}}).catch(e=>{if(!gone)setWordError(e.message);});};
+    refresh();const stop=watchPaperChanges(refresh);return()=>{gone=true;stop();};
+  }, [router,slug]);
 
-  // 术语卡
+  // 主动收藏后同步本篇术语，不重新加载论文。
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/terms")
-      .then((r) => r.json())
-      .then((d) => { if (!cancelled) setTerms(d.terms ?? []); })
-      .catch(() => {});
-    return () => { cancelled = true; };
+    const refresh=()=>{fetch("/api/terms").then(r=>r.json()).then(d=>{if(!cancelled)setTerms(d.terms??[]);}).catch(()=>{});};
+    refresh();window.addEventListener('reading-terms-changed',refresh);
+    return()=>{cancelled=true;window.removeEventListener('reading-terms-changed',refresh);};
   }, []);
 
   // 论文译文（导入时全文翻译生成的 markdown，失败会带 translationError）：
   // - 中文视图直接渲染它；
   // - AI 讲解抽屉把它作为论文上下文（ChatPanel 自动截断长正文）。
   useEffect(() => {
-    if (paperDataLoaded.current === slug) return;
-    paperDataLoaded.current = slug;
-    setTranslation("");
-    setTranslationError("");
-    if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; }
-    setZhGenerating(false);
+    let gone=false;
     fetch(`/api/paper?slug=${encodeURIComponent(slug)}`)
-      .then((r) => r.json())
-      .then((d) => {
-        const pages: { n: number; zh: string }[] = d.pages ?? [];
-        const t: string = d.translation ?? "";
-        setTranslation(t);
-        setTranslationError(d.translationError ?? "");
-        setPaperText(t || pages.map((p) => `【第 ${p.n} 页译文】\n${p.zh}`).join("\n\n"));
-      })
-      .catch(() => {});
-    return () => { if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; } };
-  }, [slug]);
+      .then(async r=>{const d=await r.json();if(!r.ok)throw Error(d.error||'论文加载失败');return d;})
+      .then(d=>{if(gone)return;setPaperDataLoaded(true);setTranslation(d.translation??'');setTranslationError(d.translationError??'');setPaperText(d.translation||(d.pages??[]).map((p:{n:number;original?:string;zh?:string})=>`【第 ${p.n} 页】\n${p.original||p.zh||''}`).join('\n\n'));})
+      .catch(e=>{if(!gone){setPaperDataLoaded(true);setTranslationError(e.message);}});
+    return()=>{gone=true;cancelTranslation();};
+  },[slug,cancelTranslation]);
 
   // 手动触发/重试整篇中文翻译（后台分钟级；完成后自动刷新视图）
   const generateTranslation = useCallback(() => {
-    const cancelled = false;
+    const generation=++translationGeneration.current;
+    const cancelled=()=>generation!==translationGeneration.current;
+    if(zhTimerRef.current)clearInterval(zhTimerRef.current);
     setZhGenerating(true);
     setTranslationError("");
     (async () => {
@@ -174,17 +212,18 @@ export default function FullReader({ slug }: { slug: string }) {
         });
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
-          if (!cancelled) { setTranslationError(d?.error ?? "触发翻译失败"); setZhGenerating(false); }
+          if (!cancelled()) { setTranslationError(d?.error ?? "触发翻译失败"); setZhGenerating(false); }
           return;
         }
       } catch {
-        if (!cancelled) { setTranslationError("触发翻译失败：网络错误"); setZhGenerating(false); }
+        if (!cancelled()) { setTranslationError("触发翻译失败：网络错误"); setZhGenerating(false); }
         return;
       }
       // 轮询结果：translation.md 或 translation.error.txt 出现即结束（上限 12 分钟）
+      if(cancelled())return;
       const started = Date.now();
       zhTimerRef.current = setInterval(async () => {
-        if (cancelled) { if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; } return; }
+        if (cancelled()) { if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; } return; }
         if (Date.now() - started > 12 * 60 * 1000) {
           if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; }
           setZhGenerating(false);
@@ -193,12 +232,13 @@ export default function FullReader({ slug }: { slug: string }) {
         }
         try {
           const d = await (await fetch(`/api/paper?slug=${encodeURIComponent(slug)}`)).json();
-          if (d.translation || d.translationError) {
+          if(cancelled())return;
+          if (d.translation || d.translationError || d.error) {
             if (zhTimerRef.current) { clearInterval(zhTimerRef.current); zhTimerRef.current = null; }
             const pages: { n: number; zh: string }[] = d.pages ?? [];
             const t: string = d.translation ?? "";
             setTranslation(t);
-            setTranslationError(d.translationError ?? "");
+            setTranslationError(d.translationError ?? d.error ?? "");
             setPaperText(t || pages.map((p: { n: number; zh: string }) => `【第 ${p.n} 页译文】\n${p.zh}`).join("\n\n"));
             setZhGenerating(false);
           }
@@ -277,7 +317,11 @@ export default function FullReader({ slug }: { slug: string }) {
   const frameWidth = useMemo(() => (containerW ? Math.max(200, Math.round(containerW)) : 0), [containerW]);
   const pageWidth = useMemo(() => (frameWidth ? Math.max(200, Math.round(frameWidth * zoom)) : 0), [frameWidth, zoom]);
 
-  const applyZoom = useCallback((next: number) => setZoom(Math.min(3, Math.max(0.7, next))), []);
+  const applyZoom = useCallback((next: number) => {
+    setWordSelection(null); setWordPop(null);
+    setTranslationSelection(s => s && classifySelection(s.text) === 'word' ? null : s);
+    setZoom(Math.min(3, Math.max(0.7, next)));
+  }, []);
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
@@ -305,83 +349,27 @@ export default function FullReader({ slug }: { slug: string }) {
   const setViewMode = useCallback((v: "pdf" | "zh") => {
     setView(v);
     try {
-      window.history.replaceState(null, "", v === "zh" ? `/read/${slug}?view=zh` : `/read/${slug}`);
+      const url=new URL(window.location.href);if(v==='zh')url.searchParams.set('view','zh');else url.searchParams.delete('view');window.history.replaceState(null,'',url.pathname+url.search);
     } catch { /* ignore */ }
-  }, [slug]);
-
-  // —— AI 讲解抽屉：拖动 + 缩放 ——
-  const toggleChat = useCallback(() => {
-    setChatOpen((open) => {
-      if (!open) setChatBox(readChatBox() ?? defaultChatBox());
-      return !open;
-    });
-  }, []);
-  const onDragStart = useCallback((e: React.PointerEvent<HTMLDivElement>, mode: "move" | "resize") => {
-    if (e.button !== 0 || !chatBox) return;
-    e.stopPropagation();
-    dragRef.current = { mode, sx: e.clientX, sy: e.clientY, box: chatBox };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, [chatBox]);
-  const onDragMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const d = dragRef.current;
-    if (!d) return;
-    const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
-    if (d.mode === "move") {
-      setChatBox({
-        ...d.box,
-        x: Math.min(Math.max(d.box.x + dx, -d.box.w + 140), window.innerWidth - 140),
-        y: Math.min(Math.max(d.box.y + dy, 0), window.innerHeight - 48),
-      });
-    } else {
-      // 左下角把手：右边缘固定，宽 = box.w - dx；下边缘固定，高 = box.h + dy
-      const w = Math.max(CHAT_MIN_W, Math.min(window.innerWidth - 8, d.box.w - dx));
-      const h = Math.max(CHAT_MIN_H, Math.min(window.innerHeight - 8, d.box.h + dy));
-      setChatBox({ ...d.box, x: d.box.x + d.box.w - w, w, h });
-    }
-  }, []);
-  const onDragEnd = useCallback(() => {
-    const d = dragRef.current;
-    dragRef.current = null;
-    if (!d) return;
-    setChatBox((cur) => {
-      if (cur) { try { localStorage.setItem(CHAT_BOX_KEY, JSON.stringify(cur)); } catch { /* ignore */ } }
-      return cur;
-    });
   }, []);
 
+  const toggleChat=useCallback(()=>{setChatVisited(true);setChatOpen(open=>!open);},[]);
+  const returnProject=requestedProject||papers.find(p=>p.slug===slug)?.projectId;
   const title = papers.find((p) => p.slug === slug)?.title ?? slug;
-
-  // 从阅读页删除某篇导入论文（删 data/papers/<slug> + 清理论文库记录），刷新列表；删的是当前篇则跳走
-  async function deleteThisPaper(slugToDel: string) {
-    const t = papers.find((p) => p.slug === slugToDel)?.title ?? slugToDel;
-    if (!confirm(`确定删除《${t}》？会同时删除它的 PDF、原文与中文翻译。`)) return;
-    const res = await fetch("/api/paper", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "delete", slug: slugToDel }),
-    });
-    if (!res.ok) { alert("删除失败"); return; }
-    const rest = papers.filter((p) => p.slug !== slugToDel);
-    setPapers(rest);
-    if (slugToDel === slug) {
-      window.location.href = rest.length ? `/read/${rest[0].slug}` : "/";
-    }
-  }
   const numPages = papers.find((p) => p.slug === slug)?.pages ?? doc?.numPages ?? 0;
 
-  // 能力画像数据：这篇论文（NSR）相关的术语 + 各状态计数
-  const paperTerms = useMemo(() => termsForPaper(terms, slug, title), [terms, slug, title]);
-  const statusCount = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const t of paperTerms) m[t.status] = (m[t.status] ?? 0) + 1;
-    return m;
-  }, [paperTerms]);
-  const mastered = (statusCount["能对应论文"] ?? 0) + (statusCount["能实现"] ?? 0);
+  const paperTerms = useMemo(() => termsForPaper(terms.filter(t=>t.collection==='manual'||t.source==='手动建卡'), slug, title), [terms, slug, title]);
+  const memoryThreads=memory?.threads.filter(t=>t.anchor.slug===slug&&t.anchor.docId===docId&&t.anchor.rects)??[];
+  function askSelection(asNote=false) {
+    if(!wordSelection||!docId)return;
+    (asNote?notes?.capture:memory?.open)?.({scope:`/read/${slug}`,sourceKey:`pdf:${docId}:${wordSelection.page}:${(wordSelection.memoryRects??wordSelection.rects)[0]?.x}:${(wordSelection.memoryRects??wordSelection.rects)[0]?.y}`,label:`${title} · 第 ${wordSelection.page} 页`,text:wordSelection.text,context:wordSelection.context||wordSelection.text,start:0,end:wordSelection.text.length,slug,docId,page:wordSelection.page,rects:wordSelection.memoryRects?.length?wordSelection.memoryRects:wordSelection.rects});
+    setWordSelection(null);setTranslationSelection(null);setWordPop(null);
+  }
 
   return (
-    <div className={"full-reader"+(railOpen?" is-rail-open":"")}>
+    <div data-reader-docid={view==="pdf"?docId:undefined} className={"full-reader"+(railOpen?" is-rail-open":"")}>
       {railOpen && <button className="reader-rail-mask" aria-label="关闭论文列表" onClick={()=>setRailOpen(false)} />}
-      {/* 左栏：论文切换 + 能力画像 */}
+      {/* 左栏：论文切换 + 阅读收藏 */}
       <aside className="full-reader-rail">
         <div className="full-reader-rail-head">
           <span className="mono-label" style={{ color: "var(--panel-dark-muted)" }}>论文库</span>
@@ -389,7 +377,7 @@ export default function FullReader({ slug }: { slug: string }) {
         <div className="full-reader-rail-list">
           {papers.map((p) => (
             <div key={p.slug} className={`full-reader-rail-row${p.slug === slug ? " is-active" : ""}`}>
-              <Link href={`/read/${p.slug}`} onClick={()=>setRailOpen(false)} className="full-reader-rail-item">
+              <Link href={`/read/${p.slug}${p.projectId?`?project=${encodeURIComponent(p.projectId)}`:""}`} onClick={()=>setRailOpen(false)} className="full-reader-rail-item">
                 <span className="full-reader-rail-title">{p.title}</span>
                 <span className="full-reader-rail-meta">{p.pages} 页</span>
               </Link>
@@ -398,44 +386,32 @@ export default function FullReader({ slug }: { slug: string }) {
                 title="看这篇的中文翻译（上传时全文翻译）">
                 中
               </button>
-              <button className="rail-del-btn" onClick={() => void deleteThisPaper(p.slug)}
-                title="删除这篇（含 PDF/原文/译文）">×</button>
+
             </div>
           ))}
           {papers.length === 0 && <p className="mono-label" style={{ padding: "0.8rem 0.9rem", color: "var(--panel-dark-muted)" }}>还没有导入论文</p>}
         </div>
 
         <div className="reader-profile">
-          <div className="reader-profile-title"><span>这篇的概念笔记</span><span>{title}</span></div>
-          <div className="reader-profile-bar" title={STATUS_ORDER.map((s) => `${s} ${statusCount[s] ?? 0}`).join(" · ")}>
-            {STATUS_ORDER.map((s) => (
-              <i key={s} style={{
-                width: `${paperTerms.length ? ((statusCount[s] ?? 0) / paperTerms.length) * 100 : 0}%`,
-                background: STATUS_DOT[s],
-              }} />
-            ))}
-          </div>
-          <div className="reader-profile-status">
-            {STATUS_ORDER.map((s) => (
-              <span key={s}><i style={{ background: STATUS_DOT[s] }} />{s} {statusCount[s] ?? 0}</span>
-            ))}
-          </div>
-          <div className="reader-profile-meta">
-            浏览过 {readSet.size}/{numPages} 页 · 术语 {paperTerms.length} 个 · 自评能对应/实现 {mastered} 个
-          </div>
+          <div className="reader-profile-title"><span>我的阅读收藏</span></div>
+          <p className="reader-profile-meta">浏览过 {readSet.size}/{numPages} 页 · 手动收藏 {paperTerms.length} 个术语</p>
+          <Link href={`/?view=terms&paper=${encodeURIComponent(slug)}`} className="text-button">术语卡片 →</Link>
+          <Link href="/?view=vocabulary" className="text-button">全部生词 →</Link>
+          <Link href={"/?view=notes&paper="+encodeURIComponent(slug)} className="text-button">随心笔记 →</Link>
+          <div className="reading-highlight-legend"><span>蓝色 · 翻译选区</span><span>紫色 · 点击继续追问</span><span>黄色 · 生词收藏</span><span>绿色 · 随心笔记</span></div>
         </div>
       </aside>
 
       {/* 主区 */}
       <div className="full-reader-main">
-        <div className="full-reader-toolbar">
+        <div className="full-reader-toolbar"><ModelControl />
           <button className="btn reader-library-toggle" aria-expanded={railOpen} onClick={()=>setRailOpen(!railOpen)}>论文库</button>
-          <Link href="/" className="full-reader-back" title="返回">←</Link>
-          <span className="full-reader-title">{title}</span>
+          <Link href={returnProject?`/?project=${encodeURIComponent(returnProject)}`:"/"} className="full-reader-back" title={returnProject?"返回论文项目":"返回论文库"} aria-label={returnProject?"返回论文项目":"返回论文库"}>←</Link>
+          <span className="full-reader-title" title={title}>{title}</span><PaperActions compact title={title} slug={slug} onRenamed={next=>setPapers(items=>items.map(p=>p.slug===slug?{...p,title:next}:p))} onDeleted={()=>router.replace('/')}/>
           {view === "pdf" ? (
             <>
-              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>{wordLookup?"单击英文词 → 翻译 · 切回划选可选短语":"划选英文 → 翻译并高亮"}</span>
-              <button className="btn btn--quiet" aria-pressed={wordLookup} onClick={()=>{setWordLookup(!wordLookup);try{localStorage.setItem("ra-reader-word-lookup",String(!wordLookup));}catch{/* lookup mode still works without storage */}setWordSelection(null);window.getSelection()?.removeAllRanges();}} title="开启后单击单词即可翻译，不使用浏览器原生选区">{wordLookup?"切回划选":"点词查译"}</button>
+              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>{wordLookup?"单击查词 · 拖选翻译句段":"划选 → 翻译后收藏 / 追问"}</span>
+              <button className="btn btn--quiet" aria-pressed={wordLookup} onClick={()=>{setWordLookup(!wordLookup);try{localStorage.setItem("ra-reader-word-lookup",String(!wordLookup));}catch{/* lookup mode still works without storage */}setWordSelection(null);setTranslationSelection(null);window.getSelection()?.removeAllRanges();}} title="开启单击查词，仍可拖选句子和段落">{wordLookup?"关闭点词":"点词查译"}</button>
               <span style={{ flex: 1 }} />
               <span className="pdf-zoom-label">{Math.round(zoom * 100)}%</span>
               <button className="btn btn--ghost btn--quiet" onClick={() => applyZoom(zoom - 0.15)}>缩小</button>
@@ -444,12 +420,12 @@ export default function FullReader({ slug }: { slug: string }) {
             </>
           ) : (
             <>
-              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>中文翻译 · 导入时由 DeepSeek 按段落全文翻译</span>
+              <span className="mono-label" style={{ marginLeft: "0.6rem" }}>中文翻译 · 划选内容可继续追问</span>
               <span style={{ flex: 1 }} />
               <button className="btn btn--accent" onClick={() => setViewMode("pdf")}>查看原文 PDF</button>
             </>
           )}
-          <button className="btn btn--ghost btn--quiet" onClick={() => setShowWords(!showWords)}>生词本 · {words.length}</button>
+          <Link href={`/?view=terms&paper=${encodeURIComponent(slug)}`} className="btn btn--quiet">术语卡片</Link><button className="btn btn--ghost btn--quiet" onClick={() => setShowWords(!showWords)}>生词本 · {words.length}</button>
           <button className={`btn ${chatOpen ? "btn--accent" : "btn--ghost btn--quiet"}`} style={{ marginLeft: "0.3rem" }}
             onClick={toggleChat}>
             AI 讲解
@@ -460,7 +436,7 @@ export default function FullReader({ slug }: { slug: string }) {
           <div className="reader-zh">
             <div className="reader-zh-scroll">
               {translation ? (
-                <Markdown>{translation}</Markdown>
+                <Markdown sourceKey={`paper-translation:${slug}`} label={`${title} · 全文译文`} slug={slug}>{translation}</Markdown>
               ) : zhGenerating ? (
                 <p className="mono-label" style={{ padding: "2rem 0", textAlign: "center" }}>
                   正在生成中文翻译（分钟级，可先看原文 PDF，生成完这里会自动刷新）…
@@ -470,7 +446,7 @@ export default function FullReader({ slug }: { slug: string }) {
                   <p className="mono-label" style={{ color: "var(--muted-foreground)" }}>中文翻译生成失败：{translationError}</p>
                   <button className="btn btn--accent" style={{ marginTop: "0.8rem" }} onClick={generateTranslation}>重试生成翻译</button>
                 </div>
-              ) : paperDataLoaded.current === slug ? (
+              ) : paperDataLoaded ? (
                 <div style={{ padding: "2rem 0", textAlign: "center" }}>
                   <p className="mono-label">这篇论文还没有生成中文翻译</p>
                   <button className="btn btn--accent" style={{ marginTop: "0.8rem" }} onClick={generateTranslation}>生成中文翻译</button>
@@ -483,55 +459,25 @@ export default function FullReader({ slug }: { slug: string }) {
         ) : (
           <div className="full-reader-scroll" ref={scrollRef}
             onClick={() => { setPop(null); if(!window.getSelection()?.toString())setWordSelection(null);setWordPop(null); }}
-            onScroll={() => {setWordSelection(null);setWordPop(null);}}
             onWheel={onWheel}
             onTouchStart={onTouchStart}
             onTouchMove={onTouchMove}>
             {!doc && <p className="mono-label" style={{ padding: "2rem 0" }}>{pdfError||"加载 PDF…"}</p>}
             {doc && pageWidth > 0 && Array.from({ length: doc.numPages }, (_, i) => (
-              <FullPdfPage key={i + 1} pageNum={i + 1} width={pageWidth} frameWidth={frameWidth} doc={doc} terms={paperTerms} selectedWord={wordSelection} wordLookup={wordLookup} onTerm={handleTerm} vocabulary={words} onSelect={s => {setWordSelection(s);setWordPop(null);setPop(null);setWordError("");}} onWordLeave={closeWordSoon} onWord={(entry,x,y) => {keepWordOpen();setWordPop({entry,x:Math.max(8,Math.min(x,window.innerWidth-340)),y:Math.max(8,Math.min(y+12,window.innerHeight-230))});setWordSelection(null);}} />
+              <FullPdfPage key={i + 1} pageNum={i + 1} width={pageWidth} frameWidth={frameWidth} doc={doc} terms={paperTerms} notes={notes?.notes.filter(n=>n.anchor.slug===slug&&n.anchor.docId===docId&&n.anchor.rects)??[]} onNote={id=>notes?.edit(id)} memories={memoryThreads} onMemory={id=>memory?.show(id)} selectedWord={wordSelection ?? translationSelection} wordLookup={wordLookup} onTerm={handleTerm} vocabulary={words} onSelect={receiveSelection} onWordLeave={closeWord} onWord={(entry,x,y) => {if(translationSelection||wordSelection)return;setWordPop({entry,x:Math.max(8,Math.min(x,window.innerWidth-340)),y:Math.max(8,Math.min(y+12,window.innerHeight-230))});}} />
             ))}
           </div>
         )}
       </div>
 
       {wordError && !wordSelection && <div className="reader-notice" role="alert">{wordError}<button className="text-button" onClick={()=>setWordError("")}>关闭</button></div>}
-      {wordSelection && <div className="word-popover" style={{left:wordSelection.x,top:wordSelection.y}} onClick={e=>e.stopPropagation()}><strong>{wordSelection.text}</strong><p className="soft-copy">选区已保留在页面中，可直接操作；翻译成功后保存高光。</p>{wordError&&<p role="alert" className="v1-error">{wordError}</p>}<div className="inline-actions"><button className="btn btn--primary" disabled={wordBusy||!docId} onClick={()=>void translateWord()}>{wordBusy?"翻译中…":"翻译并高亮"}</button><button className="text-button" onClick={()=>{void navigator.clipboard.writeText(wordSelection.text).catch(()=>setWordError("复制失败，请检查浏览器剪贴板权限。"));}}>复制</button><button className="text-button" disabled={wordBusy} onClick={()=>void captureTerm()}>加入术语笔记</button><button className="text-button" disabled={wordBusy} onClick={()=>setWordSelection(null)}>取消</button></div></div>}
-      {wordPop && <div className="word-popover" role="tooltip" style={{left:wordPop.x,top:wordPop.y}} onMouseEnter={keepWordOpen} onMouseLeave={closeWordSoon}><div className="section-top"><strong>{wordPop.entry.text}</strong><button className="text-button" aria-label="关闭释义" onClick={()=>setWordPop(null)}>×</button></div><p className="word-meaning">{wordPop.entry.meaning}</p><small>{wordPop.entry.lemma} · {wordPop.entry.partOfSpeech}</small><p>{wordPop.entry.usage}</p><small>AI 语境释义 · 第 {wordPop.entry.page} 页</small><button className="text-button" disabled={wordBusy} onClick={()=>void removeWord(wordPop.entry)}>移除这处高亮</button></div>}
-      {showWords && <aside className="vocabulary-drawer" role="dialog" aria-label="这篇论文的生词本"><div className="section-top"><h2>阅读中遇见的词</h2><button className="text-button" onClick={()=>setShowWords(false)}>关闭</button></div><p className="soft-copy">翻译后自动收集。点击页码回到原句。</p>{words.length?words.map(w=><article className="vocabulary-item" key={w.id}><strong>{w.text}</strong><p>{w.meaning}</p><small>{w.lemma} · {w.partOfSpeech}</small><details><summary>原句与用法</summary><blockquote>{w.context}</blockquote><p>{w.usage}</p></details><div className="inline-actions"><button className="text-button" onClick={()=>{setViewMode("pdf");setShowWords(false);setTimeout(()=>document.querySelector(`[data-page="${w.page}"]`)?.scrollIntoView({behavior:"smooth"}),100);}}>第 {w.page} 页 →</button><button className="text-button" onClick={()=>void removeWord(w)}>移除</button></div></article>):<p className="empty-study">在 PDF 原文里划选一个词，点击“翻译并高亮”，就会出现在这里。</p>}</aside>}
-      {/* AI 讲解抽屉（可拖动头部、可缩放左下角把手，位置尺寸本地记忆） */}
-      {chatOpen && chatBox && (
-        <aside className="reader-chat" role="dialog" aria-label="AI 讲解对话"
-          style={{ left: chatBox.x, top: chatBox.y, width: chatBox.w, height: chatBox.h }}>
-          <div className="reader-chat-head"
-            onPointerDown={(e) => onDragStart(e, "move")}
-            onPointerMove={onDragMove}
-            onPointerUp={onDragEnd}
-            onPointerCancel={onDragEnd}>
-            <span className="mono-label" style={{ color: "var(--foreground)", fontSize: "0.66rem" }}>研究伴侣 · 导读讲解</span>
-            <span className="mono-label" style={{ color: "var(--muted-foreground)" }}>
-              {paperText ? "已附带论文译文" : "正在加载论文译文…"}
-            </span>
-            <button className="pdf-pop-close" style={{ position: "static", marginLeft: "auto" }}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => setChatOpen(false)} aria-label="关闭">×</button>
-          </div>
-          <div className="reader-chat-body">
-            <ChatPanel
-              toolKey="p3"
-              resourceId={slug}
-              hint="我是你的导读讲解。可以问：这一段在解决什么问题？这个术语怎么理解？方法部分怎么串起来？也可以直接说「讲一下第 3 页」。"
-              systemExtra={paperText + "\n\n【当前论文术语笔记：自评状态仅作参考，先核对理解，不能把已讲解当掌握】\n" + JSON.stringify(paperTerms.slice(0,30).map(t => ({name:t.name,meaning:t.contexts?.find(c=>c.slug===slug)?.meaning||t.note,status:t.status,nextAction:t.nextAction,lastRecall:t.reviews?.at(-1)?.answer}))) }
-              historyKey={`read-${slug}`}
-            />
-          </div>
-          <div className="reader-chat-resize" aria-hidden="true"
-            onPointerDown={(e) => onDragStart(e, "resize")}
-            onPointerMove={onDragMove}
-            onPointerUp={onDragEnd}
-            onPointerCancel={onDragEnd} />
-        </aside>
-      )}
+      {view === 'pdf' && wordSelection && <ReaderSelectionToolbar key={`${wordSelection.page}:${wordSelection.text}`} selection={wordSelection} error={wordError} onTranslate={translateSelection} onAsk={()=>askSelection()} onNote={()=>askSelection(true)} onClose={() => {setWordSelection(null);window.getSelection()?.removeAllRanges();}} />}
+      <ReaderTranslation selection={view === 'pdf' ? translationSelection : null} scope={`${slug}:${docId}`} canSave={!!docId} onClose={() => {setTranslationSelection(null);window.getSelection()?.removeAllRanges();}} sourceSlug={slug} onSave={saveCollection} />
+      {wordPop && <div className="word-popover-hover" style={{left:wordPop.x,top:wordPop.y-12}} onPointerLeave={e=>closeWord(e.relatedTarget)} onBlur={e=>closeWord(e.relatedTarget)}><div className="word-popover" role="tooltip"><div className="section-top"><strong>{wordPop.entry.text}</strong><button className="text-button" aria-label="关闭释义" onClick={()=>setWordPop(null)}>×</button></div><p className="word-meaning">{wordPop.entry.meaning}</p><small>{wordPop.entry.lemma} · {wordPop.entry.partOfSpeech}</small><p>{wordPop.entry.usage}</p><small>AI 语境释义 · 第 {wordPop.entry.page} 页</small><button className="text-button" onClick={()=>void removeWord(wordPop.entry)}>移除这处高亮</button></div></div>}
+      {showWords&&<FloatingPanel open onClose={()=>setShowWords(false)} title="这篇论文的生词本" storageKey="reader-vocabulary-box" className="reader-vocabulary"><div className="reader-vocabulary-content"><p className="soft-copy">原文收藏可按页码定位，译文和对话收藏保留来源。<Link href="/?view=vocabulary">查看全部生词 →</Link></p>{words.length?words.map(w=><article className="vocabulary-item" key={w.id}><strong>{w.text}</strong><p>{w.meaning}</p><small>{w.lemma}{w.partOfSpeech && ` · ${w.partOfSpeech}`}</small><details><summary>原句与用法</summary><blockquote>{w.context}</blockquote><p>{w.usage}</p></details><div className="inline-actions">{w.sourceAnchor?<Link href={w.sourceAnchor.scope.startsWith("/")&&!w.sourceAnchor.scope.startsWith("//")?w.sourceAnchor.scope:`/read/${slug}`} className="text-button" onClick={()=>setShowWords(false)}>回到收藏来源 →</Link>:<button className="text-button" onClick={()=>{setViewMode("pdf");setShowWords(false);setTimeout(()=>document.querySelector(`[data-page="${w.page}"]`)?.scrollIntoView({behavior:"smooth"}),100);}}>第 {w.page} 页 →</button>}<button className="text-button" onClick={()=>void removeWord(w)}>移除</button></div></article>):<p className="empty-study">划选词语并翻译，再点击“加入生词本”。</p>}</div></FloatingPanel>}
+      {chatVisited&&<FloatingPanel open={chatOpen} onClose={()=>setChatOpen(false)} title="AI 讲解对话" subtitle={paperText?'已附带论文内容 · 可划线追问':'研究伴侣 · 导读讲解'} storageKey="reader-chat-box" className="reader-chat" width={560} closeLabel="关闭 AI 讲解">
+        <div className="reader-chat-body"><ChatPanel toolKey="p3" resourceId={slug} hint="可以问：这一段在解决什么问题？公式怎么推导？也可以选中回答继续追问。" systemExtra={paperText} historyKey={`read-${slug}`}/></div>
+      </FloatingPanel>}
 
       {/* 术语小卡 */}
       {pop && (
@@ -539,13 +485,13 @@ export default function FullReader({ slug }: { slug: string }) {
           <div className="pdf-pop" style={{ left: pop.x, top: pop.y }}>
             <div className="pdf-pop-head">
               <strong>{pop.term.name}</strong>
-              <span style={{ marginLeft: "auto", color: STATUS_COLOR[pop.term.status] ?? "var(--muted-foreground)" }}>● {pop.term.status}</span>
+              <span style={{ marginLeft: "auto" }}>我的收藏</span>
             </div>
             <span className="pdf-pop-role">{pop.term.role} · {pop.term.reuse}</span>
-            <p className="pdf-pop-note">{pop.term.contexts?.find(c=>c.slug===slug)?.meaning || pop.term.note || "还没有写理解笔记。"}</p>
+            <p className="pdf-pop-note">{pop.term.contexts?.find(c=>c.slug===slug)?.meaning || pop.term.meaning || pop.term.note || "还没有释义。"}</p>
             <button className="pdf-pop-close" onClick={() => setPop(null)}>×</button>
             <div className="pdf-pop-foot">
-              <Link href={`/terms/${pop.term.id}?paper=${encodeURIComponent(slug)}`} className="text-button">查看完整笔记与复述 →</Link>
+              <Link href={`/?view=terms&term=${encodeURIComponent(pop.term.id)}&paper=${encodeURIComponent(slug)}`} className="text-button">查看术语卡片 →</Link>
             </div>
           </div>
         </div>

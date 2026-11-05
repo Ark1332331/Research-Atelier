@@ -52,8 +52,8 @@ test('checked recall is provisional until confirmation; assessment cannot be reu
 });
 test('capture verifies a real paper page, preserves same-name glossary entry, never marks mastery',async()=>{
  await writeFile(path.join(dir,'papers','demo','meta.json'),JSON.stringify({title:'Demo'}));await writeFile(path.join(dir,'papers','demo','page_01.txt'),'The point cloud consists of three-dimensional points.');
- const response=await termPost(req('terms',{action:'capture',slug:'demo',page:1,text:'point cloud'}));assert.equal(response.status,200);const data=await response.json();assert.equal(data.saved.id,(await readTerms())[0].id);assert.ok(data.saved.contexts.some(c=>c.slug==='demo'&&c.page===1&&c.quote.includes('point cloud')));
- assert.equal((await termPost(req('terms',{action:'capture',slug:'demo',page:1,text:'nonexistent concept'}))).status,400);
+ const response=await termPost(req('terms',{action:'capture',slug:'demo',page:1,text:'point cloud',meaning:'点云：一组三维空间中的点。'}));assert.equal(response.status,200);const data=await response.json();assert.equal(data.saved.meaning,'点云：一组三维空间中的点。');assert.equal(data.saved.id,(await readTerms())[0].id);assert.ok(data.saved.contexts.some(c=>c.slug==='demo'&&c.page===1&&c.quote.includes('point cloud')));
+ assert.equal((await termPost(req('terms',{action:'capture',slug:'demo',page:1,text:'nonexistent concept',meaning:'不存在'}))).status,400);
 });
 test('duplicate merging keeps historical card data and aliases, without raising understanding status',async()=>{
  const {consolidateTerms}=await import('../src/lib/terms.ts');const items=[{id:'old',name:'Encoder / 编码器',status:'有直觉',note:'旧解释',papers:[{slug:'a',title:'A'}]},{id:'new',name:'encoder',status:'能实现',note:'另一份原始解释',papers:[{slug:'b',title:'B'}]}];const merged=consolidateTerms(items);assert.equal(merged.length,1);assert.equal(merged[0].status,'有直觉');assert.equal(merged[0].legacyCards[0].note,'另一份原始解释');assert.deepEqual(merged[0].legacyIds,['new']);assert.equal(merged[0].papers.length,2);assert.equal(items.length,2);assert.deepEqual(consolidateTerms(merged),merged);

@@ -1,0 +1,31 @@
+import {pathToFileURL} from 'node:url';
+import {readFile,mkdir} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const base=process.env.STUDY_TEST_URL??'http://localhost:3000';
+const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE??'C:/Users/pc/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs').href);
+const content=await readFile(new URL('../fixtures/multivariate-pasted.md',import.meta.url),'utf8');
+const node={id:'math-fixture',parentId:null,kind:'document',name:'多维随机变量（完整）.md',order:0};
+const browser=await chromium.launch({channel:'msedge',headless:true});
+try {
+ const page=await browser.newPage({viewport:{width:1440,height:1050}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.route('**/api/study-library',r=>r.fulfill({json:{nodes:[node]}}));
+ await page.route('**/api/study-library/document?*',r=>r.fulfill({json:{node,content,links:{}}}));
+ await page.route('**/api/reading-memory',r=>r.fulfill({json:{threads:[]}}));
+ await page.route('**/api/reading-notes',r=>r.fulfill({json:{notes:[]}}));
+ await page.route('**/api/reading-collection*',r=>r.fulfill({json:{entries:[]}}));
+ await page.goto(base+'/study/math-fixture');await page.locator('.study-markdown .katex-display').first().waitFor();
+ const article=page.locator('.study-markdown');assert.equal(await article.locator('.katex-error').count(),0);assert.equal(await article.locator('.katex-display').count(),14);
+ assert.equal(await article.locator('table').count(),4);assert.equal(await article.locator('table .katex').count(),3);
+ assert.equal(await article.locator('.katex-display').first().locator('mtr').count(),2,'indicator function must have two rows');
+ assert.ok(await article.locator('.katex-display').first().locator('msub').count());
+ assert.equal(await article.locator('p > .katex-display').count(),0,'display formulas must not create invalid paragraph nesting');
+ const normal=article.locator('.katex-display').filter({has:page.locator('annotation', {hasText:'mathcal'})}).first();
+ assert.equal(await normal.locator('msub,msubsup').count(),5,'conditional normal formula must have five real subscripts');
+ await mkdir('.build-cache/study-math-qa',{recursive:true});await page.screenshot({path:'.build-cache/study-math-qa/piecewise.png'});
+ await normal.scrollIntoViewIfNeeded();await page.screenshot({path:'.build-cache/study-math-qa/conditional.png'});
+ await article.locator('.katex-display').first().scrollIntoViewIfNeeded();
+ await article.locator('.katex-display').first().evaluate(el=>{const range=document.createRange();range.selectNodeContents(el);const s=getSelection();s.removeAllRanges();s.addRange(range);document.dispatchEvent(new Event('selectionchange'));});
+ await page.getByRole('button',{name:'划线追问',exact:true}).waitFor();
+ await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+ assert.deepEqual(errors,[]);console.log('PASS 14 display formulas, zero KaTeX errors, 3 table formulas, piecewise rows, subscripts, formula selection, mobile width');
+}finally{await browser.close();}

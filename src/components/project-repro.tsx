@@ -1,10 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from 'next/link';
+import PaperActions from './paper-actions';
+import {announcePaperChange,watchPaperChanges} from '@/lib/paper-events';
 import type { PaperProject } from "@/lib/project";
 import EnvironmentsPanel from "@/components/environments-panel";
 import SystemPanel from "@/components/system-panel";
 import ProjectAI from "@/components/project-ai";
+import type {ReadingAnchor} from '@/lib/reading-memory';
 
 declare global {
   interface Window { desktop?: { pickDirectory: () => Promise<{ canceled?: boolean; path?: string }> } }
@@ -15,6 +19,7 @@ type Context = "ai" | "environment" | "sessions" | "notes" | "history" | null;
 export default function ProjectRepro({ projectId, onBack }: { projectId: string; onBack: () => void }) {
   const [project, setProject] = useState<PaperProject | null>(null);
   const [context, setContext] = useState<Context>(null);
+  useEffect(()=>{const locate=(event:Event)=>{const anchor=(event as CustomEvent<ReadingAnchor>).detail;if(anchor.sourceKey.startsWith('project:'+projectId+':'))setContext('ai');};window.addEventListener('reading-open-source',locate);return()=>window.removeEventListener('reading-open-source',locate);},[projectId]);
   const [workspace, setWorkspace] = useState("");
   const [sessionLink, setSessionLink] = useState("");
   const [note, setNote] = useState("");
@@ -22,16 +27,19 @@ export default function ProjectRepro({ projectId, onBack }: { projectId: string;
   const [message, setMessage] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [importingPdf, setImportingPdf] = useState(false);
-  const pdfInput = useRef<HTMLInputElement>(null);
-  const load = async () => {
+  const pdfInput = useRef<HTMLInputElement>(null),loadVersion=useRef(0);
+  const [loadError,setLoadError]=useState("");
+  const load = useCallback(async (signal?:AbortSignal) => {
+    const version=++loadVersion.current;
+    try {
     const response = await fetch("/api/projects?id=" + encodeURIComponent(projectId));
     const data = await response.json();
-    if (response.ok) { setProject(data.project); setWorkspace(data.project.workspace?.repoPath ?? ""); }
-  };
-  // 挂载时拉取项目数据；setState 在异步完成后执行，规则误报；
-  // load 每次渲染都会重建，加入 deps 会导致每次渲染都重复请求——保持按 projectId 触发
-  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { void load(); void fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "setLastModule", id: projectId, module: "repro" }) }); }, [projectId]);
+    if (!response.ok) throw Error(data.error||'读取项目失败');
+    if(version!==loadVersion.current||signal?.aborted)return;
+    setProject(data.project); setWorkspace(previous=>previous||data.project.workspace?.repoPath||'');setLoadError('');
+    }catch(e){if(version===loadVersion.current&&!signal?.aborted)setLoadError(e instanceof Error?e.message:'读取项目失败');}
+  },[projectId]);
+  useEffect(() => {const controller=new AbortController();const refresh=()=>{if(!controller.signal.aborted)void load(controller.signal);};queueMicrotask(refresh);const stop=watchPaperChanges(refresh);return()=>{controller.abort();stop();};},[load]);
   const post = async (url: string, body: Record<string, unknown>) => {
     const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "操作失败"); return data;
@@ -86,19 +94,22 @@ export default function ProjectRepro({ projectId, onBack }: { projectId: string;
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "PDF 导入失败");
       setMessage(data.duplicate ? "这份 PDF 已在本机论文库中，现已关联到当前项目。" : "PDF 已导入并关联到当前项目；可点击“阅读论文”查看全文。");
-      await load();
+      announcePaperChange();await load();
     } catch (error) { setMessage(error instanceof Error ? error.message : "PDF 导入失败"); }
     finally { setImportingPdf(false); if (pdfInput.current) pdfInput.current.value = ""; }
   };
-  if (!project) return <section className="v1-page"><p className="v1-empty">正在读取项目…</p></section>;
+  if (loadError) return <section className="v1-page"><p className="v1-error" role="alert">{loadError}</p><div className="inline-actions"><button className="btn" onClick={onBack}>返回论文库</button><button className="btn" onClick={()=>void load()}>重新加载</button></div></section>;
+  if (!project) return <section className="v1-page"><p className="v1-empty" role="status">正在读取项目…</p></section>;
+  const hasPdf=!!project.paperSlug&&project.pdfAvailable!==false;
   const state = project.reproState;
   return (
     <section className="v1-page">
-      <header className="v1-head"><div><button className="tlink mono-label" onClick={onBack}>← 返回项目</button><p className="mono-label">REPRODUCTION / {project.paperSlug ?? "NO PDF"}</p><h1>{project.title}</h1></div><div className="v1-inline">{!project.paperSlug && <><input ref={pdfInput} type="file" accept="application/pdf,.pdf" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPdf(file); }} /><button className="btn btn--primary" disabled={importingPdf} onClick={() => pdfInput.current?.click()}>{importingPdf ? "导入中…" : "导入 PDF"}</button></>}{project.paperSlug && <a className="btn btn--ghost" href={"/read/" + project.paperSlug}>阅读论文</a>}</div></header>
+      <header className="v1-head"><div><button className="tlink mono-label" onClick={onBack}>← 返回论文库</button><p className="mono-label">REPRODUCTION / {project.paperSlug ?? "NO PDF"}</p><h1>{project.title}</h1></div><div className="v1-inline">{!hasPdf && <><input ref={pdfInput} type="file" accept="application/pdf,.pdf" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPdf(file); }} /><button className="btn btn--primary" disabled={importingPdf} onClick={() => pdfInput.current?.click()}>{importingPdf ? "导入中…" : "导入 PDF"}</button></>}{hasPdf&&<Link className="btn btn--ghost" href={`/read/${encodeURIComponent(project.paperSlug!)}?project=${encodeURIComponent(project.id)}`}>阅读论文</Link>}<PaperActions title={project.title} projectId={project.id} slug={project.paperSlug} onRenamed={title=>setProject({...project,title})} onDeleted={onBack}/></div></header>
+      {!hasPdf&&<p className="legacy-paper-notice">这是旧版留下的无 PDF 记录。补充 PDF 后即可作为完整论文项目继续使用；已有笔记仍保留。</p>}
       <div className="v1-context-tabs">
         {([["ai", "项目 AI"], ["environment", "当前环境"], ["sessions", "执行会话"], ["notes", "笔记"], ["history", "历史"]] as [Context, string][]).map(([key, label]) => <button key={key} className={"btn btn--ghost" + (context === key ? " is-active" : "")} onClick={() => setContext(context === key ? null : key)}>{label}</button>)}
       </div>
-      {context === "ai" && <ProjectAI projectId={projectId} />}
+      {context === "ai" && <ProjectAI projectId={projectId} slug={project.paperSlug??undefined} />}
       {context === "environment" && <div className="v1-environment">
         <SystemPanel />
         <EnvironmentsPanel />

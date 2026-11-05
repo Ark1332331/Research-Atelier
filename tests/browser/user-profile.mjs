@@ -1,0 +1,92 @@
+import {mkdtemp,rm,mkdir} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import assert from 'node:assert/strict';
+const dir=await mkdtemp(path.join(os.tmpdir(),'ra-profile-browser-'));
+process.env.RA_DATA_DIR=dir;delete process.env.VERCEL_KV_REST_API_URL;delete process.env.VERCEL_KV_REST_API_TOKEN;
+const {manageLearning,readLearning,mutateLearning,addProposal}=await import('../../src/lib/learning/store.ts');
+const {addProfileObservation}=await import('../../src/lib/learning/profile-store.ts');
+const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const browser=await chromium.launch({channel:'msedge',headless:true});
+const page=await browser.newPage({viewport:{width:1440,height:1050}});page.setDefaultTimeout(15000);
+const errors=[];page.on('pageerror',e=>errors.push(e.message));
+await mkdir('.build-cache/profile-verification',{recursive:true});
+let state=await manageLearning({action:'profile-add',dimension:'background',topic:'编程基础',text:'我有 C 语言基础，正在学习 Python。',scene:'general'});const background=state.profiles[0];
+let candidate;
+await mutateLearning(s=>{
+ candidate=addProfileObservation(s,{dimension:'knowledge',topic:'概率论',text:'用户自述尚未系统学习概率论。',scene:'general'},'我还没系统学过概率论','划线追问 · 原话观察');
+ addProposal(s,{kind:'workflow',text:'解释概率分布时，先用抛硬币的例子说明随机变量。',quote:'我还没系统学过概率论',scene:'paper',projectId:null,source:'独立观察者',basis:[{id:candidate.id,version:candidate.version}],rationale:'概率论尚未系统学习，需要先建立概念与具体对象的对应。'});
+});
+const json=(route,data,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
+await page.route('**/api/**',async route=>{
+ const url=new URL(route.request().url()),body=route.request().method()==='POST'?route.request().postDataJSON():null;
+ if(url.pathname==='/api/learning'){
+  try{return json(route,body?await manageLearning(body):await readLearning());}catch(e){return json(route,{error:e.message},e.message.includes('其他窗口')?409:400);}
+ }
+ if(url.pathname==='/api/learning/observations')return json(route,{collecting:true,workerAlive:true,queued:0,pending:0,total:0});
+ if(url.pathname==='/api/reading-memory')return json(route,{threads:[]});
+ if(url.pathname==='/api/reading-collection')return json(route,{entries:[]});
+ if(url.pathname==='/api/projects')return json(route,{projects:[]});
+ return json(route,{});
+});
+try{
+ const base=process.env.READER_TEST_URL??'http://localhost:3000';
+ await page.goto(base+'/profile');await page.getByRole('heading',{name:'个性化',exact:true}).waitFor();
+ assert.equal(await page.locator('.rail').getByRole('button',{name:'个性化',exact:true}).count(),1);
+ assert.equal(await page.locator('.observation-indicator').count(),0);
+ assert.equal(await page.getByText(candidate.text,{exact:true}).count(),0,'pending content stays outside current list');
+ await page.getByRole('button',{name:'待确认 · 1',exact:true}).click();
+ const pending=page.locator(`[data-record="${candidate.id}"]`);
+ assert.equal(await page.getByRole('button',{name:'采纳讲法'}).isDisabled(),true);
+ await pending.getByRole('button',{name:'符合我',exact:true}).click();
+ await page.getByRole('button',{name:'采纳讲法'}).click();
+ await page.getByText('没有待确认的内容。',{exact:true}).waitFor();
+ assert.equal((await readLearning()).memories[0].status,'active');
+ await page.keyboard.press('Escape');await page.getByRole('dialog').waitFor({state:'hidden'});
+ assert.equal(await page.getByRole('button',{name:'待确认 · 0'}).evaluate(e=>e===document.activeElement),true);
+ const bg=page.locator(`#profile-${background.id}`);
+ await bg.getByRole('button',{name:'编辑',exact:true}).click();
+ await page.getByLabel('我的情况',{exact:true}).fill('我已熟悉 Python 的基本语法。');
+ await page.waitForTimeout(4300);
+ assert.equal(await page.getByLabel('我的情况',{exact:true}).inputValue(),'我已熟悉 Python 的基本语法。');
+ await page.keyboard.press('Escape');await bg.getByRole('button',{name:'编辑',exact:true}).click();
+ assert.equal(await page.getByLabel('我的情况',{exact:true}).inputValue(),'我已熟悉 Python 的基本语法。');
+ await page.getByRole('button',{name:'保存画像',exact:true}).click();await bg.getByText('我已熟悉 Python 的基本语法。',{exact:true}).waitFor();
+ await page.reload();await bg.getByRole('button',{name:'编辑',exact:true}).click();await page.getByLabel('我的情况',{exact:true}).fill('我的编辑草稿');
+ state=await readLearning();const latest=state.profiles.find(p=>p.id===background.id);
+ await manageLearning({action:'profile-edit',id:latest.id,version:latest.version,text:'来自另一个窗口的更新'});
+ await page.getByRole('button',{name:'保存画像',exact:true}).click();await page.getByRole('alert').filter({hasText:'其他窗口'}).first().waitFor();
+ assert.equal(await page.getByLabel('我的情况',{exact:true}).inputValue(),'我的编辑草稿');await page.getByRole('button',{name:'放弃草稿'}).click();
+ await page.getByRole('button',{name:'＋ 添加',exact:true}).click();await page.getByLabel('主题',{exact:true}).fill('当前阅读目的');await page.getByLabel('我的情况',{exact:true}).fill('我在核对论文的实验设计。');
+ await page.getByRole('button',{name:'保存画像',exact:true}).click();await page.locator('.personal-row').getByText('我在核对论文的实验设计。',{exact:true}).waitFor();
+ await page.getByLabel('搜索当前内容').fill('概率论');assert.equal(await page.locator('.personal-row').count(),1);await page.getByLabel('搜索当前内容').fill('');
+ await page.screenshot({path:'.build-cache/profile-verification/desktop.png',fullPage:true});
+ await page.getByRole('link',{name:'讲解方式',exact:true}).click();await page.locator('.personal-row').getByText('解释概率分布时，先用抛硬币的例子说明随机变量。',{exact:true}).waitFor();
+ await page.reload();assert.equal(await page.getByRole('link',{name:'讲解方式',exact:true}).getAttribute('aria-current'),'page');
+ await page.getByRole('button',{name:'概率论',exact:true}).click();await page.getByRole('dialog',{name:'画像详情'}).waitFor();
+ await page.keyboard.press('Tab');assert.ok(await page.evaluate(()=>!!document.activeElement.closest('dialog')));
+ await page.screenshot({path:'.build-cache/profile-verification/details.png',fullPage:true});
+ await page.keyboard.press('Escape');await page.goBack();await page.locator(`#profile-${candidate.id}`).waitFor();
+ await page.setViewportSize({width:390,height:844});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1),'profile must not overflow mobile viewport');
+ await page.screenshot({path:'.build-cache/profile-verification/mobile.png',fullPage:true});
+ const fact=page.locator(`#profile-${candidate.id}`);
+ await fact.getByRole('button',{name:'编辑',exact:true}).click();await page.getByLabel('我的情况',{exact:true}).fill('概率论课程已经完成。');await page.getByRole('button',{name:'保存画像',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ assert.equal((await readLearning()).memories[0].status,'paused');
+ await page.getByRole('button',{name:'设置',exact:true}).click();
+ await page.getByRole('checkbox',{name:'应用个性化',exact:false}).click();await page.getByRole('status').filter({hasText:'已更新应用设置'}).waitFor();assert.equal((await readLearning()).applying,false);
+ await page.getByRole('checkbox',{name:'应用个性化',exact:false}).click();
+ await page.getByRole('button',{name:'已停用与拒绝',exact:false}).click();await page.getByRole('button',{name:'解释概率分布时',exact:false}).click();
+ await page.getByText('依据的画像已变更或尚未确认，这条讲法不会用于回答。',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'重新启用'}).isDisabled(),true);
+ await page.keyboard.press('Escape');
+ await page.goto(base+`/profile#profile-${candidate.id}`);await page.getByRole('dialog',{name:'画像详情'}).waitFor();
+ await page.getByRole('button',{name:'删除画像',exact:true}).click();await page.getByRole('button',{name:'确认删除',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ assert.ok(!(await readLearning()).memories.length);
+ await page.goto(base+'/learning');await page.getByRole('heading',{name:'个性化',exact:true}).waitFor();
+ assert.equal(await page.getByRole('link',{name:'讲解方式',exact:true}).getAttribute('aria-current'),'page');
+ await page.goto(base+'/learning#observations');await page.getByRole('dialog',{name:'观察记录',exact:true}).waitFor();await page.keyboard.press('Escape');
+ assert.deepEqual(errors,[]);
+ console.log('PASS unified personalization, grouped review, causal links, CRUD, draft retention, version conflict, settings, legacy routes, tab reload/back, focus and mobile layout (isolated data)');
+}catch(e){console.error((await page.locator('body').innerText()).slice(0,7000));await page.screenshot({path:'.build-cache/profile-verification/failure.png',fullPage:true});throw e;}
+finally{await browser.close();await rm(dir,{recursive:true,force:true});}

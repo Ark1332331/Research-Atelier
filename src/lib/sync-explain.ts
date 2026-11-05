@@ -1,7 +1,7 @@
+import {configuredModelKey,fetchModel} from './model-config.ts';
 import type { PaperProject } from "@/lib/project";
 import type { PendingSync } from "@/lib/sync";
 
-const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
 export interface SyncExplanation {
   stage: string;
@@ -32,8 +32,8 @@ function parseExplanation(content: string): SyncExplanation {
 }
 
 export async function explainSyncWithAI(project: PaperProject, pending: PendingSync): Promise<SyncExplanation> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) throw new Error("DEEPSEEK_API_KEY 未配置，无法由 AI 讲解同步证据。");
+  const apiKey = await configuredModelKey();
+  if (!apiKey) throw new Error("尚未配置模型，无法由 AI 讲解同步证据。");
   const prompt = [
     "你是 Research Atelier 的科研项目状态管理 AI。程序已采集证据；你只根据证据判断，不编造实验、结果或完成状态。",
     "请判断当前复现是否已完成：只有证据明确给出最终可验证评估并声明验收通过时，result 才可以写为“复现已完成”。否则如实说明进行中或证据不足。",
@@ -41,7 +41,7 @@ export async function explainSyncWithAI(project: PaperProject, pending: PendingS
     `项目：${project.title}`,
     `同步证据：${JSON.stringify(evidenceForModel(pending))}`,
   ].join("\n\n");
-  const response = await fetch(DEEPSEEK_URL, {
+  const response = await fetchModel({
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model: "deepseek-chat", messages: [{ role: "system", content: "你是严谨的科研复现状态管理助手。" }, { role: "user", content: prompt }], stream: false, response_format: { type: "json_object" } }),

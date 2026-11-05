@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from '../../../../lib/model-config.ts';
 /**
  * 复现商定 copilot：在 App 内和 AI 边聊边敲定复现路径。
  * POST { slug, messages: [{role, content}] } → { reply, proposed, error? }
@@ -8,8 +9,10 @@
 import { getReproduction } from "@/lib/reproduction";
 import { prepareLearning, finishLearning } from "@/lib/learning/store";
 import { observeConversation } from "@/lib/learning/extract";
+import { listProjects } from '@/lib/project';
+import {answerResponse,type AnswerText} from '@/lib/answer-stream';
+import {modelCompletion} from '@/lib/model-completion';
 
-const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
 type ChatMsg = { role: string; content?: string | null; tool_calls?: unknown; tool_call_id?: string };
 type ProposedStep = { id: string; title: string; note?: string; done?: boolean };
@@ -73,21 +76,22 @@ function buildSystem(rec: NonNullable<Awaited<ReturnType<typeof getReproduction>
   );
 }
 
-async function deepseekChat(apiKey: string, messages: ChatMsg[]): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string; hint?: string }> {
+async function deepseekChat(apiKey: string, messages: ChatMsg[],onText?:AnswerText,signal?:AbortSignal): Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string; hint?: string }> {
   try {
-    const res = await fetch(DEEPSEEK_URL, {
+    const upstream=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(120000)]);onText?.('');
+    const res = await fetchModel({
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: "deepseek-chat",
         messages,
-        stream: false,
+        stream: !!onText,
         tools: [PROPOSE_TOOL],
         tool_choice: "auto",
       }),
-      signal: AbortSignal.timeout(120000),
+      signal: upstream,
     });
-    const data = await res.json();
+    const data = onText&&res.ok?await modelCompletion(res,onText,upstream):await res.json();
     if (!res.ok) return { ok: false, error: data?.error?.message ?? `HTTP ${res.status}`, hint: res.status >= 500 || res.status === 429 ? "服务端繁忙，稍后重试。" : undefined };
     return { ok: true, data };
   } catch (err) {
@@ -95,12 +99,13 @@ async function deepseekChat(apiKey: string, messages: ChatMsg[]): Promise<{ ok: 
     const detail = err instanceof Error ? err.message + (cause ? `（${cause.code || cause.message}）` : "") : "网络错误";
     const proxyHint = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
       ? "检测到代理配置，但仍连接失败，请检查代理地址/端口。"
-      : "已重试仍失败，通常是网络到 api.deepseek.com 不稳定；若需要代理请在 .env.local 配 HTTPS_PROXY 后重启。";
+      : "已重试仍失败，请检查当前模型配置的 Base URL 和网络连接。";
     return { ok: false, error: detail, hint: proxyHint };
   }
 }
 
-export async function POST(request: Request) {
+export function POST(request:Request){return answerResponse(request,request.headers.get('accept')?.includes('application/x-ndjson')??false,(text,signal)=>handle(request,text,signal));}
+async function handle(request: Request,onText?:AnswerText,signal=request.signal) {
   let body: { slug?: string; messages?: ChatMsg[] };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
 
@@ -112,13 +117,14 @@ export async function POST(request: Request) {
   const userMsgs = Array.isArray(body.messages) ? body.messages : [];
   if (userMsgs.length === 0) return Response.json({ error: "messages 不能为空" }, { status: 400 });
 
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = await configuredModelKey();
   if (!apiKey) {
-    return Response.json({ error: "DEEPSEEK_API_KEY 未配置：复制 .env.local.example 为 .env.local 并填入你的 key" }, { status: 500 });
+    return Response.json({ error: "尚未配置模型，请打开“模型配置”填写并启用一套配置" }, { status: 500 });
   }
 
   const query=[...userMsgs].reverse().find(m=>m.role==="user")?.content;if(typeof query!=="string"||!query.trim())return Response.json({error:"请输入问题"},{status:400});
-  const learning=await prepareLearning(query,"repro",null);
+  const projectId=(await listProjects()).find(p=>p.paperSlug===slug)?.id??null;
+  const learning=await prepareLearning(query,"repro",projectId,true,slug);
   const note=await observeConversation(learning,userMsgs,"复现路径对话");
   const system = buildSystem(rec, "使用已确认的学习规则；历史画像不自动作为生效偏好。")+learning.prompt;
   const convo: ChatMsg[] = [{ role: "system", content: system }, ...userMsgs.map((m) => ({ role: m.role, content: m.content ?? "" }))];
@@ -127,7 +133,7 @@ export async function POST(request: Request) {
   let proposed: ProposedStep[] = [];
   let reply = "";
   for (let round = 0; round <= 2; round++) {
-    const r = await deepseekChat(apiKey, convo);
+    const r = await deepseekChat(apiKey, convo,onText,signal);
     if (!r.ok) {await finishLearning(learning,"",r.error);return Response.json({ error: r.error, hint: r.hint }, { status: 502 });}
     const data = r.data!;
     const first = Array.isArray((data as { choices?: unknown }).choices) ? ((data as { choices: { message?: unknown }[] }).choices[0]) : undefined;
@@ -156,6 +162,6 @@ export async function POST(request: Request) {
     break;
   }
 
-  await finishLearning(learning,reply);
-  return Response.json({ reply, proposed,learning:{runId:learning.id,observationId:learning.observationId,selected:learning.selected,proposedIds:learning.proposedIds,note} });
+  const run=await finishLearning(learning,reply);
+  return Response.json({ reply, proposed,...(run?{learning:{runId:learning.id,observationId:learning.observationId,selected:learning.selected,profile:learning.profile,proposedIds:learning.proposedIds,note}}:{}) });
 }

@@ -14,11 +14,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { DATA_DIR, readStore, writeStore } from "@/lib/store";
+import { DATA_DIR } from "@/lib/store";
 import { translateDocument } from "@/lib/translate";
 import { saveTranslationResult } from "@/lib/translate-store";
-import { ensureProjectForPaper } from "@/lib/project";
-import { extractTermsInBackground } from "@/lib/terms-extract";
+import { createHash,randomUUID } from 'node:crypto';
+import {withProjectLock} from '@/lib/project-lock';
+import {findPaperByHash,registerPaper,paperDirectory} from '@/lib/paper-management';
 
 const execFileAsync = promisify(execFile);
 const NODE_BIN = process.env.RA_NODE_BIN ?? "node";
@@ -39,6 +40,7 @@ export interface PaperHit {
 }
 
 interface PaperMeta {
+  sha256?: string;
   slug: string;
   title: string;
   source: string;
@@ -48,21 +50,31 @@ interface PaperMeta {
 
 /** OpenAlex 的摘要倒排索引 → 可读文本 */
 function rebuildAbstract(inv?: Record<string, number[]>): string {
-  if (!inv) return "";
+  if (!inv || typeof inv !== "object" || Array.isArray(inv)) return "";
   const pos: [number, string][] = [];
-  for (const [w, ps] of Object.entries(inv)) for (const p of ps) pos.push([p, w]);
+  for (const [w, ps] of Object.entries(inv)) {
+    if (Array.isArray(ps)) for (const p of ps) if (Number.isInteger(p) && p >= 0) pos.push([p, w]);
+  }
   pos.sort((a, b) => a[0] - b[0]);
   return pos.map((x) => x[1]).join(" ").slice(0, 600);
 }
 
 /** OpenAlex works API 响应条目（只声明本文件实际消费的字段，缺省字段视为可选） */
+type OpenAlexLocation = {
+  is_oa?: unknown;
+  pdf_url?: unknown;
+  landing_page_url?: unknown;
+  source?: { display_name?: unknown };
+};
 type OpenAlexWork = {
   id?: unknown;
   doi?: unknown;
   display_name?: unknown;
   publication_year?: unknown;
   open_access?: { is_oa?: unknown; oa_url?: unknown };
-  primary_location?: { pdf_url?: unknown; landing_page_url?: unknown; source?: { display_name?: unknown } };
+  primary_location?: OpenAlexLocation;
+  best_oa_location?: OpenAlexLocation;
+  locations?: OpenAlexLocation[];
   authorships?: { author?: { display_name?: unknown } }[];
   abstract_inverted_index?: Record<string, number[]>;
 };
@@ -70,15 +82,24 @@ type OpenAlexWork = {
 /** 用 OpenAlex 检索论文（带重试：网络波动/429 限流时指数退避重试） */
 export async function searchPapers(query: string, max = 6): Promise<PaperHit[]> {
   const q = (query || "").trim();
-  const url =
-    `https://api.openalex.org/works?search=${encodeURIComponent(q)}&per-page=${Math.min(max, 10)}&mailto=research@atelier.local` +
-    `&select=id,doi,display_name,publication_year,open_access,primary_location,authorships,abstract_inverted_index`;
-  let d: { results?: OpenAlexWork[] } = {};
+  if (!q || q.length > 500) throw new Error("检索内容须为 1–500 个字符");
+  const doi = q.replace(/^(?:https?:\/\/(?:dx\.)?doi\.org\/|doi:\s*)/i, "");
+  const exactDoi = /^10\.\d{4,9}\/\S+$/i.test(doi);
+  const url = new URL(exactDoi ? `https://api.openalex.org/works/https://doi.org/${encodeURIComponent(doi)}` : "https://api.openalex.org/works");
+  if (!exactDoi) {
+    url.searchParams.set("search", q);
+    url.searchParams.set("per-page", String(Math.max(1, Math.min(max, 10))));
+  }
+  url.searchParams.set("select", "id,doi,display_name,publication_year,open_access,primary_location,best_oa_location,locations,authorships,abstract_inverted_index");
+  if (process.env.OPENALEX_API_KEY) url.searchParams.set("api_key", process.env.OPENALEX_API_KEY);
+  if (process.env.OPENALEX_MAILTO) url.searchParams.set("mailto", process.env.OPENALEX_MAILTO);
+  let d: { results?: OpenAlexWork[] } & OpenAlexWork = {};
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 800 * 2 ** (attempt - 2)));
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(25000), headers: { "User-Agent": USER_AGENT } });
+      if (res.status === 404 && exactDoi) return [];
       if (res.ok) { d = await res.json(); lastErr = null; break; }
       lastErr = new Error(`检索失败（HTTP ${res.status}）`);
       if (res.status < 500 && res.status !== 429) break; // 业务错误，重试无意义
@@ -86,15 +107,20 @@ export async function searchPapers(query: string, max = 6): Promise<PaperHit[]> 
       lastErr = err; // 网络层错误 → 重试
     }
   }
-  if (lastErr || !d?.results) {
+  if (lastErr || !d || typeof d !== "object" || (!exactDoi && !Array.isArray(d.results))) {
     throw lastErr instanceof Error ? lastErr : new Error("检索失败：网络到 api.openalex.org 不稳定");
   }
-  return ((d.results ?? [])).map((p) => {
-    const authors = ((p.authorships ?? []).slice(0, 4)).map((a) => a?.author?.display_name).filter(Boolean).map(String).join(", ");
-    const oaPdf = (p?.open_access?.oa_url || p?.primary_location?.pdf_url || undefined) as string | undefined;
+  const httpUrl = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    try { const parsed = new URL(value); return ["http:", "https:"].includes(parsed.protocol) ? value : undefined; } catch { return undefined; }
+  };
+  return (exactDoi ? [d] : d.results ?? []).filter((p) => p && typeof p.id === "string" && p.id && typeof p.display_name === "string" && p.display_name.trim()).map((p) => {
+    const authors = (Array.isArray(p.authorships) ? p.authorships.slice(0, 4) : []).map((a) => a?.author?.display_name).filter((name) => typeof name === "string").join(", ");
+    const locations = Array.isArray(p.locations) ? p.locations : [];
+    const oaPdf = [p.best_oa_location?.pdf_url, p.primary_location?.pdf_url, ...locations.filter((l) => l?.is_oa === true).map((l) => l.pdf_url)].map(httpUrl).find(Boolean);
     const isOa = Boolean(p?.open_access?.is_oa || oaPdf);
-    const landing = p?.primary_location?.landing_page_url || p?.doi || "";
-    const arxivMatch = String(oaPdf || landing || "").match(/arxiv\.org\/(?:abs|pdf)\/([^/#?]+)/);
+    const landing = httpUrl(p.primary_location?.landing_page_url) || httpUrl(p.doi) || "";
+    const arxivMatch = [oaPdf, landing, ...locations.map((l) => l?.landing_page_url)].filter((u) => typeof u === "string").map((u) => String(u).match(/^https?:\/\/(?:www\.|export\.)?arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?\/\d{7}(?:v\d+)?)(?:\.pdf)?(?:[?#].*)?$/i)).find(Boolean);
     return {
       id: String(p?.id || ""),
       arxivId: arxivMatch?.[1],
@@ -102,7 +128,7 @@ export async function searchPapers(query: string, max = 6): Promise<PaperHit[]> 
       authors,
       year: String(p?.publication_year || ""),
       abstract: rebuildAbstract(p?.abstract_inverted_index),
-      doi: String(p?.doi || "").replace(/^https?:\/\/doi\.org\//, ""),
+      doi: typeof p.doi === "string" ? p.doi.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "") : undefined,
       isOa,
       oaPdfUrl: isOa ? oaPdf : undefined,
       publisherUrl: String(landing),
@@ -141,19 +167,17 @@ export async function downloadPaper(opts: {
     throw new Error("没有可自动下载的开放获取 PDF——该论文可能需要学校/出版社订阅。请在校内下载 PDF 后导入论文库。");
   }
 
-  const res = await fetch(url, {
-    method: "GET",
-    signal: AbortSignal.timeout(120000),
-    headers: { "User-Agent": USER_AGENT },
-    redirect: "follow",
-  });
-  if (!res.ok) throw new Error(`下载失败（HTTP ${res.status}）`);
-  const buf = Buffer.from(await res.arrayBuffer());
+  const {downloadPdfBytes}=await import('@/lib/paper-download');
+  const buf = await downloadPdfBytes(url);
   if (buf.slice(0, 4).toString("latin1") !== "%PDF") {
     throw new Error("下载内容不是有效 PDF（可能需登录/未开放）");
   }
 
-  const slug = makeSlug(title || arxivId || "paper", arxivId || undefined);
+  return withProjectLock(async()=>{
+  const sha256=createHash('sha256').update(buf).digest('hex');
+  const duplicate=await findPaperByHash(sha256);
+  if(duplicate){await registerPaper(duplicate);return {slug:duplicate.slug,title:duplicate.title,pages:duplicate.pages,url,imported:false};}
+  const slug = makeSlug(title || arxivId || "paper", arxivId || undefined)+"-"+randomUUID().slice(0,8);
   const dir = path.join(DATA_DIR, "papers", slug);
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, "original.pdf"), buf);
@@ -191,40 +215,12 @@ export async function downloadPaper(opts: {
   }
 
   const meta: PaperMeta = {
-    slug, title: title || slug, source: "imported", pages, importedAt: new Date().toISOString(),
+    slug, title: title || slug, source: "imported", pages, importedAt: new Date().toISOString(), sha256,
   };
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
-  await addToLibrary(meta);
-  await ensureProjectForPaper({ slug: meta.slug, title: meta.title });
-  // 术语抽查：导入后后台抽取术语记入术语卡（数量不限，需要的才抽；已存在的跳过）
-  extractTermsInBackground(pageTexts, { slug, title: meta.title });
+  try {await registerPaper(meta);}catch(error){await fs.rm(paperDirectory(slug),{recursive:true,force:true});throw error;}
+  // 与手动导入一致：仅按用户主动收藏生成术语卡片。
 
   return { slug, title: meta.title, pages, url, imported: true };
-}
-
-/** 把导入的论文写进论文库 data/library.json（去重：同 slug 不重复加） */
-async function addToLibrary(meta: PaperMeta): Promise<void> {
-  const raw = await readStore("library.json");
-  let lib: { groups: unknown[]; papers: Record<string, unknown>[] };
-  try {
-    lib = raw ? JSON.parse(raw) : { groups: [], papers: [] };
-    if (!Array.isArray(lib.papers)) lib.papers = [];
-    if (!Array.isArray(lib.groups)) lib.groups = [];
-  } catch {
-    lib = { groups: [], papers: [] };
-  }
-  if (lib.papers.some((p) => p.slug === meta.slug)) return; // 已导入过
-
-  lib.papers.push({
-    id: `p-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
-    title: meta.title,
-    source: "imported",
-    slug: meta.slug,
-    status: "未读",
-    group: null,
-    current: false,
-    firstEncounter: new Date().toISOString().slice(0, 10),
-    lastEngaged: "",
   });
-  await writeStore("library.json", JSON.stringify(lib, null, 2));
 }

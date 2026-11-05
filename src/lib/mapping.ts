@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from './model-config.ts';
 /**
  * Paper ↔ Code Mapping（Step 5，grounding hardening 版）。
  *
@@ -304,7 +305,7 @@ export async function proposeMappings({
 }: {
   facts: Fact[]; snapshot: Record<string, unknown>; root: string;
 }): Promise<Mapping[]> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = await configuredModelKey();
   if (!apiKey) return [];
   const relevant = facts.filter((f) => f.status === "observed" || f.status === "inferred");
   if (!relevant.length) return [];
@@ -319,7 +320,7 @@ export async function proposeMappings({
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
-      const res = await fetch("https://api.deepseek.com/chat/completions", {
+      const res = await fetchModel({
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({

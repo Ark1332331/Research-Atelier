@@ -14,10 +14,11 @@
  * 数据层复用 src/lib/store.ts（本地 data/；生产（Vercel）自动切 KV）。
  */
 import { readStore, writeStore } from "@/lib/store";
+import { readLearning } from '@/lib/learning/store';
 
 const FILE = "session-history.json";
 
-interface SMsg { role: "user" | "assistant"; content: string; time: string }
+interface SMsg { id?:string; role: "user" | "assistant"; content: string; time: string; learningRunId?:string; learning?:{runId?:string} }
 interface SSession { id: string; title: string; createdAt: string; updatedAt: string; msgs: SMsg[] }
 type Store = Record<string, SSession[]>;
 
@@ -58,10 +59,12 @@ export async function GET(request: Request) {
   const arr = data[tool] ?? [];
 
   const id = url.searchParams.get("id");
-  if (id) {
-    const s = arr.find((x) => x.id === id);
+  const messageId=url.searchParams.get("messageId");
+  if (id||messageId) {
+    const s = arr.find((x) => id?x.id===id:x.msgs.some(m=>m.id===messageId));
     if (!s) return Response.json({ error: "会话不存在" }, { status: 404 });
-    return Response.json({ session: s });
+    const state=await readLearning().catch(()=>null);
+    return Response.json({ session: {...s,msgs:s.msgs.map(m=>{const run=state?.runs.find(r=>r.id===m.learningRunId);return run?{...m,learning:{runId:run.id,selected:run.selected,profile:run.profile,proposedIds:[],observationId:state?.observations?.find(o=>o.traceId===run.id)?.id}}:m;})} });
   }
   return Response.json({ sessions: summarize(arr) });
 }
@@ -84,7 +87,7 @@ export async function POST(request: Request) {
     const msgs = Array.isArray(body.msgs)
       ? body.msgs
           .filter((m) => m && m.role && typeof m.content === "string")
-          .map((m) => ({ role: m.role, content: m.content, time: m.time || "" }))
+          .map((m) => ({ ...(typeof m.id==='string'?{id:m.id}:{}), role: m.role, content: m.content, time: m.time || "", ...(typeof (m.learning?.runId??m.learningRunId)==='string'?{learningRunId:m.learning?.runId??m.learningRunId}:{}) }))
       : [];
     if (msgs.length === 0) return Response.json({ error: "msgs 不能为空" }, { status: 400 });
 

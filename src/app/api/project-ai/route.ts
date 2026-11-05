@@ -2,12 +2,14 @@ import { observeConversation } from "@/lib/learning/extract";
 import { prepareLearning, finishLearning, readLearning } from "@/lib/learning/store";
 import { getProject, updateProject } from "@/lib/project";
 import { answerProjectQuestion, isProtocolLeak, type ProjectAIMessage, type ProjectAIMode } from "@/lib/project-ai";
+import {answerResponse,type AnswerText} from '@/lib/answer-stream';
 
 function cleanMessages(messages: ProjectAIMessage[]): ProjectAIMessage[] {
   return messages.filter((message) => message.role === "user" || !isProtocolLeak(message.content));
 }
 
-export async function POST(request: Request) {
+export function POST(request:Request){return answerResponse(request,request.headers.get('accept')?.includes('application/x-ndjson')??false,(text,signal)=>handle(request,text,signal));}
+async function handle(request: Request,onText?:AnswerText,signal=request.signal) {
   let body: { projectId?: string; question?: string; messages?: ProjectAIMessage[]; mode?: ProjectAIMode };
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
   const projectId = String(body.projectId ?? "").trim();
@@ -26,12 +28,13 @@ export async function POST(request: Request) {
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "学习库不可用" }, { status: 503 }); }
   const note=await observeConversation(learning,messages);
   try {
-    const answer = await answerProjectQuestion(project, messages, mode, learning.selected);
-    const metadata={runId:learning.id,observationId:learning.observationId,selected:learning.selected,proposedIds:learning.proposedIds,note};
+    const answer = await answerProjectQuestion(project, messages, mode, learning.selected, learning.profile,onText,signal);
+    signal.throwIfAborted();
+    const metadata={runId:learning.id,observationId:learning.observationId,selected:learning.selected,profile:learning.profile,proposedIds:learning.proposedIds,note};
     const saved = [...messages, { role: "assistant" as const, content: answer, learningRunId:learning.id }].slice(-80);
     const updated = await updateProject(projectId, (item) => { item.aiMessages = saved; });
-    await finishLearning(learning, answer);
-    return Response.json({ answer, learning: metadata, messages: (updated?.aiMessages ?? saved).map(m=>m.learningRunId===learning.id?{...m,learning:metadata}:m) });
+    const run=await finishLearning(learning, answer);
+    return Response.json({ answer, ...(run?{learning: metadata}:{}), messages: (updated?.aiMessages ?? saved).map(m=>run&&m.learningRunId===learning.id?{...m,learning:metadata}:m) });
   }
   catch (error) { await finishLearning(learning, "", error instanceof Error ? error.message : "请求失败"); return Response.json({ error: error instanceof Error ? error.message : "项目 AI 请求失败" }, { status: 502 }); }
 }
@@ -42,6 +45,6 @@ export async function GET(request: Request) {
   const project = await getProject(projectId);
   if (!project) return Response.json({ error: "项目不存在" }, { status: 404 });
   let messages=cleanMessages(project.aiMessages??[]);
-  try { const state=await readLearning();messages=messages.map(m=>{const run=state.runs.find(r=>r.id===m.learningRunId);return run?{...m,learning:{runId:run.id,observationId:state.observations?.find(o=>o.traceId===run.id)?.id,selected:run.selected,proposedIds:state.memories.filter(x=>x.status==="pending"&&x.evidence.some(e=>e.source===`回答反馈 ${run.id}`)).map(x=>x.id)}}:m;}); } catch { /* History stays readable even if the learning store is unavailable. */ }
+  try { const state=await readLearning();messages=messages.map(m=>{const run=state.runs.find(r=>r.id===m.learningRunId);return run?{...m,learning:{runId:run.id,observationId:state.observations?.find(o=>o.traceId===run.id)?.id,selected:run.selected,profile:run.profile,proposedIds:state.memories.filter(x=>x.status==="pending"&&x.evidence.some(e=>e.source===`回答反馈 ${run.id}`)).map(x=>x.id)}}:m;}); } catch { /* History stays readable even if the learning store is unavailable. */ }
   return Response.json({ messages });
 }

@@ -3,11 +3,14 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { Term } from "@/lib/terms";
 import type { PDFPageProxy } from "pdfjs-dist";
-import type { VocabularyEntry, HighlightRect } from "@/lib/vocabulary";
-export interface WordSelection { x:number; y:number; text:string; context:string; page:number; rects:HighlightRect[] }
+import type { VocabularyEntry } from "@/lib/vocabulary";
+import { snapshotReaderRange, type ReaderSelection } from "@/lib/reader-selection";
+export type WordSelection = ReaderSelection;
 import type { TermBox } from "@/lib/pdf-alignment";
 import { wordRangeAtPoint } from "@/lib/pdf-word-lookup";
 import { termRanges } from "@/lib/pdf-term-ranges";
+import type { ReadingNote } from '@/lib/reading-notes';
+import type { ReadingThread } from '@/lib/reading-memory';
 
 /* 全屏阅读器里的单页：自渲染 canvas + 覆盖层（术语高亮）。
    纸张定宽：外框 .pdf-page 宽度 = frameWidth（适应宽度，缩放不变）；
@@ -24,7 +27,7 @@ import { termRanges } from "@/lib/pdf-term-ranges";
 interface Popover { x: number; y: number; term: Term; }
 
 export const FullPdfPage = memo(function FullPdfPage({
-  pageNum, width, frameWidth, doc, terms, onTerm, vocabulary = [], onSelect, onWord, onWordLeave, selectedWord, wordLookup = false,
+  pageNum, width, frameWidth, doc, terms, onTerm, vocabulary = [], onSelect, onWord, onWordLeave, selectedWord, wordLookup = false, memories=[], onMemory,notes=[],onNote,
 }: {
   pageNum: number;
   /** 内容 CSS 宽度（适应宽度 × zoom），同时决定渲染 scale */
@@ -35,13 +38,17 @@ export const FullPdfPage = memo(function FullPdfPage({
   terms: Term[];
   onTerm: (p: Popover) => void;
   vocabulary?: VocabularyEntry[];
+  memories?: ReadingThread[];
+  onMemory?: (id:string)=>void;
+  notes?:ReadingNote[];
+  onNote?:(id:string)=>void;
   selectedWord?:WordSelection|null;
   wordLookup?:boolean;
   onSelect?: (s:WordSelection) => void;
   onWord?: (entry:VocabularyEntry,x:number,y:number) => void;
-  onWordLeave?:()=>void;
+  onWordLeave?:(nextTarget?: EventTarget | null)=>void;
 }) {
-  const skipClickRef=useRef(0);
+  const pointerStart = useRef({ x: 0, y: 0 });
   const frameRef = useRef<HTMLDivElement>(null);
   const [visible,setVisible] = useState(false);
   useEffect(() => { const el=frameRef.current; if(!el)return; const io=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)){setVisible(true);io.disconnect();}},{rootMargin:"900px"});io.observe(el);return()=>io.disconnect();},[]);
@@ -80,12 +87,12 @@ export const FullPdfPage = memo(function FullPdfPage({
         const layer = textRef.current;
         if (layer) {
           layer.replaceChildren(); layer.style.setProperty("--scale-factor", String(scale));
-          const { TextLayer } = await import("pdfjs-dist");
+          const { TextLayerBuilder } = await import("pdfjs-dist/web/pdf_viewer.mjs");
           if (cancelled) return;
-          const tc = await page.getTextContent();
-          if (cancelled) return;
-          const tl = new TextLayer({ textContentSource:tc, container:layer, viewport:vp });
-          textTask = tl; await tl.render();
+          const tl = new TextLayerBuilder({ pdfPage: page });
+          tl.div.classList.add("reader-text-layer");
+          layer.append(tl.div);
+          textTask = tl; await tl.render(vp);
         }
         if (cancelled) return;
         setData({
@@ -101,35 +108,52 @@ export const FullPdfPage = memo(function FullPdfPage({
   return () => { cancelled = true; task?.cancel(); textTask?.cancel(); };
   }, [pageNum, width, doc, terms, visible]);
 
-    function snapshot(range:Range) {
-    const root=pageRef.current,layer=textRef.current;
-    if(!root||!layer||!data||!onSelect||!layer.contains(range.startContainer)||!layer.contains(range.endContainer))return false;
-    const text = range.toString().trim(); if (!text || text.length > 160 || !/[a-z]/i.test(text)) return false;
-    const bounds = root.getBoundingClientRect(); const raw = Array.from(range.getClientRects()).filter(r => r.width > 1 && r.height > 1);
-    const rects = raw.map(r => {
-      const x=Math.max(0,r.left-bounds.left+root.scrollLeft), y=Math.max(0,r.top-bounds.top);
-      return {x:x/data.w,y:y/data.h,w:Math.min(r.width,data.w-x)/data.w,h:Math.min(r.height,data.h-y)/data.h};
-    }).filter(r => r.w>0 && r.h>0);
-    if (!rects.length) return false;
-    const spans = Array.from(layer.querySelectorAll("span"));
-    const anchor = range.startContainer.parentElement; const idx = spans.findIndex(s => s === anchor || s.contains(anchor));
-    const context = spans.slice(Math.max(0,idx-2),idx+4).map(s => s.textContent).join(" ");
-    onSelect?.({ x:Math.max(8,Math.min(raw[0].left,window.innerWidth-340)), y:Math.max(8,Math.min(raw[0].bottom+8,window.innerHeight-210)), text,context,page:pageNum,rects });
-    return true;
-  }
-  function selection(e:{type:string;stopPropagation:()=>void}){
-    const selected=window.getSelection();if(!selected||selected.isCollapsed||!selected.rangeCount)return;
-    if(snapshot(selected.getRangeAt(0))){e.stopPropagation();skipClickRef.current=e.type==="mouseup"?Date.now()+100:0;selected.removeAllRanges();}
+  function wordAt(x: number, y: number) {
+    if (!data || !canvasRef.current) return undefined;
+    const bounds = canvasRef.current.getBoundingClientRect();
+    const px = (x - bounds.left) / data.w, py = (y - bounds.top) / data.h;
+    for (const entry of vocabulary) {
+      if (entry.page !== pageNum) continue;
+      const rect = entry.rects.find(r => px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h);
+      if (rect) return { entry, bottom: bounds.top + (rect.y + rect.h) * data.h };
+    }
   }
 
 
   return (
     <div ref={frameRef} className="pdf-page" style={{ width: frameWidth, minHeight:data ? undefined : frameWidth*1.414 }} data-page={pageNum}>
-      <div ref={pageRef} className="pdf-page-scroll" onMouseUp={selection} onKeyUp={selection} onClick={e => { if(Date.now()<skipClickRef.current){skipClickRef.current=0;e.stopPropagation();return;} skipClickRef.current=0;if(wordLookup&&textRef.current){const range=wordRangeAtPoint(textRef.current,e.clientX,e.clientY);if(range&&snapshot(range)){e.stopPropagation();window.getSelection()?.removeAllRanges();return;}} if(window.getSelection()?.toString()) return; const bounds=e.currentTarget.getBoundingClientRect(); const t=data?.terms.find(t => e.clientX-bounds.left>=t.x && e.clientX-bounds.left<=t.x+t.w && e.clientY-bounds.top>=t.y && e.clientY-bounds.top<=t.y+t.h); if(t) {e.stopPropagation();onTerm({ x:Math.max(8,Math.min(e.clientX,window.innerWidth-320)),y:Math.max(8,Math.min(e.clientY,window.innerHeight-260)),term:t.term });} }} style={data ? { width: data.w, height: data.h } : { width }}>
+      <div ref={pageRef} className={`pdf-page-scroll${wordLookup ? " pdf-page-scroll--lookup" : ""}`}
+        onPointerDown={e => { pointerStart.current = { x: e.clientX, y: e.clientY }; }}
+        onPointerMove={e => {
+          if (e.buttons || window.getSelection()?.toString()) return;
+          const hit = wordAt(e.clientX, e.clientY);
+          if (hit) onWord?.(hit.entry, e.clientX, hit.bottom); else onWordLeave?.();
+        }}
+        onPointerLeave={e => onWordLeave?.(e.relatedTarget)}
+        onClick={e => {
+          if (window.getSelection()?.toString() || Math.hypot(e.clientX - pointerStart.current.x, e.clientY - pointerStart.current.y) > 4) return;
+          const pageBounds=canvasRef.current?.getBoundingClientRect();
+          const remembered=pageBounds&&memories.find(t=>t.anchor.page===pageNum&&t.anchor.rects?.some(r=>e.clientX>=pageBounds.left+r.x*pageBounds.width&&e.clientX<=pageBounds.left+(r.x+r.w)*pageBounds.width&&e.clientY>=pageBounds.top+r.y*pageBounds.height&&e.clientY<=pageBounds.top+(r.y+r.h)*pageBounds.height));
+          if(remembered){e.stopPropagation();onMemory?.(remembered.id);return;}
+          const noted=pageBounds&&notes.find(n=>n.anchor.page===pageNum&&n.anchor.rects?.some(r=>e.clientX>=pageBounds.left+r.x*pageBounds.width&&e.clientX<=pageBounds.left+(r.x+r.w)*pageBounds.width&&e.clientY>=pageBounds.top+r.y*pageBounds.height&&e.clientY<=pageBounds.top+(r.y+r.h)*pageBounds.height));
+          if(noted){e.stopPropagation();onNote?.(noted.id);return;}
+          const hit = wordAt(e.clientX, e.clientY);
+          if (hit) { e.stopPropagation(); onWord?.(hit.entry, e.clientX, hit.bottom); return; }
+          if (wordLookup && textRef.current && pageRef.current) {
+            const range = wordRangeAtPoint(textRef.current, e.clientX, e.clientY);
+            const selected = range && snapshotReaderRange(pageRef.current, range, false);
+            if (selected) { e.stopPropagation(); onSelect?.(selected); return; }
+          }
+          const bounds=canvasRef.current?.getBoundingClientRect() ?? e.currentTarget.getBoundingClientRect();
+          const t=data?.terms.find(t => e.clientX-bounds.left>=t.x && e.clientX-bounds.left<=t.x+t.w && e.clientY-bounds.top>=t.y && e.clientY-bounds.top<=t.y+t.h);
+          if(t) {e.stopPropagation();onTerm({ x:Math.max(8,Math.min(e.clientX,window.innerWidth-320)),y:Math.max(8,Math.min(e.clientY,window.innerHeight-260)),term:t.term });}
+        }} style={data ? { width: data.w, height: data.h } : { width }}>
         <canvas ref={canvasRef} className="pdf-canvas" />
-        <div ref={textRef} className={`textLayer reader-text-layer${wordLookup?" reader-text-layer--lookup":""}`} />
-        {data && selectedWord?.page===pageNum && selectedWord.rects.map((r,i)=><div key={`selected-${i}`} className="word-selection-preview" aria-hidden="true" style={{left:r.x*data.w,top:r.y*data.h,width:r.w*data.w,height:r.h*data.h}}/>)}
-        {data && vocabulary.filter(e => e.page === pageNum).flatMap(entry => entry.rects.map((r,i) => <button key={`${entry.id}-${i}`} className="word-highlight" aria-label={`${entry.text}：${entry.meaning}`} style={{left:r.x*data.w,top:r.y*data.h,width:r.w*data.w,height:r.h*data.h}} onMouseLeave={onWordLeave} onBlur={onWordLeave} onMouseEnter={e => onWord?.(entry,e.clientX,e.clientY)} onFocus={e => { const b=e.currentTarget.getBoundingClientRect(); onWord?.(entry,b.left,b.bottom); }} onClick={e => { e.stopPropagation(); onWord?.(entry,e.clientX,e.clientY); }} />))}
+        <div ref={textRef} className="pdf-text-host" />
+        {data&&notes.filter(n=>n.anchor.page===pageNum).flatMap(n=>n.anchor.rects?.map((r,i)=><button key={'note-'+n.id+'-'+i} data-note-id={n.id} className="pdf-note-highlight" style={{left:r.x*data.w,top:r.y*data.h,width:r.w*data.w,height:r.h*data.h}} aria-label={'查看笔记：'+n.comment} onClick={e=>{e.stopPropagation();onNote?.(n.id);}}/>))}
+        {data&&memories.filter(t=>t.anchor.page===pageNum).flatMap(t=>t.anchor.rects?.map((r,i)=><button key={`memory-${t.id}-${i}`} className="pdf-memory-highlight" style={{left:r.x*data.w,top:r.y*data.h,width:r.w*data.w,height:r.h*data.h}} aria-label={`展开追问：${t.anchor.text}`} onClick={e=>{e.stopPropagation();onMemory?.(t.id);}}/>))}
+        {data && selectedWord?.page===pageNum && !selectedWord.native && selectedWord.rects.map((r,i)=><div key={`selected-${i}`} className="word-selection-preview" aria-hidden="true" style={{left:r.x*data.w,top:r.y*data.h,width:r.w*data.w,height:r.h*data.h}}/>)}
+        {data && vocabulary.filter(e => e.page === pageNum).flatMap(entry => entry.rects.map((r,i) => <button key={`${entry.id}-${i}`} className="word-highlight" aria-label={`${entry.text}：${entry.meaning}`} style={{left:r.x*data.w,top:r.y*data.h,width:r.w*data.w,height:r.h*data.h}} onMouseLeave={e => onWordLeave?.(e.relatedTarget)} onBlur={e => onWordLeave?.(e.relatedTarget)} onMouseEnter={e => onWord?.(entry,e.clientX,e.clientY)} onFocus={e => { const b=e.currentTarget.getBoundingClientRect(); onWord?.(entry,b.left,b.bottom); }} onClick={e => { e.stopPropagation(); onWord?.(entry,e.clientX,e.clientY); }} />))}
         {data && (
           <div className="pdf-overlay" style={{ width: data.w, height: data.h }}>
             {data.terms.map((t, i) => (

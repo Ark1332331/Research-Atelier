@@ -1,6 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import ObservationIndicator from "@/components/observation-indicator";
+import './personalization.css';
+import './model-settings.css';
+import { ModelSettingsProvider } from '@/components/model-settings';
+import 'katex/dist/katex.min.css';
+import { ReadingMemoryProvider } from '@/components/reading-memory';
+import { ReadingNotesProvider } from '@/components/reading-notes';
 
 export const metadata: Metadata = {
   title: "Research Atelier · 我的研究空间",
@@ -14,7 +19,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN" className="h-full antialiased">
-      <body className="min-h-full">{children}<ObservationIndicator/></body>
+      <body className="min-h-full"><ModelSettingsProvider><ReadingNotesProvider><ReadingMemoryProvider>{children}</ReadingMemoryProvider></ReadingNotesProvider></ModelSettingsProvider></body>
     </html>
   );
 }

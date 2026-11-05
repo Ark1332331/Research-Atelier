@@ -47,12 +47,10 @@ test("GET 带不存在的 id 返回 404", async () => {
   assert.ok(typeof data.error === "string");
 });
 
-test("POST create 正常路径：创建项目并落盘", async () => {
-  const res = await post({ action: "create", title: "  新项目  " });
-  assert.equal(res.status, 200);
-  const data = await res.json();
-  assert.equal(data.project.title, "新项目");
-  assert.equal(data.project.reproState.current, "尚未同步执行进展。");
+test("POST create refuses empty projects and does not write a new record", async () => {
+  const before=await (await GET(new Request('http://localhost/api/projects'))).json();
+  const res = await post({ action: "create", title: "新项目" });assert.equal(res.status,400);
+  const after=await (await GET(new Request('http://localhost/api/projects'))).json();assert.equal(after.projects.length,before.projects.length);
 });
 
 test("POST create 失败路径：空 title 返回 400", async () => {
@@ -76,7 +74,8 @@ test("POST setLastModule 失败路径：项目不存在返回 404", async () => 
 });
 
 test("POST delete 正常路径后项目消失", async () => {
-  const created = await (await post({ action: "create", title: "待删除" })).json();
+  const {createProject}=await import("../src/lib/project.ts");
+  const created={project:await createProject({title:"待删除的旧项目"})};
   const del = await post({ action: "delete", id: created.project.id });
   assert.equal(del.status, 200);
   const after = await GET(new Request("http://localhost/api/projects?id=" + created.project.id));

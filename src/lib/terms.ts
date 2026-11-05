@@ -2,6 +2,7 @@ export interface TermContext { slug: string; title: string; meaning: string; quo
 export interface TermAssessment { id:string; at:string; answer:string; verdict:"supported"|"needs-work"|"uncertain"; suggestedStatus:string; feedback:string; nextQuestion:string; slug?:string; referenceHash?:string }
 export interface TermReview { at: string; answer: string; rating: "again" | "good"; status: string; assessmentId?:string }
 export interface Term {
+  collection?: 'manual'; meaning?: string; excerpts?: (import('./reading-memory').ReadingAnchor & { meaning?: string })[];
   id: string; name: string; role: string; status: string; reuse: string; note: string; source: string; links: string; updatedAt: string;
   papers?: { slug: string; title: string }[]; contexts?: TermContext[]; mechanism?: string; example?: string; nextAction?: string;
   reviews?: TermReview[]; reviewLevel?: number; dueAt?: string; explanationSource?: string;

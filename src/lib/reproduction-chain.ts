@@ -1,8 +1,8 @@
+import {configuredModelKey,fetchModel} from './model-config.ts';
 import type { PaperProject } from "@/lib/project";
 import type { SessionMessage } from "@/lib/execution-session";
 import type { SyncExplanation } from "@/lib/sync-explain";
 
-const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
 export interface ReproductionStage extends SyncExplanation {
   evidence: string;
@@ -32,8 +32,8 @@ function parse(content: string): ReproductionChain {
 }
 
 export async function buildReproductionChainWithAI(project: PaperProject, messages: SessionMessage[]): Promise<ReproductionChain> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) throw new Error("DEEPSEEK_API_KEY 未配置，无法生成复现链。");
+  const apiKey = await configuredModelKey();
+  if (!apiKey) throw new Error("尚未配置模型，无法生成复现链。");
   const prompt = [
     "你是 Research Atelier 的科研复现档案 AI。根据完整执行对话，重建真实的复现链，而不是按同步次数罗列。",
     "按对话中实际暴露的工作单元划分 stages，例如环境/数据、实现与训练、失败与修正、评估验证、最终验收；不要使用固定步骤编号，不要编造未出现的内容。",
@@ -42,7 +42,7 @@ export async function buildReproductionChainWithAI(project: PaperProject, messag
     `项目：${project.title}`,
     `完整执行对话：\n${visibleTranscript(messages)}`,
   ].join("\n\n");
-  const response = await fetch(DEEPSEEK_URL, {
+  const response = await fetchModel({
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model: "deepseek-chat", messages: [{ role: "system", content: "你是严谨、可追溯的科研复现档案助手。" }, { role: "user", content: prompt }], stream: false, response_format: { type: "json_object" } }),
