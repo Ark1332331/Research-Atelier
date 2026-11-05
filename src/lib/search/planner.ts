@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from '../model-config.ts';
 /**
  * LLM 检索意图生产者（v1.1 guardrail #2 边界 + v1.1.1 hardening + v1.4 术语映射）：
  * LLM 只输出结构化数据（SearchIntent 或 AcademicConceptMap JSON）；SearchPlan / WoS 查询串 /
@@ -9,7 +10,6 @@ import { normalizeIntent, resolveYearRange } from "./plan.ts";
 import { normalizeConceptMap } from "./terms.ts";
 import type { SearchIntent, AcademicConceptMap } from "./types.ts";
 
-const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
 export function buildSystemPrompt(now: number): string {
   return "你是 Research Atelier 的检索策略编译器。把用户的研究问题编译成结构化检索意图 JSON。" +
@@ -53,13 +53,13 @@ export async function conceptMapper(question: string): Promise<AcademicConceptMa
     const parsed = parseJsonObject(mock);
     if (parsed) return normalizeConceptMap(parsed);
   }
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) throw new Error("DEEPSEEK_API_KEY 未配置");
+  const apiKey = await configuredModelKey();
+  if (!apiKey) throw new Error("尚未配置模型");
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
-      const res = await fetch(DEEPSEEK_URL, {
+      const res = await fetchModel({
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
         body: JSON.stringify({
@@ -102,14 +102,14 @@ export async function plannerIntent(question: string, now?: number): Promise<Sea
     if (parsed) return resolveYearRange(normalizeIntent(parsed.intent ?? parsed), year);
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) throw new Error("DEEPSEEK_API_KEY 未配置");
+  const apiKey = await configuredModelKey();
+  if (!apiKey) throw new Error("尚未配置模型");
 
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
-      const res = await fetch(DEEPSEEK_URL, {
+      const res = await fetchModel({
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
         body: JSON.stringify({

@@ -6,6 +6,9 @@
  * 运行：RA_DATA_DIR=<tmp> node tests/legacy/b-lite-hardening.mjs
  */
 import { handlePlan, handleImport, handleTriage, handleAction, handleSessionGet } from "../../src/lib/search/literature-api.ts";
+import { installLegacyMetadata } from "../helpers/legacy-metadata.mjs";
+
+const metadata = installLegacyMetadata(['2301.04104', '1803.10122']);
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }
@@ -53,6 +56,7 @@ const restored = await restoredRes.json();
 console.log("  [debug] GET status=" + restoredRes.status + " restored=" + JSON.stringify(restored).slice(0, 200));
 ok(restoredRes.status === 200 && restored.session.triage.length === 0 && restored.session.seedPapers.length === 0, "刷新后 triage/seeds 仍为空（不会复活旧结果）");
 
+metadata.assertComplete();
 console.log("\n结果：" + pass + " 通过 / " + fail + " 失败");
 process.exit(fail ? 1 : 0);
 

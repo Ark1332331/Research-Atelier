@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from '../../../../lib/model-config.ts';
 import { withToolObservation } from "@/lib/learning/tool-observation";
 /**
  * 实验复盘：从对话/日志提炼坑点并归档到复现记录。
@@ -87,12 +88,12 @@ async function sourceText(link?: string, text?: string): Promise<string> {
 }
 
 async function extractPitfalls(text: string): Promise<PitOff[]> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = await configuredModelKey();
   if (!apiKey) return [];
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
-      const res = await fetch("https://api.deepseek.com/chat/completions", {
+      const res = await fetchModel({
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({

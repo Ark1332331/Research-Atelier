@@ -13,9 +13,10 @@
  * 存储：本地 data/library.json；生产（Vercel）自动切 KV（见 src/lib/store.ts）
  * 依据：node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md
  */
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import { DATA_DIR, readStore, writeStore } from "@/lib/store";
+import { readStore, writeStore } from "@/lib/store";
+
+import {removePaper,renamePaper} from '@/lib/paper-management';
+import {withProjectLock} from '@/lib/project-lock';
 
 const FILE = "library.json";
 
@@ -73,7 +74,7 @@ export async function GET() {
   return Response.json(lib);
 }
 
-export async function POST(request: Request) {
+async function mutateLibrary(request: Request) {
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -81,7 +82,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "请求体必须是 JSON" }, { status: 400 });
   }
 
-  const lib = await readLibrary();
+  let lib = await readLibrary();
   const action = body.action as string | undefined;
 
   switch (action) {
@@ -133,9 +134,16 @@ export async function POST(request: Request) {
     case "updatePaper": {
       const id = body.id as string;
       const patch = (body.patch ?? {}) as Partial<LibraryPaper>;
-      const p = lib.papers.find((x) => x.id === id);
+      let p = lib.papers.find((x) => x.id === id);
       if (!p) return Response.json({ error: "论文不存在" }, { status: 404 });
-      Object.assign(p, patch);
+      if (p.slug && patch.title !== undefined) {
+        const renamed=await renamePaper(p.slug,patch.title);patch.title=renamed.title;
+        lib=await readLibrary();p=lib.papers.find(x=>x.id===id)!;
+      }
+      // Identity is immutable: editing metadata must never detach its PDF.
+      const {id: _id, slug: _slug, ...editable} = patch;
+      void _id; void _slug;
+      Object.assign(p, editable);
       if (patch.statusColor !== undefined && !patch.statusColor) p.statusColor = undefined;
       break;
     }
@@ -150,13 +158,7 @@ export async function POST(request: Request) {
       const id = body.id as string;
       const target = lib.papers.find((x) => x.id === id);
       lib.papers = lib.papers.filter((x) => x.id !== id);
-      // 若删的是当前在读，则清空当前标记
-      if (!lib.papers.some((p) => p.current)) lib.papers.forEach((p) => { p.current = false; });
-      // 若该论文是导入的（有 slug），一并删除 data/papers/<slug> 目录，
-      // 否则「精读讲解」仍会通过 /api/paper 遍历到它（用户已反馈：库里删了阅读页还在）。
-      if (target?.slug) {
-        await fs.rm(path.join(DATA_DIR, "papers", target.slug), { recursive: true, force: true }).catch(() => {});
-      }
+      if (target?.slug) { await removePaper(target.slug); return Response.json(await readLibrary()); }
       break;
     }
 
@@ -166,4 +168,11 @@ export async function POST(request: Request) {
 
   await writeLibrary(lib);
   return Response.json(lib);
+}
+
+export async function POST(request: Request) {
+  return withProjectLock(async () => {
+    try { return await mutateLibrary(request); }
+    catch (error) { return Response.json({error:error instanceof Error ? error.message : '论文库操作失败'}, {status:400}); }
+  });
 }

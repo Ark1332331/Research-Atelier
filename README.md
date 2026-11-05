@@ -1,165 +1,176 @@
 # Research Atelier · 我的研究空间
 
-> 个人论文学习一体化工具：论文库管理、论文筛选、精读翻译、术语卡、代码导读与实验复现检查点。数据全部存在本机，是「本地优先」的个人知识工作台，也可一键打包成 Electron 桌面 App（双击即开）。
+面向个人的论文阅读与 Markdown 学习工作台。把原文、翻译、AI 追问和自己的笔记放在一起：选中不懂的内容提问，沿着高光回到对话，再把有用的理解留下来。
 
+论文库与学习资料库分别管理。资料和阅读记录保存在本机；使用 AI 功能时，相关问题与上下文会发送到你配置的模型服务。
 
-## 持续观察工程更新（2026-10-13）
+## 可以做什么
 
-提问和追问不依赖关键词触发：先落盘、后台结合近期对话与相关工具结果检查。常规打开、点击和翻译不产生独立学习观察，列表优先显示提问暴露的问题。全局观察状态和学习页时间线展示真实来源、证据、判断理由及待采纳改法。新推断仍需确认，已有 44 条记忆继续生效。启动只需 `npm run dev`，完整说明见 [DELIVERY_OBSERVATION.md](DELIVERY_OBSERVATION.md)。
+| 功能 | 使用方式 |
+| --- | --- |
+| 论文库 | 导入 PDF，整理分组、重命名、删除，并进入论文阅读器 |
+| 对话导入 | 输入论文名称、链接、自然语言清单或 Markdown 表格，逐篇检索并尝试导入可获取的 PDF；可指定目标分组 |
+| 学习资料 | 导入 Markdown 文件、包含图片的资料文件夹，或直接粘贴 Markdown；自行新建目录、移动、排序和改名 |
+| 并排阅读 | 左边原文、右边问答画布；书目与章节目录可收起，阅读比例可调整 |
+| 划线追问 | 从原文、翻译或 AI 回答中选择文字，附带上下文继续提问；高光可重新打开对应对话 |
+| 自定义快捷 | 在学习页面配置「解题」「是什么」「为什么」等快捷提问指令 |
+| 随心笔记 | 保存有用的选中文字并写下批注，从笔记库返回原文或对应回答 |
+| 术语卡与生词本 | 先翻译或释义，再选择加入科研术语卡或生词本；保留出处并可按论文筛选 |
+| 用户画像与讲解方式 | 独立观察者在后台整理对话中的证据；可以查看、修改、确认或停用画像与讲解建议 |
+| 模型配置 | 保存多套 Base URL、模型 ID 和 API Key，随时切换 |
 
-## 阅读与受控学习更新（2026-10-13）
+项目也保留代码导读、项目 AI 和实验复现工作区。代码导读中的 Python 调用链分析需要本机安装 Python。
 
-学习入口简化为“助手如何懂我”，增加对话中的纠正确认；术语改为带原文出处和复述证据的笔记；完整论文阅读器支持选词翻译、持久高光和悬停释义。使用方法、数据备份与开源参考见 [DELIVERY_READING.md](DELIVERY_READING.md)。仅需 `npm run dev`。
+## 快速开始
 
-## 受控持续学习版本（2026-10-12）
-
-新增“学习与记忆”及 `/learning` 入口：反馈候选 → 人工审核 → 按场景/项目应用 → 回答记录 → 效果反馈。支持修正/回退/停用/遗忘、同题基线、Markdown 交接与 JSON 导出。完整启动、参考开源项目、验收证据与适用边界见 [DELIVERY_LEARNING.md](DELIVERY_LEARNING.md)。
-
-本次仅交付本地开发模式：运行 `npm run dev`，打开 `/learning`。数据默认在用户数据目录（Windows：`%APPDATA%\Research Atelier\data`；Linux/macOS：`~/.config/Research Atelier/data`，`RA_DATA_DIR` 可覆盖），模型配置使用项目 `.env.local`。下面早期说明中的“开发读仓库 data/”和“画像自动掌握”已被新版本替代。
-
-## 功能
-
-| 视图 | 作用 |
-|---|---|
-| **论文库** | 分组/文件夹管理论文，挑一篇设为「当前在读」，驱动后续导读与复现 |
-| **论文筛选** | 与 AI 对话式筛选：入口澄清 → 收集候选 → 六维评分 → 筛完停在筛选笔记（`data/notes/screening.md`）。AI 会**联网检索**（OpenAlex）并给出候选论文的 DOI/出版社入口与开放获取 PDF；开放获取的可在 App 里一键**下载并导入论文库** |
-| **精读讲解** | PDF 阅读器 + 逐段翻译 + 全文翻译（上传 PDF 自动生成 `translation.md`） |
-| **术语卡** | 阅读中沉淀的术语：角色/掌握状态/复用范围，自动进入全局搜索 |
-| **代码导读** | 读本机代码 + 跨文件调用链（Python 用 `scripts/py_chain.py` 做 AST 解析），并把「用户会卡的点/学会了什么」写回代码能力画像（`data/code-profile.json`），越用越懂你 |
-| **实验复现** | 复现六层（概念→数据→模型→训练→指标→对齐），每层可勾验收规则，全部勾完才推进；含「给 Codex 的指挥话术」与 环境管理/放行检查/交接 三个工具 |
-
-## 技术栈
-
-- **Next.js 16.3**（App Router + Route Handlers，Turbopack 构建）+ **React 19** + **TypeScript**
-- **react-pdf / pdfjs-dist**（PDF 阅读与文本层提取）
-- **Electron 43**（桌面壳，见下）
-- 数据层：纯文件（`data/` 目录），无数据库；可选 Vercel KV
-
-## 快速开始（开发模式）
-
-Windows（PowerShell）：
-
-```powershell
-npm install
-npm run dev          # http://localhost:3000
-```
-
-Linux / macOS：
+需要 Node.js 24 与 npm。Windows、Linux、macOS 均可在项目目录运行；CI 使用 Node.js 24.18.0。
 
 ```bash
-npm install
-npm run dev          # http://localhost:3000
+git clone https://github.com/Ark1332331/Research-Atelier.git
+cd Research-Atelier
+npm ci
+npm run dev
 ```
 
-依赖与配置：
+打开 [http://localhost:3000](http://localhost:3000)。首次使用可先导入资料，再从工具栏打开「模型配置」。
 
-- 对话/翻译需要 DeepSeek API Key：复制 `.env.local.example` 为项目根目录的 `.env.local`，填入 `DEEPSEEK_API_KEY`（获取入口：platform.deepseek.com → API Keys）。`.env.local` 已被 git 忽略，不会入库
-- 代码导读的跨文件调用链需要本机 Python：Windows 会自动找 `python` / `py`，Linux/macOS 找 `python3`（`scripts/py_chain.py`）
-
-## 桌面壳（Electron）— 双击即开
-
-用 Electron 包一层壳：保留整套 Next 前后端与 `/api/*`、`data/` 读写、代码导读，只加桌面启动器。主进程用 **Electron 内置 Node**（`ELECTRON_RUN_AS_NODE`）拉起本地 `next build + next start`，窗口加载 `http://127.0.0.1:<随机端口>`，**不依赖系统 Node**。
-
-### 构建命令
+生产模式：
 
 ```bash
-npm run desktop:dev   # 开发热更：next dev + electron 直连（concurrently 一起跑）
-npm run desktop:dir   # next build + electron-builder --dir（当前平台免安装版，最快验证）
-npm run desktop       # 完整分发（当前平台）：Windows 出 NSIS 安装包，Linux 出 AppImage + deb
+npm run build
+npm start
 ```
 
-> Windows 上 `npm run desktop` 即产出 NSIS 安装包；需要单独指定时用 `npx electron-builder --win` / `--linux`。
+### 配置模型
 
-产物：
+首页、论文阅读器和学习阅读器都有「模型配置」入口。
 
-- Windows：`release/Research Atelier-Setup-<version>-x64.exe` — NSIS 安装包，双击安装
-- Linux：`release/Research Atelier-<version>.AppImage`（需可执行权限 + FUSE）、`release/<name>_<version>_amd64.deb`
-- `<平台>-unpacked/` — 免安装调试版
+1. 填写配置名称、Base URL、模型 ID 和 API Key。
+2. 点击「测试连接」，检查服务是否接受这套配置。
+3. 选择「仅保存」或「保存并启用」；之后可通过下拉菜单切换已保存的配置。
 
-### 数据在哪（重要）
+目前支持 **OpenAI 兼容的 Chat Completions 接口**。Base URL 可填 `https://服务地址/v1`，也接受完整的 `/chat/completions` 地址。仅支持 Responses API 的服务不能直接使用。
 
-- **打包后**：数据目录 = 系统用户数据目录。Windows 为 `%APPDATA%\Research Atelier\data`（资源管理器地址栏粘贴即达），Linux 为 `~/.config/Research Atelier/data`。首次启动自动把随包 `data/` 种子拷贝过去，之后所有改动都写用户目录，持久不丢；重装/更新不覆盖。
-- **开发时（npm run dev）**：与桌面版共用同一个用户数据目录（Windows 上旧版曾写在 `~/.config`，首次运行会自动迁移到 `%APPDATA%`）。
-- 注意：GitHub 仓库**不含** `data/`（个人数据，已被 `.gitignore` 排除）。克隆后首次运行会得到空数据目录，把本机旧 `data/` 拷进用户数据目录（或直接在应用里重新导入论文）即可恢复。
+切换从下一次模型请求生效，正在生成的回答继续使用原配置。问答、翻译、论文导入整理和后台观察使用当前配置。测试连接只发送一条简短测试消息。
 
-### 代码导读的「代码根」
+也可以复制 `.env.local.example` 为 `.env.local`，配置「环境默认」：
 
-- 打包时 `scripts/gen-runtime-config.mjs` 把本机项目根（`workflow-app` 的上级，即 `allinone/`，含 `reproduction/`）写入 `electron/runtime-config.json`；首次启动写入用户数据目录的 `data/code-roots.json`。
-- 换机器/换路径后：直接编辑用户数据目录的 `data/code-roots.json`（`{ "roots": [{ "id": "project", "name": "项目根", "root": "<绝对路径>" }] }`），或启动前设环境变量 `RA_DEFAULT_CODE_ROOT`。
+```dotenv
+DEEPSEEK_API_KEY=你的密钥
+# 可选，不填时使用 DeepSeek 默认地址与模型
+# DEEPSEEK_BASE_URL=https://服务地址/v1
+# DEEPSEEK_MODEL=模型ID
+```
 
-### 桌面壳环境变量
+API Key 保存在本机后端的 `model-configs.json` 中，不写入浏览器存储，编辑时不回显。该文件包含明文密钥，备份时请按凭据保管。
 
-| 变量 | 用途 |
-|---|---|
-| `RA_DATA_DIR` | 数据目录（桌面壳自动设为用户目录；一般不用手动设） |
-| `RA_DEV_URL` | 开发模式：直连已运行的 next dev |
-| `RA_NODE_BIN` | 子进程 node 二进制（桌面壳自动设为 Electron 二进制） |
-| `RA_DEFAULT_CODE_ROOT` | 代码导读默认根（覆盖运行时配置） |
-| `RA_DEVTOOLS=1` | 启动时打开 DevTools |
-| `RA_DEBUG_SHOT=<png>` / `RA_DEBUG_DUMP=<txt>` | 加载完成后截图/转储页面文本（无头验证用） |
+## 阅读与学习
 
-## 数据层
+### 论文
 
-`data/` 目录是真相源，读写走 `src/lib/store.ts`：
+在论文库上传 PDF，或通过「对话导入」输入清单，例如：
+
+> 帮我找 AeroVLA、TravelUAV 和 OpenFly，导入 UAV 分组。
+
+可提供标题、DOI、arXiv 或项目链接帮助匹配。导入任务逐篇显示检索、匹配和下载状态；找不到可靠候选或无法下载时，可以补充信息或重试。无法直接获取的 PDF 可自行下载后上传。
+
+### Markdown 资料
+
+在首页「学习」中创建资料库，点击「导入资料」：
+
+- **粘贴 Markdown**：填写文档名称并粘贴正文，确认内容后导入。
+- **文件 / 文件夹**：选择 `.md` 文件，或选择同时包含正文和图片的资料文件夹。
+
+PDF 转 Markdown 由外部工具完成。使用文件夹导入时，相对图片和文档链接按导入路径关联；之后在应用内移动或改名，不会改变文档的稳定链接。
+
+阅读时，左边看原文，右边看回答。选中文字即可翻译、追问、执行快捷指令或写随心笔记。
+
+### 问答画布
+
+每个追问有独立窗口，子追问与原对话可以并列存在。窗口可拖动、缩放、收起或放大。
+
+| 操作 | 结果 |
+| --- | --- |
+| 关闭窗口「×」 | 保留对话与高光，之后可以重新打开 |
+| 删除对话 | 删除该对话及其高光 |
+| 清空画布 | 一次关闭当前画布上的问答框，保留记录、草稿和高光 |
+| 停止回答 | 中止当前请求，保留已有完整对话和输入的问题 |
+
+关闭窗口或清空画布后，正在生成的回答继续完成；刷新或关闭整个页面则可能中断请求。回答流式显示，打开历史对话时不会强制跳到底部。
+
+划线追问按输出进度判断超时：首段正文最多等待 180 秒，开始输出后连续 90 秒没有新内容才停止。未完成的文字会暂留在当前窗口，但不会当作完整回答保存。
+
+## 数据保存与备份
+
+正常本地启动使用固定用户数据目录，更新代码或重启应用不会把资料放到另一个临时目录。
+
+| 运行方式 | 默认位置 |
+| --- | --- |
+| Windows 本地开发 / 桌面版 | `%APPDATA%/Research Atelier/data` |
+| Linux / macOS 本地开发 | `$XDG_CONFIG_HOME/Research Atelier/data`，未设置时为 `~/.config/Research Atelier/data` |
+| Electron 桌面版 | Electron 的 `userData/data` 目录，由系统决定 |
+| 指定目录 | 设置 `RA_DATA_DIR` 为固定的绝对路径 |
+
+主要数据文件：
 
 ```text
 data/
-├── library.json        # 论文库（分组 + 论文 + 当前在读）
-├── glossary.json       # 术语卡
-├── code-profile.json   # 代码能力画像（自更新）
-├── profile.md          # 知识水平画像
-├── repro-context.md    # 复现上下文
-├── environment.md      # 环境卡
-├── handoffs.md         # 交接词
-├── ops.md              # 操作记录
-├── notes/screening.md  # 筛选笔记（追加式）
-└── papers/<slug>/      # 导入的论文：original.pdf + page_XX.txt + translation.md + meta.json
+├── library.json             # 论文分组与条目
+├── papers/                  # PDF、提取文本、翻译与元信息
+├── study-library/           # 学习目录、Markdown 正文和图片
+├── reading-memory.json      # 划线追问与已完成的回答
+├── reading-notes.json       # 随心笔记与来源定位
+├── glossary.json            # 手动收藏的术语
+├── paper-import-chat.json   # 对话导入记录
+├── model-configs.json       # 模型配置，包含密钥
+└── learning/                # 用户画像、讲解建议和观察记录
 ```
 
-`store.ts` 本地用 Node fs 读写 `process.cwd()/data`；若配置 `VERCEL_KV_REST_API_URL + VERCEL_KV_REST_API_TOKEN` 自动切换 Vercel KV（本地不配）。桌面壳通过环境变量 `RA_DATA_DIR` 把数据目录指向用户可写目录。
+备份前先停止应用，复制整个用户数据目录。恢复时先备份当前目录，避免直接用旧备份覆盖新记录。迁移脚本及恢复流程见 [存储与恢复说明](docs/storage-recovery.md)。
 
-## API 一览
+`.env.local`、本地 `data/`、构建缓存和桌面运行配置均不提交到 Git。克隆仓库不会带上原机器的个人资料。日常使用不能将 `RA_DATA_DIR` 指向 `.next`、`.build-cache`、`build` 或 `out`；`RA_ALLOW_TEST_DATA_DIR=1` 仅用于隔离测试。
 
-| 路由 | 说明 |
-|---|---|
-| `POST /api/chat` | DeepSeek 对话（大脑入口） |
-| `GET/POST /api/paper` | 论文导入（PDF 提取 + 全文翻译）/ 列表与详情 |
-| `GET /api/paper/pdf?slug=` | 论文 PDF 文件服务（react-pdf 读取） |
-| `GET/POST /api/library` | 论文库（分组/增删改/当前在读） |
-| `GET/POST /api/code-read` | 代码导读（目录树 / 文件内容 / Python 调用链） |
-| `GET/POST /api/code-profile` | 代码能力画像（手动更新 / 掌握标记 / 导读日志） |
-| `GET/POST /api/terms` | 术语卡 |
-| `GET/POST /api/memory` | 记忆层（profile / environment / handoff / screening / ops） |
-| `GET /api/context` | 工具对话自动上下文（repro / environment） |
+当前学习、笔记和模型配置功能以本地文件存储为基础，需要可持久化、可写的磁盘；仅配置远程 KV 不能替代这些目录。
 
-## 目录结构
+## 桌面版
+
+Electron 使用本地 Next.js 服务，打包后的应用无需系统另装 Node.js。
+
+```bash
+npm run desktop:dir   # 当前平台的免安装目录
+npm run desktop       # 当前平台安装包
+npm run dist:win      # Windows 安装包
+```
+
+产物位于 `release/`。Windows 使用 NSIS 安装包，Linux 配置了 AppImage 和 deb。桌面数据写入用户目录。
+
+当前打包配置会包含项目中的 `.env.local` 和 `data/`（如果存在）；向他人分发安装包前，应清除其中的个人密钥和资料。
+
+## 开发与验证
+
+技术栈：Next.js 16.3、React 19、TypeScript、react-pdf / PDF.js、react-markdown / KaTeX、Electron；本地文件保存资料和状态。
+
+```bash
+npm run typecheck
+npm run lint
+npm test
+npm run build
+```
+
+单元与 API 测试使用 Node 内置测试运行器。交互回归脚本在 `tests/browser/`，需要可用的 Playwright 和本地应用服务；可通过 `PLAYWRIGHT_MODULE` 指定 Playwright 模块路径。各脚本的服务地址及测试数据隔离方式见脚本本身。
+
+公式渲染器与样式使用同一套 KaTeX 版本，避免补集横线、方框等符号缺失。升级时应保留版本一致性检查，并验证实际浏览器中的显示。
 
 ```text
-workflow-app/
-├── electron/               # 桌面壳：main.js（主进程）、runtime-config.json（构建时生成，不入库）
-├── scripts/                # py_chain.py（Python 调用链）、extract-pdf.mjs（PDF 文本提取）、
-│                           # translate-full.mjs（全文翻译 CLI）、gen-runtime-config.mjs（打包时生成代码根）
-├── public/                 # 静态资源：pdf.worker / pdfjs cmaps / papers/nsr.pdf（内置论文）
-├── src/
-│   ├── app/
-│   │   ├── page.tsx        # 主界面（论文库/筛选/术语/代码导读/复现）
-│   │   ├── read/[slug]/    # 精读讲解全屏页
-│   │   └── api/            # 全部后端 Route Handlers
-│   ├── components/         # 各视图组件
-│   └── lib/                # store.ts（数据层）、data.ts、pdf-alignment.ts 等
-├── data/                   # 运行时数据（不入库，见上）
-├── electron-builder.yml    # 桌面壳打包配置（asar:false，Next 子进程需真实文件）
-└── package.json
+src/app/          页面、样式与 API
+src/components/   阅读器、问答画布、资料库与配置界面
+src/lib/          数据存储、模型请求、导入与阅读逻辑
+electron/         桌面启动器
+scripts/          PDF 提取、数据恢复与打包工具
+tests/            单元、API、浏览器测试及导入样本
+docs/             设计记录、恢复说明和性能验证
 ```
 
-## 注意事项
+## 参考
 
-- **DeepSeek 网络接入**：对话与翻译由服务端调用 `api.deepseek.com`。若出现「错误：fetch failed」，通常是**直连 DeepSeek 不通或网络需走代理**（Node fetch 默认忽略系统代理）。解决：
-  - **桌面 App**：在 `.env.local` 里加 `HTTPS_PROXY=http://127.0.0.1:<端口>`（如 mihomo/Clash 的 `7890`），应用已启用 `NODE_USE_ENV_PROXY` 会自动走该代理。
-  - **开发模式**：运行前设代理再 `npm run dev`（PowerShell：`$env:HTTPS_PROXY="http://127.0.0.1:7890"`；bash：`export HTTPS_PROXY=http://127.0.0.1:7890`）。
-  - 失败时界面会附带具体原因（DNS/连接/超时）与上述提示。
-- **论文检索与下载**：论文筛选会联网检索（OpenAlex，需能访问 `api.openalex.org`）。开放获取的论文可在 App 里一键下载并导入论文库；**非开放获取**的（需学校/出版社订阅）只会给出 `publisher_url`，无法在 App 自动下载——若你有学校图书馆账号，用校园网/学校 [VPN](https://guide.nju.edu.cn/faq/3e/d2/c44793a540370/page.htm) 打开该链接下载 PDF，再导入 App（「论文库」支持上传 PDF）。
-- **字体**：界面字体走 Google Fonts（`globals.css` 的 `@import`），离线时回退系统字体，不影响功能。
-- **文件系统**：项目如放在 NTFS 分区（ntfs3 驱动）上，偶发目录索引损坏会导致 `next build` 挂起、目录遍历卡死（内核层，`kill -9` 无效）。遇到构建无输出先查 `.next/` 是否可正常 `ls`；建议将项目放在 ext4 等原生 Linux 分区。桌面壳的代码导读遍历已跳过常见构建缓存目录（`.build-cache`/`.cache`/`release` 等）。
-- **pdfjs 与 SSR**：PDF 阅读器用 `next/dynamic({ssr:false})` 客户端加载，pdfjs-dist 在服务端仅用于文本层提取（`serverExternalPackages`），Electron 打包不破坏该链路。
-- 桌面壳采用 `asar:false`（Next server 是独立 node 子进程，读不了 asar 内的文件），体积较大属预期，后续可用 Next standalone 输出优化。
+阅读与问答交互参考了 [AnyReader UI](https://github.com/TeaFishMeow/any-reader-ui)。流式回答与长对话性能改进参考了 Streamdown 和 assistant-ui 的实现思路，见 [性能验证记录](docs/chat-performance-2026-11-02.md)。

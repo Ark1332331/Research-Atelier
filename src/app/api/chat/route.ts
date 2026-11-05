@@ -1,7 +1,8 @@
+import {configuredModelKey,fetchModel} from '../../../lib/model-config.ts';
 /**
- * DeepSeek API 后端（大脑入口）
+ * 当前模型的 Chat Completions 后端（大脑入口）
  * 用法：前端 POST /api/chat { messages: [...], enableToolcall?: boolean }
- * 环境变量：DEEPSEEK_API_KEY（见 .env.local.example）
+ * 使用模型配置中选定的服务；环境默认兼容 DEEPSEEK_API_KEY。
  * 文档依据：node_modules/next/dist/docs/01-app/01-getting-started/15-route-handlers.md
  * 注意：POST 默认不缓存；API key 只存在于服务端。
  *
@@ -15,8 +16,9 @@ import { attachObservationTool, redactObservation } from "@/lib/learning/observa
 import { observeConversation } from "@/lib/learning/extract";
 import { searchPapers, downloadPaper, type PaperHit } from "@/lib/paper-tools";
 import type { PaperHitV2 } from "@/lib/search/types";
+import {answerResponse,type AnswerText} from '@/lib/answer-stream';
+import {modelCompletion} from '@/lib/model-completion';
 
-const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
 type ChatMsg = { role: string; content?: string | null; tool_calls?: unknown; tool_call_id?: string };
 type ToolDef = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
@@ -111,23 +113,25 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
 
 /** 单次 DeepSeek 调用（带重试网络抖动；5xx/429 重试，4xx 业务错误直接返回）。
     超时/重试控制得很短，避免用户在界面「思考中…」等太久而无响应。 */
-async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef[]): Promise<Response> {
+async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef[],onText?:AnswerText,signal?:AbortSignal): Promise<Response> {
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
-      const res = await fetch(DEEPSEEK_URL, {
+      const upstream=AbortSignal.any([...(signal?[signal]:[]),AbortSignal.timeout(120000)]);
+      onText?.('');
+      const res = await fetchModel({
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model: "deepseek-chat",
           messages,
-          stream: false,
+          stream: !!onText,
           ...(tools ? { tools, tool_choice: "auto" } : {}),
         }),
-        signal: AbortSignal.timeout(120000),
+        signal: upstream,
       });
-      const data = await res.json();
+      const data = onText&&res.ok?await modelCompletion(res,onText,upstream):await res.json();
       if (res.ok) return Response.json(data);
       if (res.status >= 500 || res.status === 429) {
         lastErr = new Error(`HTTP ${res.status}: ${data?.error?.message ?? "服务端错误"}`);
@@ -136,6 +140,7 @@ async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef
       return Response.json({ error: data?.error?.message ?? "DeepSeek API 请求失败" }, { status: res.status });
     } catch (err) {
       lastErr = err;
+      if(signal?.aborted)break;
     }
   }
   // 多次重试仍失败：具体原因 + 可执行提示
@@ -144,11 +149,12 @@ async function deepseekChat(apiKey: string, messages: ChatMsg[], tools?: ToolDef
   const detail = err instanceof Error ? err.message + (cause ? `（${cause.code || cause.message}）` : "") : "网络错误";
   const proxyHint = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
     ? "检测到代理配置，但仍连接失败，请检查代理地址/端口是否可用。"
-    : "已自动重试 2 次仍失败，通常是网络到 api.deepseek.com 不稳定。若你的网络需要代理，请在 .env.local 里加 `HTTPS_PROXY=http://127.0.0.1:<端口>`（HTTP_PROXY 也填同一端口）并彻底重启应用。";
+    : "已自动重试 2 次仍失败，请在模型配置中测试连接，并检查服务地址及网络。";
   return Response.json({ error: detail, hint: proxyHint }, { status: 502 });
 }
 
-export async function POST(request: Request) {
+export function POST(request:Request){return answerResponse(request,request.headers.get('accept')?.includes('application/x-ndjson')??false,(text,signal)=>handle(request,text,signal));}
+async function handle(request: Request,onText?:AnswerText,signal=request.signal) {
   let body: { messages?: ChatMsg[]; enableToolcall?: boolean; scene?: string; projectId?: string; resourceId?:string; useMemory?: boolean };
   try {
     body = await request.json();
@@ -161,10 +167,10 @@ export async function POST(request: Request) {
     return Response.json({ error: "messages 不能为空" }, { status: 400 });
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = await configuredModelKey();
   if (!apiKey) {
     return Response.json(
-      { error: "DEEPSEEK_API_KEY 未配置：复制 .env.local.example 为 .env.local 并填入你的 key" },
+      { error: "尚未配置模型，请打开“模型配置”填写并启用一套配置" },
       { status: 500 },
     );
   }
@@ -173,7 +179,7 @@ export async function POST(request: Request) {
   const latestUser = [...messages].reverse().find(m => m.role === "user")?.content;
   if (typeof latestUser !== "string" || latestUser.length > 20000) return Response.json({ error: "用户消息无效或超过 20000 字符" }, { status: 400 });
   let learning;
-  try { learning = await prepareLearning(latestUser, scene, typeof body.projectId === "string" && body.projectId ? body.projectId : null, body.useMemory !== false); }
+  try { learning = await prepareLearning(latestUser, scene, typeof body.projectId === "string" && body.projectId ? body.projectId : null, body.useMemory !== false, typeof body.resourceId === "string" ? body.resourceId : null); }
   catch (e) { return Response.json({ error: `学习库不可用：${e instanceof Error ? e.message : String(e)}` }, { status: 503 }); }
   const learningNote = await observeConversation(learning,messages,"学习对话",typeof body.resourceId==="string"?body.resourceId:undefined);
   const useTools = Boolean(body.enableToolcall);
@@ -181,7 +187,7 @@ export async function POST(request: Request) {
   const MAX_TOOL_ROUNDS = 3;
   let convo: ChatMsg[] = [...messages, ...(learning.prompt ? [{ role: "system", content: learning.prompt }] : [])];
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-    const res = await deepseekChat(apiKey, convo, useTools ? TOOLS : undefined);
+    const res = await deepseekChat(apiKey, convo, useTools&&round<MAX_TOOL_ROUNDS ? TOOLS : undefined,onText,signal);
     if (!res.ok) {
       const failure = await res.json();
       await finishLearning(learning, "", failure.error ?? "模型请求失败");
@@ -204,8 +210,8 @@ export async function POST(request: Request) {
       }
       continue;
     }
-    await finishLearning(learning, typeof msg?.content === "string" ? msg.content : "");
-    return Response.json({ ...data, learning: { runId: learning.id, observationId:learning.observationId, selected: learning.selected, proposedIds: learning.proposedIds, note: learningNote } });
+    const run=await finishLearning(learning, typeof msg?.content === "string" ? msg.content : "");
+    return Response.json({ ...data, ...(run?{learning: { runId: learning.id, observationId:learning.observationId, selected: learning.selected, profile: learning.profile, proposedIds: learning.proposedIds, note: learningNote }}:{}) });
   }
   await finishLearning(learning, "", "工具调用次数过多");
   return Response.json({ error: "工具调用次数过多，已停止。" }, { status: 500 });
@@ -213,7 +219,7 @@ export async function POST(request: Request) {
 
 /** 健康检查：GET /api/chat */
 export async function GET() {
-  const key = process.env.DEEPSEEK_API_KEY;
+  const key = await configuredModelKey();
   return Response.json({
     ok: true,
     apiKeyConfigured: Boolean(key),

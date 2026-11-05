@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from '../model-config.ts';
 /**
  * Evidence-aware Triage（B5/B6 + v1.3 hardening）：
  *  - evidenceLevelFor：按候选实际拥有的证据判定（abstract / metadata），B-lite 无 fulltext
@@ -144,9 +145,9 @@ export async function runTriage(candidates: CanonicalPaper[], question: string, 
     try { parsed = JSON.parse(mock); } catch { parsed = null; }
     if (parsed) return normalizeTriage(parsed, candidates);
   }
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) throw new Error("DEEPSEEK_API_KEY 未配置");
-  const res = await fetch("https://api.deepseek.com/chat/completions", {
+  const apiKey = await configuredModelKey();
+  if (!apiKey) throw new Error("尚未配置模型");
+  const res = await fetchModel({
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + apiKey },
     body: JSON.stringify({

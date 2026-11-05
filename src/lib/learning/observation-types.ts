@@ -6,6 +6,7 @@ export interface Observation {
   kind:"conversation"|"tool"|"recall"|"feedback"|"system"; action:string;
   status:ObservationStatus; reason:string; userText:string; context:ObservationMessage[];
   candidateIds:string[]; attempts:number; leaseUntil?:string; finishedAt?:string; error?:string;
+  profileIds?:string[]; profileRevision?:number;
   toolContext?:{source:string;action:string;tool?:{ok:boolean;status:number;durationMs:number;error?:string}}[];
   tool?:{ok:boolean; status:number; durationMs:number;error?:string};
 }

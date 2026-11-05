@@ -4,6 +4,9 @@
  * 说明：RA_CONCEPT_MOCK 走真实 map→ladder 路径（plan 带 conceptMap/ladder，可 advance-tier）。
  */
 import { handlePlan, handleImport, handleTriage, handleAction, handleSessionGet } from "../../src/lib/search/literature-api.ts";
+import { installLegacyMetadata } from "../helpers/legacy-metadata.mjs";
+
+const metadata = installLegacyMetadata(['1803.10122']);
 
 let pass = 0, fail = 0;
 function ok(cond, name) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name); } }
@@ -63,6 +66,7 @@ const kinds = restored.events.map((e) => e.kind);
 ok(kinds.includes("plan-generated") && kinds.includes("tier-advanced") && kinds.includes("external-opened") && kinds.includes("returned-import") && kinds.includes("batch-imported") && kinds.includes("calibration") && kinds.includes("triage-computed") && kinds.includes("seeds-selected"), "全部 8 类事件已记录");
 ok(kinds[0] === "plan-generated", "首事件 = plan-generated（顺序保留）");
 
+metadata.assertComplete();
 console.log("\n结果：" + pass + " 通过 / " + fail + " 失败");
 process.exit(fail ? 1 : 0);
 

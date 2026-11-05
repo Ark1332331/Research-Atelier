@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from './model-config.ts';
 /**
  * 论文全文翻译（共享模块）：把「每页原文」按段落组织翻译成一篇中文 Markdown。
  * 供两处复用：
@@ -9,7 +10,7 @@ const TRANSLATE_SYSTEM =
   "你是学术论文翻译引擎。把用户发来的英文论文翻译成中文，并输出 Markdown。规则：\n" +
   "1. 保留原文的章节结构：论文标题用一级标题 #，各节标题用 ##，小节用 ###；原文没有标题的段落保持为普通段落；\n" +
   "2. 段落与原文一一对应：同一段落在原文中跨页的，请合并成一个完整段落；不要合并原文中不同的段落；\n" +
-  "3. 公式、数字、变量名、引用编号 [x] 原样保留；图注/表注也要翻译；\n" +
+  "3. 保留公式、数字、变量名、引用编号 [x]；数学公式用 LaTeX 的 \\(…\\) 或 \\[ … \\] 排版，分式用 \\frac，不用代码反引号；图注/表注也要翻译；\n" +
   "4. 专业术语第一次出现时用「英文（中文）」格式（如 point cloud（点云）），之后直接用中文；\n" +
   "5. 不要输出任何前言、后语或说明，只输出译文正文；\n" +
   "6. 若输入注明是论文的某一部分（续段），直接续译，不要重复输出论文总标题。";
@@ -50,8 +51,8 @@ const CONTINUE_NOTE =
 
 /** 全文按段落组织翻译成一篇 Markdown（文本层方案；扫描版无文本层会返回失败标记） */
 export async function translateDocument(pages: string[]): Promise<string> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) return "（未配置 DEEPSEEK_API_KEY，无法翻译）";
+  const apiKey = await configuredModelKey();
+  if (!apiKey) return "（尚未配置模型，请打开“模型配置”后再翻译）";
 
   // 带页码标记的全文；按章节边界分块，保证跨页段落有上下文可合并
   const full = pages.map((t, i) => `【第 ${i + 1} 页】\n${t}`).join("\n\n");
@@ -64,7 +65,7 @@ export async function translateDocument(pages: string[]): Promise<string> {
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
       try {
-        const res = await fetch("https://api.deepseek.com/chat/completions", {
+        const res = await fetchModel({
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
           body: JSON.stringify({

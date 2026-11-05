@@ -19,15 +19,16 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { DATA_DIR, readStore, writeStore } from "@/lib/store";
+import { DATA_DIR } from "@/lib/store";
 import { translateDocument } from "@/lib/translate";
 import {
   saveTranslationResult, readTranslationError,
   translationRunning, markTranslationRunning, clearTranslationRunning,
 } from "@/lib/translate-store";
-import { extractTermsInBackground } from "@/lib/terms-extract";
-import { attachPaperToProject, ensureProjectForPaper, getProject } from "@/lib/project";
+import { getProject, listProjects } from "@/lib/project";
 
+import {paperDirectory,removePaper,renamePaper,findPaperByHash,registerPaper} from '@/lib/paper-management';
+import {withProjectLock} from '@/lib/project-lock';
 const execFileAsync = promisify(execFile);
 
 // 桌面壳（Electron）里 Next server 由 Electron 二进制以 ELECTRON_RUN_AS_NODE 模式拉起，
@@ -35,19 +36,6 @@ const execFileAsync = promisify(execFile);
 const NODE_BIN = process.env.RA_NODE_BIN ?? "node";
 
 const PAPERS_DIR = path.join(DATA_DIR, "papers");
-
-/** 从论文库 data/library.json 中移除指定 slug 的论文记录（若存在） */
-async function removeFromLibraryBySlug(slug: string): Promise<void> {
-  const raw = await readStore("library.json");
-  if (!raw) return;
-  try {
-    const lib = JSON.parse(raw);
-    if (Array.isArray(lib?.papers)) {
-      lib.papers = lib.papers.filter((p: { slug?: string }) => p?.slug !== slug);
-      await writeStore("library.json", JSON.stringify(lib, null, 2));
-    }
-  } catch { /* 忽略 */ }
-}
 
 interface PaperMeta {
   slug: string;
@@ -57,61 +45,9 @@ interface PaperMeta {
   sha256?: string;
 }
 
-/** 查找内容完全相同的已导入论文。
- * 新论文直接使用 meta.json 的 sha256；旧论文第一次参与去重时才计算 original.pdf
- * 的哈希并回填，避免升级后把历史论文再次导入一份。 */
-async function findDuplicateByHash(hash: string): Promise<PaperMeta | null> {
-  try {
-    for (const d of await fs.readdir(PAPERS_DIR)) {
-      try {
-        const metaPath = path.join(PAPERS_DIR, d, "meta.json");
-        const meta: PaperMeta = JSON.parse(await fs.readFile(metaPath, "utf-8"));
-        if (meta.sha256 && meta.sha256 === hash) return meta;
-        if (!meta.sha256) {
-          const existingHash = crypto.createHash("sha256")
-            .update(await fs.readFile(path.join(PAPERS_DIR, d, "original.pdf")))
-            .digest("hex");
-          meta.sha256 = existingHash;
-          await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf-8");
-          if (existingHash === hash) return meta;
-        }
-      } catch { /* 跳过不完整目录 */ }
-    }
-  } catch { /* papers 目录还不存在 */ }
-  return null;
-}
-
 function slugify(name: string): string {
   const base = name.replace(/\.pdf$/i, "").replace(/[^\w\u4e00-\u9fa5-]+/g, "-").slice(0, 60);
   return `${base}-${Date.now().toString(36)}`;
-}
-
-/** 把导入的论文写进论文库 data/library.json（去重：同 slug 不重复加）。
- *  与 src/lib/paper-tools.ts 的 addToLibrary 保持一致——手动上传（本路由）
- *  和联网下载（downloadPaper）都必须落到 library.json，否则「论文库」视图看不到。 */
-async function addToLibraryBySlug(meta: PaperMeta): Promise<void> {
-  const raw = await readStore("library.json");
-  let lib: { groups: unknown[]; papers: Record<string, unknown>[] };
-  try {
-    lib = raw ? JSON.parse(raw) : { groups: [], papers: [] };
-    if (!Array.isArray(lib.papers)) lib.papers = [];
-    if (!Array.isArray(lib.groups)) lib.groups = [];
-  } catch {
-    lib = { groups: [], papers: [] };
-  }
-  if (lib.papers.some((p) => p?.slug === meta.slug)) return; // 已导入过
-  lib.papers.push({
-    id: `p-${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`,
-    title: meta.title,
-    source: "imported",
-    slug: meta.slug,
-    status: "未读",
-    group: null,
-    current: false,
-    firstEncounter: new Date().toISOString().slice(0, 10),
-    lastEngaged: "",
-  });
-  await writeStore("library.json", JSON.stringify(lib, null, 2));
 }
 
 async function extractText(pdfFullPath: string): Promise<string[]> {
@@ -145,16 +81,15 @@ async function observedPOST(request: Request) {
   // JSON 动作：delete（从精读页删除）/ translate（重新生成中文翻译）
   const contentType = request.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
-    let body: { action?: string; slug?: string };
+    let body: { action?: string; slug?: string; title?: unknown };
     try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
-    if (body?.action === "delete" && body.slug) {
-      await fs.rm(path.join(PAPERS_DIR, body.slug), { recursive: true, force: true }).catch(() => {});
-      await removeFromLibraryBySlug(body.slug);
-      return Response.json({ ok: true });
+    if ((body?.action === "delete" || body?.action === "rename") && body.slug) {
+      try { return Response.json(body.action === 'delete' ? await removePaper(body.slug) : await renamePaper(body.slug, body.title)); }
+      catch (error) { return Response.json({error:error instanceof Error ? error.message : '操作失败，请重试'}, {status:400}); }
     }
     if (body?.action === "translate" && body.slug) {
-      const dir = path.join(PAPERS_DIR, body.slug);
       try {
+        const dir = paperDirectory(body.slug);
         const meta: PaperMeta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf-8"));
         const pages: string[] = [];
         for (let i = 1; i <= meta.pages; i++) {
@@ -191,14 +126,20 @@ async function observedPOST(request: Request) {
     return Response.json({ error: "目标项目不存在，请返回项目列表后重试" }, { status: 404 });
   }
 
+  if (projectId) {
+    const target = await getProject(projectId);
+    if (target?.paperSlug && await fs.stat(path.join(paperDirectory(target.paperSlug), 'original.pdf')).then(() => true).catch(() => false)) {
+      return Response.json({error:'这个项目已有 PDF，请从论文库直接导入新论文'}, {status:409});
+    }
+  }
   const buf = new Uint8Array(await file.arrayBuffer());
   const sha256 = crypto.createHash("sha256").update(buf).digest("hex");
 
   // 内容级去重：同一份 PDF 之前导入过 → 不再重复入库（旧记录含时间戳 slug，按文件名判断不住）
-  const dup = await findDuplicateByHash(sha256);
+  const dup = await findPaperByHash(sha256);
   if (dup) {
     try {
-      const project = projectId ? await attachPaperToProject(projectId, { slug: dup.slug, title: dup.title }) : await ensureProjectForPaper({ slug: dup.slug, title: dup.title });
+      const project = await registerPaper(dup,projectId||undefined);
       return Response.json({ ok: true, duplicate: true, slug: dup.slug, title: dup.title, project });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "无法关联论文项目" }, { status: 409 });
@@ -216,12 +157,14 @@ async function observedPOST(request: Request) {
   try {
     pages = await extractText(pdfPath);
   } catch (e) {
+    await fs.rm(paperDirectory(slug), {recursive:true,force:true});
     return Response.json({ error: `PDF 解析失败：${e instanceof Error ? e.message : String(e)}` }, { status: 422 });
   }
 
   // 无文本层（扫描版）→ 报错并说明；视觉翻译（DeepSeek 视觉端点）留作后续支持
   const textChars = pages.reduce((s, p) => s + p.trim().length, 0);
-  if (textChars < pages.length * 100) {
+  if (!pages.length || textChars < pages.length * 100) {
+    await fs.rm(paperDirectory(slug), {recursive:true,force:true});
     return Response.json(
       { error: "这个 PDF 没有文本层（可能是扫描版）。当前版本用文本层做全文翻译，扫描版请先 OCR，或等后续接入视觉翻译。" },
       { status: 422 },
@@ -243,19 +186,18 @@ async function observedPOST(request: Request) {
   await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
 
   // 写进论文库 library.json，让「论文库」视图能看到这篇（否则只存在于 data/papers，精读页能看、库里看不到）
-  await addToLibraryBySlug(meta);
   let project;
   try {
-    project = projectId ? await attachPaperToProject(projectId, { slug: meta.slug, title: meta.title }) : await ensureProjectForPaper({ slug: meta.slug, title: meta.title });
+    project = await registerPaper(meta,projectId||undefined);
   } catch (error) {
+    await fs.rm(paperDirectory(slug),{recursive:true,force:true});
     return Response.json({ error: error instanceof Error ? error.message : "无法关联论文项目" }, { status: 409 });
   }
 
   // 整篇中文翻译后台生成（分钟级，不等它；导入立即完成，稍后精读页即可见 translation.md）
   void translateInBackground(dir, pages);
 
-  // 术语抽查：导入后后台从全文抽核心术语，记入术语卡（数量不限，需要的才抽；已存在的跳过）
-  extractTermsInBackground(pages, { slug, title: meta.title });
+  // 术语卡片仅由用户主动收藏，导入不再自动抽取。
 
   return Response.json({ ok: true, meta, project });
 }
@@ -271,17 +213,18 @@ async function observedGET(request: Request) {
       for (const d of dirs) {
         try {
           const meta = JSON.parse(await fs.readFile(path.join(PAPERS_DIR, d, "meta.json"), "utf-8"));
-          list.push(meta);
+          if((await fs.stat(path.join(PAPERS_DIR,d,"original.pdf"))).isFile())list.push(meta);
         } catch { /* 跳过不完整目录 */ }
       }
-      return Response.json({ papers: list });
+      const projects=await listProjects();
+      return Response.json({ papers: list.map(p=>({...p,projectId:projects.find(project=>project.paperSlug===p.slug)?.id})) });
     } catch {
       return Response.json({ papers: [] });
     }
   }
 
   try {
-    const dir = path.join(PAPERS_DIR, slug);
+    const dir = paperDirectory(slug);
     const meta: PaperMeta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf-8"));
     const pages = [];
     for (let i = 1; i <= meta.pages; i++) {
@@ -299,6 +242,6 @@ async function observedGET(request: Request) {
   }
 }
 
-export const POST=withToolObservation({source:"论文阅读与导入",scene:"paper",conversation:false},observedPOST);
+export const POST=withToolObservation({source:"论文阅读与导入",scene:"paper",conversation:false},request => withProjectLock(() => observedPOST(request)));
 
 export const GET=withToolObservation({source:"论文阅读与导入",scene:"paper",conversation:false},observedGET);

@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from './model-config.ts';
 /**
  * 术语抽查：导入论文后自动从论文文本抽取核心专业术语，生成术语卡并入 glossary.json。
  * 与导入解耦——放到后台异步执行（不阻塞导入）；已存在的术语跳过；数量不限（需要的才抽）。
@@ -25,13 +26,13 @@ interface ExtractedTerm { name: string; role?: string; reuse?: string; note?: st
 
 /** 从文本调 DeepSeek 抽取术语（带重试），返回术语数组 */
 async function extractTerms(text: string): Promise<ExtractedTerm[]> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = await configuredModelKey();
   if (!apiKey) return [];
   let d: { choices?: { message?: { content?: string } }[] } | null = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
-      const res = await fetch("https://api.deepseek.com/chat/completions", {
+      const res = await fetchModel({
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({

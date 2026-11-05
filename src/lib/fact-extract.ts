@@ -1,3 +1,4 @@
+import {configuredModelKey,fetchModel} from './model-config.ts';
 /**
  * Fact 归一化 + 有来源抽取（Step 4，hardening 版）。
  *
@@ -374,7 +375,7 @@ async function scanChunk(chunk: PageFragment[], apiKey: string, idx: number): Pr
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 600 * 2 ** (attempt - 2)));
     try {
-      const res = await fetch("https://api.deepseek.com/chat/completions", {
+      const res = await fetchModel({
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
@@ -410,7 +411,7 @@ async function scanChunk(chunk: PageFragment[], apiKey: string, idx: number): Pr
 export async function extractPaperFacts(
   pageTexts: string[],
 ): Promise<{ facts: Fact[]; coverage: PaperCoverage }> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = await configuredModelKey();
   if (!apiKey) return { facts: [], coverage: { complete: false, totalPages: pageTexts.length, coveredPages: 0, totalChunks: 0, scannedChunks: 0, failedChunks: [], droppedFragments: 0 } };
 
   const { frags } = pageFragments(pageTexts);

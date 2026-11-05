@@ -1,0 +1,86 @@
+// The browser uses the real config route with an isolated temporary store.
+// No settings or documents in the user's running server are written.
+import '../helpers/alias-hooks.mjs';
+import {pathToFileURL} from 'node:url';
+import {mkdtemp,rm,mkdir} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+const dir=await mkdtemp(path.join(os.tmpdir(),'ra-model-browser-'));
+process.env.RA_DATA_DIR=dir;delete process.env.VERCEL_KV_REST_API_URL;delete process.env.VERCEL_KV_REST_API_TOKEN;
+const {GET,POST}=await import('../../src/app/api/model-configs/route.ts');
+const base=process.env.STUDY_TEST_URL??'http://localhost:3000';
+const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE??'C:/Users/pc/AppData/Local/npm-cache/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs').href);
+const realFetch=globalThis.fetch;
+globalThis.fetch=async()=>Response.json({choices:[{message:{content:'OK'}}]});
+const browser=await chromium.launch({channel:'msedge',headless:true});
+try{
+ const context=await browser.newContext({viewport:{width:1440,height:1050}});
+ const errors=[],node={id:'model-ui-fixture',parentId:null,kind:'document',name:'配置测试.md',order:0};
+ await context.route('**/api/model-configs',async r=>{
+  const q=r.request();const response=q.method()==='POST'?await POST(new Request(q.url(),{method:'POST',headers:q.headers(),body:q.postData()})):await GET();
+  const body=await response.text();assert.ok(!body.includes('browser-only-secret'));
+  await r.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body});
+ });
+ await context.route('**/api/study-library',r=>r.fulfill({json:{nodes:[node]}}));
+ await context.route('**/api/study-library/document?*',r=>r.fulfill({json:{node,content:'# 测试题\n\n计算 $E(X)$。',links:{}}}));
+ await context.route('**/api/reading-memory',r=>r.fulfill({json:{threads:[]}}));
+ await context.route('**/api/reading-notes',r=>r.fulfill({json:{notes:[]}}));
+ await context.route('**/api/reading-collection*',r=>r.fulfill({json:{entries:[]}}));
+ const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(base+'/');
+ await page.getByRole('button',{name:'打开模型配置'}).click();
+ await page.getByRole('dialog',{name:'模型配置'}).getByRole('button',{name:'关闭侧栏'}).click();
+ await page.goto(base+'/study/model-ui-fixture');
+ await page.getByRole('button',{name:'打开模型配置'}).click();
+ const dialog=page.getByRole('dialog',{name:'模型配置'});
+ async function fill(name,model,key='browser-only-secret'){
+  await dialog.getByLabel('配置名称',{exact:true}).fill(name);
+  await dialog.getByLabel('Base URL',{exact:true}).fill('https://model.example/v1');
+  await dialog.getByLabel('模型名称',{exact:true}).fill(model);
+  await dialog.getByLabel('API Key',{exact:true}).fill(key);
+ }
+ await fill('日常问答','everyday-model');
+ await dialog.getByRole('button',{name:'测试连接',exact:true}).click();
+ await dialog.getByRole('status').filter({hasText:'连接成功'}).waitFor();
+ await dialog.getByRole('button',{name:'保存并启用',exact:true}).click();
+ await dialog.getByRole('status').filter({hasText:'已保存并启用'}).waitFor();
+ assert.equal(await dialog.getByLabel('API Key',{exact:true}).inputValue(),'');
+ const a=(await (await GET()).json()).activeId;
+ await fill('推理模型','reasoning-model');await dialog.getByRole('button',{name:'仅保存',exact:true}).click();
+ await dialog.getByRole('status').filter({hasText:'配置已保存'}).waitFor();
+ const b=(await (await GET()).json()).profiles.find(p=>p.name==='推理模型').id;
+ assert.equal((await (await GET()).json()).activeId,a);
+ await dialog.getByLabel('当前使用',{exact:true}).selectOption(b);
+ await dialog.getByRole('status').filter({hasText:'已切换'}).waitFor();
+ assert.ok(await dialog.getByRole('button',{name:'删除 推理模型',exact:true}).isDisabled());
+ await dialog.getByRole('button',{name:'编辑 推理模型',exact:true}).click();
+ assert.equal(await dialog.getByLabel('API Key',{exact:true}).inputValue(),'');
+ await dialog.getByLabel('模型名称',{exact:true}).fill('reasoning-model-2');
+ await dialog.getByRole('button',{name:'保存并启用',exact:true}).click();
+ await dialog.getByRole('status').filter({hasText:'已保存并启用'}).waitFor();
+ await mkdir('.build-cache/model-config-qa',{recursive:true});
+ await page.screenshot({path:'.build-cache/model-config-qa/desktop.png'});
+ await dialog.getByRole('button',{name:'关闭侧栏'}).click();
+ await page.reload();await page.getByLabel('当前模型配置',{exact:true}).waitFor();
+ await page.waitForFunction(id=>document.querySelector('[aria-label="当前模型配置"]')?.value===id,b);
+ await page.getByLabel('当前模型配置',{exact:true}).selectOption(a);
+ await page.waitForFunction(id=>document.querySelector('[aria-label="当前模型配置"]')?.value===id,a);
+ const other=await context.newPage();await other.goto(base+'/study/model-ui-fixture');
+ await other.waitForFunction(id=>document.querySelector('[aria-label="当前模型配置"]')?.value===id,a);
+ await page.getByLabel('当前模型配置',{exact:true}).selectOption(b);
+ await other.waitForFunction(id=>document.querySelector('[aria-label="当前模型配置"]')?.value===id,b);
+ await page.setViewportSize({width:390,height:844});
+ const button=page.getByRole('button',{name:'打开模型配置'});await button.click();
+ await dialog.getByRole('button',{name:'编辑 日常问答',exact:true}).click();
+ await dialog.getByRole('button',{name:'删除 日常问答',exact:true}).click();
+ await dialog.getByRole('status').filter({hasText:'配置已删除'}).waitFor();
+ assert.equal(await dialog.getByLabel('配置名称',{exact:true}).inputValue(),'');
+ await page.screenshot({path:'.build-cache/model-config-qa/mobile.png'});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+ assert.ok(!await page.evaluate(()=>JSON.stringify({...localStorage,...sessionStorage}).includes('browser-only-secret')));
+ await dialog.getByRole('button',{name:'关闭侧栏'}).click();
+ const rect=await button.boundingBox();assert.ok(rect.x>=0&&rect.x+rect.width<=390);
+ assert.deepEqual(errors,[]);
+ console.log('PASS save, test connection, edit with retained key, switch, reload, cross-tab sync, delete, mobile layout; no real user data modified');
+}finally{await browser.close();globalThis.fetch=realFetch;await rm(dir,{recursive:true,force:true});}

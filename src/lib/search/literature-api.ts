@@ -92,8 +92,8 @@ export async function handlePlan(body: Record<string, unknown>): Promise<Respons
     return Response.json({ session, nextStep: deriveNextStep(session) });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const hint = msg.includes("DEEPSEEK_API_KEY")
-      ? "DEEPSEEK_API_KEY 未配置：复制 .env.local.example 为 .env.local 并填入你的 key"
+    const hint = msg.includes("尚未配置模型")
+      ? "打开模型配置，填写并启用一套配置"
       : "检索意图编译失败，请稍后重试（可检查网络/代理）。";
     return Response.json({ error: msg, hint }, { status: 502 });
   }

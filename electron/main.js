@@ -229,6 +229,8 @@ async function startNextServer(port) {
     delete env[key];
   }
   Object.assign(env, loadDotEnv(path.join(projectDir, ".env.local")));
+  // A packaged/dev .env file must not redirect desktop data into a build cache.
+  env.RA_DATA_DIR = dataDir;
 
   const child = spawn(
     process.execPath,

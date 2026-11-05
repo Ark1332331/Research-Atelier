@@ -2,15 +2,24 @@ import { withToolObservation } from "@/lib/learning/tool-observation";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { RA_AGENTS_SECTION, RA_AGENTS_MARKER_START } from "@/lib/agents-template";
-import { assignProjectGroup, createProject, createProjectGroup, deleteProject, getProject, listProjectGroups, listProjects, updateProject, type ProjectModule } from "@/lib/project";
+import { assignProjectGroup, createProjectGroup, getProject, listProjectGroups, listProjects, updateProject, type ProjectModule, type PaperProject } from "@/lib/project";
+import { paperDirectory, removePaperProject, renamePaper, reconcilePaperProjects } from "@/lib/paper-management";
+
+async function withPdfStatus(project: PaperProject) {
+  const pdfAvailable = !!project.paperSlug && await fs.stat(path.join(paperDirectory(project.paperSlug), 'original.pdf')).then(s => s.isFile()).catch(() => false);
+  return { ...project, pdfAvailable };
+}
 
 export async function GET(request: Request) {
+  try {
   const id = new URL(request.url).searchParams.get("id");
   if (id) {
     const project = await getProject(id);
-    return project ? Response.json({ project }) : Response.json({ error: "项目不存在" }, { status: 404 });
+    return project ? Response.json({ project: await withPdfStatus(project) }) : Response.json({ error: "论文项目已删除或不存在，请返回论文库" }, { status: 404 });
   }
-  return Response.json({ projects: await listProjects(), groups: await listProjectGroups() });
+  await reconcilePaperProjects();
+  return Response.json({ projects: await Promise.all((await listProjects()).map(withPdfStatus)), groups: await listProjectGroups() });
+  } catch(error) { return Response.json({error:error instanceof Error?error.message:'论文库读取失败，请重试'},{status:500}); }
 }
 
 function validModule(value: unknown): value is ProjectModule {
@@ -22,9 +31,7 @@ async function observedPOST(request: Request) {
   try { body = await request.json(); } catch { return Response.json({ error: "请求体必须是 JSON" }, { status: 400 }); }
   const action = String(body.action ?? "");
   if (action === "create") {
-    const title = String(body.title ?? "").trim();
-    if (!title) return Response.json({ error: "title 必填" }, { status: 400 });
-    return Response.json({ project: await createProject({ title }) });
+    return Response.json({ error: "请导入 PDF 创建论文项目" }, { status: 400 });
   }
   if (action === "createGroup") {
     try { return Response.json({ groups: await createProjectGroup(String(body.name ?? "")) }); }
@@ -32,7 +39,19 @@ async function observedPOST(request: Request) {
   }
   const id = String(body.id ?? "");
   if (!id) return Response.json({ error: "id 必填" }, { status: 400 });
-  if (action === "delete") return (await deleteProject(id)) ? Response.json({ ok: true }) : Response.json({ error: "项目不存在" }, { status: 404 });
+  if (action === "delete" || action === "rename") {
+    try {
+      if (action === "delete") return (await removePaperProject(id)) ? Response.json({ ok: true }) : Response.json({ error: "项目不存在" }, { status: 404 });
+      const project = await getProject(id);
+      if (!project) return Response.json({ error: "项目不存在" }, { status: 404 });
+      if (project.paperSlug) await renamePaper(project.paperSlug, body.title);
+      else {
+        if (typeof body.title !== 'string' || !body.title.trim() || body.title.trim().length > 200) return Response.json({ error: "名称须为 1–200 个字符" }, { status: 400 });
+        await updateProject(id, p => { p.title = (body.title as string).trim(); });
+      }
+      return Response.json({ project: await getProject(id) });
+    } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "操作失败" }, { status: 400 }); }
+  }
   if (action === "setLastModule") {
     if (!validModule(body.module)) return Response.json({ error: "无效模块" }, { status: 400 });
     const project = await updateProject(id, (item) => { item.lastModule = body.module as ProjectModule; });

@@ -1,0 +1,32 @@
+无人机 VQA / 感知与相邻评测
+
+| 论文 / 模型（链接） | 时间 | 机构 | 任务 | 核心机制 | 对比意义 |
+| --- | --- | --- | --- | --- | --- |
+| [Is your VLM Sky-Ready? / Sky-VLM](https://openaccess.thecvf.com/content/CVPR2026/html/Zhang_Is_your_VLM_Sky-Ready_A_Comprehensive_Spatial_Intelligence_Benchmark_for_CVPR_2026_paper.html) | CVPR 2026 | 小米汽车 + 清华 | UAV空间VQA | SFT + GRPO | Qwen2.5-VL-7B；对照SFT, RL |
+| [PixDLM](https://github.com/XIEFOX/PixDLM) | CVPR 2026 | 学术 | 无人机推理分割 | 文字推理到区域mask | Grounded VQA辅助专家 |
+| [AirCopBench](https://github.com/EmbodiedCity/AirCopBench.code) | AAAI 2026 | 学术 | 多机协同视觉推理 | 多视角统一问答/评测 | 动态多视角benchmark |
+| [UAV-MAS / UAVQA-Bench](https://arxiv.org/abs/2608.11738) | 2026.08 / arXiv | 复旦等 | 训练免除的代理式问答 | 动态视觉证据获取，多个agent | 对照工具增强 inference |
+| [ReVA](https://arxiv.org/abs/2609.35507) | 2026.09 / arXiv | 学术；含高通AI研究参与 | 无人机视频QA | scene-centric; human verified | 新增视频主榜 / 23个视频LLM |
+
+## 大厂通用空间 / 视频 VLM
+
+| 论文 / 模型（链接） | 时间 | 机构 | 任务 | 核心机制 | 对比意义 |
+| --- | --- | --- | --- | --- | --- |
+| [HiSpatial](https://www.microsoft.com/en-us/research/publication/hispatial-taming-hierarchical-3d-spatial-understanding-in-vision-language-models/) | CVPR 2026 | 微软研究院 | 通用空间VLM | 分层3D空间理解和metric pointmap | 非UAV但适合跨域几何baseline |
+| [Gemini Robotics ER 2](https://deepmind.google/models/model-cards/gemini-robotics-er-2/) | 2026.07 | Google DeepMind | 具身推理VLM | 时空/物理/视频/多模态 | 闭源API；不是UAV排行榜 |
+| [Cosmos-Reason2](https://docs.nvidia.com/cosmos/latest/reason2/index.html) | 2026 | NVIDIA | physical AI VLM | 时空物理、2D3D区域+链式推理 | 开源权重，视频baseline |
+| [WeVisOne-VL](https://github.com/Tencent/WeVisOne-VL) | 2026.10 | 腾讯微信视觉 | 通用目标证据感知 | 统一bbox/point/mask/计数/拒识 | VisDrone检测/指点指标；非VQA分数 |
+| [Qwen3-VL / Qwen3.5-VL](https://github.com/QwenLM/Qwen3-VL) | 2026 / VLM | 阿里巴巴 | 通用视觉语言backbone | 不同参数量视觉主干 | 公平backbone必比 |
+
+## ICML / 高分辨 / RL / OPD 直接竞争工作
+
+| 论文 / 模型（链接） | 时间 | 机构 | 任务 | 核心机制 | 对比意义 |
+| --- | --- | --- | --- | --- | --- |
+| [UHR-BAT](https://proceedings.mlr.press/v306/dang26a.html) | ICML 2026 | 学术 | 遥感高分辨VQA | 预算感知的query-guided压缩 | 与你的方法有强novelty冲突 |
+| [Text Before Vision](https://proceedings.mlr.press/v306/wang26u.html) | ICML 2026 | 学术 | 超高分辨代理RLVR | 文本预热+视觉预热+zoom工具RL | 与你的方法有强novelty冲突 |
+| [RS-OPSD](https://arxiv.org/abs/2609.38072) | 2026.09 / arXiv | 清华/浙大等 | 遥感高分辨VQA | privileged teacher+on-policy self-distillation | 直接对照OPD与时延效果 |
+| [Rift: Answer-invariant Redundancy](https://arxiv.org/abs/2609.29029) | 2026.09 / arXiv | UIUC等 | 星载VLM高效问答 | 条件tile pruning + elastic prefill | 延迟能耗对照；非UAV |
+| [CVSBench](https://earth-insights.github.io/CVSBench/) | ECCV 2026 | 学术 | satellite-street多视角VQA | 显式空间想象、跨视角推理 | 多视角泛化对照 |
+| [RP-OPSD](https://arxiv.org/abs/2607.24447) | 2026.07 / arXiv | 学术 | 通用多模态自蒸馏 | 高分辨教师/低分辨学生 | OPD方法基线 |
+
+根据这里面的分类创建分组并对应导入

@@ -1,40 +1,61 @@
 "use client";
-import { useEffect, useState } from "react";
-import Link from "next/link";
-import { termsForPaper, type Term, type TermAssessment } from "@/lib/terms";
-export const STATUS_COLOR: Record<string,string> = { "未接触":"var(--muted-foreground)", "有直觉":"var(--amber)", "能解释":"var(--ok)", "能对应论文":"var(--ok)", "能实现":"var(--ok)" };
-export default function Terms({ initialId, initialPaper = "" }: { initialId?: string; initialPaper?:string } = {}) {
-  const [terms,setTerms] = useState<Term[]>([]); const [selected,setSelected] = useState<string | null>(null);
-  const [papers,setPapers] = useState<{slug:string;title:string}[]>([]); const [paper,setPaper] = useState(initialPaper);
-  const [search,setSearch] = useState(""); const [dueOnly,setDueOnly] = useState(false); const [now,setNow] = useState(0);
-  const [error,setError] = useState(""); const [busy,setBusy] = useState(false); const [notice,setNotice] = useState("");
-  const [form,setForm] = useState<Partial<Term> | null>(null); const [answer,setAnswer] = useState(""); const [revealed,setRevealed] = useState(false);
-  const [assessment,setAssessment] = useState<TermAssessment | null>(null); const [explanation,setExplanation] = useState<Partial<Term> | null>(null);
-  useEffect(() => { fetch("/api/terms").then(async r => { const d=await r.json(); if(!r.ok) throw Error(d.error); setTerms(d.terms); setPaper(initialPaper); setSelected(d.terms.find((t:Term)=>t.id===initialId||t.legacyIds?.includes(initialId??""))?.id ?? d.terms[0]?.id ?? null); setNow(Date.now()); }).catch(e => setError(e.message)); fetch("/api/paper").then(r=>r.json()).then(d=>setPapers(d.papers??[])).catch(()=>{}); },[initialId,initialPaper]);
-  function choose(id:string) { setSelected(id); setAnswer(""); setRevealed(false); setExplanation(null); setForm(null); setNotice(""); setAssessment(null); }
+import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import Markdown from './markdown';
+import { termsForPaper, type Term } from '@/lib/terms';
+export const STATUS_COLOR:Record<string,string>={'未接触':'var(--muted-foreground)','有直觉':'var(--amber)','能解释':'var(--ok)','能对应论文':'var(--ok)','能实现':'var(--ok)'};
+const manual=(t:Term)=>t.collection==='manual'||t.source==='手动建卡';
+export default function Terms({initialId,initialPaper=''}:{initialId?:string;initialPaper?:string}={}) {
+  const [terms,setTerms]=useState<Term[]>([]);
+  const [selected,setSelected]=useState<string|null>(null);
+  const [paper,setPaper]=useState(initialPaper);
+  const [papers,setPapers]=useState<{slug:string;title:string}[]>([]);
+  const [search,setSearch]=useState('');
+  const [legacy,setLegacy]=useState(false);
+  const [form,setForm]=useState<Partial<Term>|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
+  const [notice,setNotice]=useState('');
+  const readVersion=useRef(0);
+  useEffect(()=>{
+    let gone=false;const serial=readVersion;
+    const load=async(initial=false)=>{const version=++serial.current;try{const r=await fetch('/api/terms');const d=await r.json();if(!r.ok)throw Error(d.error);if(gone||version!==serial.current)return;setTerms(d.terms);if(initial){const target=d.terms.find((t:Term)=>t.id===initialId||t.legacyIds?.includes(initialId??''));setSelected(target?.id??null);setLegacy(target?!manual(target):false);}}catch(e){if(!gone)setError(e instanceof Error?e.message:'读取失败');}};
+    void load(true);const changed=()=>void load();window.addEventListener('reading-terms-changed',changed);
+    fetch('/api/paper').then(r=>r.json()).then(d=>{if(!gone)setPapers(d.papers??[]);}).catch(()=>{});
+    return()=>{gone=true;serial.current++;window.removeEventListener('reading-terms-changed',changed);};
+  },[initialId]);
+  const scoped=paper?termsForPaper(terms,paper,papers.find(p=>p.slug===paper)?.title):terms;
+  const filtered=scoped.filter(t=>(legacy?!manual(t):manual(t))&&`${t.name} ${t.meaning??""} ${t.note}`.toLowerCase().includes(search.toLowerCase()));
+  const term=filtered.find(t=>t.id===selected)??filtered[0];
+  const sourceUrl=term?`/?view=terms&term=${encodeURIComponent(term.id)}${paper?'&paper='+encodeURIComponent(paper):''}`:undefined;
   async function post(body:object) {
-    setBusy(true);setError("");setNotice("");
-    try { const r=await fetch("/api/terms",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); const d=await r.json();if(!r.ok) throw Error(d.error); if(d.terms) {setTerms(d.terms);setNow(Date.now());setForm(null);if(d.saved)setSelected(d.saved.id);setNotice("已保存");} if(d.assessment)setAssessment(d.assessment);if(d.explanation) setExplanation(d.explanation);return true; }
-    catch(e){setError(e instanceof Error?e.message:String(e));return false;}finally{setBusy(false);}
+    setBusy(true);setError('');setNotice('');
+    try{const r=await fetch('/api/terms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.error);readVersion.current++;setTerms(d.terms);window.dispatchEvent(new Event('reading-terms-changed'));if(d.saved){setSelected(d.saved.id);setLegacy(false);}setForm(null);setNotice('已保存');}
+    catch(e){setError(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);}
   }
-  const inScope=paper?termsForPaper(terms,paper,papers.find(p=>p.slug===paper)?.title):terms;
-  const filtered=inScope.filter(t=>(!dueOnly||!t.dueAt||Date.parse(t.dueAt)<=now)&&`${t.name} ${t.note} ${t.role}`.toLowerCase().includes(search.toLowerCase()));
-  const term=terms.find(t=>t.id===selected); const context=term?.contexts?.find(c=>c.slug===paper);
-  const dueCount=inScope.filter(t=>!t.dueAt||Date.parse(t.dueAt)<=now).length;
   return <section className="companion-page terms-workspace">
-    <header className="companion-heading"><span className="eyebrow">CONCEPT NOTEBOOK</span><h1>术语笔记</h1><p>先知道它解决什么问题，再看它在论文里做什么。复述一次，才留下理解证据。</p></header>
-    {error&&<p role="alert" className="v1-error">{error}</p>}{notice&&<p className="success-note" role="status">{notice}</p>}
-    <div className="study-filter"><input className="field" aria-label="搜索术语" value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索术语、解释或角色…"/><select className="field" aria-label="术语论文范围" value={paper} onChange={e=>{setPaper(e.target.value);setExplanation(null);setForm(null);setAnswer("");setRevealed(false);setAssessment(null);const scope=e.target.value?termsForPaper(terms,e.target.value,papers.find(p=>p.slug===e.target.value)?.title):terms;setSelected(scope[0]?.id??null);}}><option value="">跨论文词汇表</option>{papers.map(p=><option key={p.slug} value={p.slug}>{p.title}</option>)}</select><button className={"btn"+(dueOnly?" btn--primary":"")} onClick={()=>setDueOnly(!dueOnly)}>{dueOnly?"返回全部":"待回顾"} · {dueCount}</button><button className="btn" onClick={()=>{setForm({name:"",note:"",role:"领域背景",reuse:"通用",source:"手动建卡",links:"",nextAction:""});setExplanation(null);}}>新建笔记</button></div>
-    <div className="concept-layout"><aside className="concept-list" aria-label="术语列表"><p className="soft-copy">{filtered.length} 个概念{paper?" · 当前论文":" · 跨论文累积"}</p>{filtered.map(t=><button className={"concept-item"+(selected===t.id?" is-active":"")} key={t.id} onClick={()=>choose(t.id)}><strong>{t.name}</strong><span>{t.role} · {t.status}</span><small>{t.note||"还没有解释"}</small></button>)}{!filtered.length&&<p className="empty-study">没有匹配的概念。可以在论文中点术语，或手动建一张笔记。</p>}</aside>
-    <main className="surface-card concept-detail">
-      {form?<><h2>{form.id?"修改笔记":"新建术语笔记"}</h2>{[["name","术语 · 英文 / 中文"],["note","一句话：它是什么"],["mechanism","输入如何变成输出"],["example","一个具体例子"],["nextAction","下次要弄清什么"],["source","来源"],["links","必须一起理解的关联术语"]].map(([k,label])=><label className="field-label" key={k}>{label}<textarea className="field" rows={k==="name"?1:2} value={String(form[k as keyof Term]??"")} onChange={e=>setForm({...form,[k]:e.target.value})}/></label>)}<div className="inline-actions"><button className="btn btn--primary" disabled={busy||!form.name?.trim()} onClick={()=>void post({term:form})}>保存笔记</button><button className="btn" onClick={()=>setForm(null)}>取消</button></div></> : term?<>
-        <div className="section-top"><span className="pill">{term.role}</span><button className="text-button" onClick={()=>setForm({...term})}>修改笔记</button></div><h2 className="concept-title">{term.name}</h2><p className="soft-copy">{term.status} · {term.reuse}{term.reviews?.length?` · ${term.reviews.length} 次有复述记录的回顾`:" · 历史状态待核对 · 尚无复述证据"}</p>
-        <div className="recall-prompt"><strong>先试着说一句</strong><p>它的输入是什么、做了什么、输出有什么用？可以只写你现在确定的部分。</p><textarea className="field" aria-label="术语复述" rows={3} value={answer} onChange={e=>{setAnswer(e.target.value);setAssessment(null);}} placeholder="我的理解是…"/><div className="inline-actions"><button className="btn btn--primary" disabled={busy||!answer.trim()} onClick={()=>void post({action:"assess",id:term.id,answer,slug:paper}).then(ok=>{if(ok)setRevealed(true);})}>{busy?"检查中…":"让助手检查我的复述"}</button><button className="btn" onClick={()=>setRevealed(!revealed)}>{revealed?"收起参考解释":"看参考解释"}</button></div></div>
-        {revealed&&<div className="concept-explanation"><h3>先理解为</h3><p>{context?.meaning||term.note||"还没有参考解释，可让助手生成。"}</p>{term.mechanism&&<><h3>它怎样工作</h3><p>{term.mechanism}</p></>}{term.example&&<><h3>走一个小例子</h3><p>{term.example}</p></>}<h3>回到论文</h3>{context?.quote?<blockquote>{context.quote}<small>{context.title}{context.page?` · 第 ${context.page} 页`:""}</small></blockquote>:<p className="soft-copy">当前还没有核对过的原文摘录。可以从论文选中原句添加术语。</p>}{term.nextAction&&<p>下一步：{term.nextAction}</p>}<div className="inline-actions"><button className="btn" disabled={busy} onClick={()=>void post({action:"explain",id:term.id,slug:paper})}>{busy?"整理中…":"用机制和例子讲清楚"}</button></div>
-        {explanation&&<div className="generated-explanation"><span className="pill">AI 参考解释 · 尚未保存</span><p>{explanation.note}</p><p>{explanation.mechanism}</p><p>{explanation.example}</p><p>检查：{explanation.nextAction}</p><button className="btn" disabled={busy} onClick={()=>void post({term:{id:term.id,name:term.name,...explanation,explanationSource:"用户保存的 AI 参考解释；不代表掌握证据"}}).then(ok=>{if(ok)setExplanation(null);})}>保留这份参考解释</button></div>}
-        <div className="review-controls">{assessment&&<div className="generated-explanation"><span className="pill">AI 复述检查 · {assessment.verdict==="supported"?"有支持证据":assessment.verdict==="needs-work"?"仍有卡点":"还不能判断"}</span><p>{assessment.feedback}</p><p>再想一步：{assessment.nextQuestion}</p>{assessment.verdict==="supported"&&<p>建议状态：{assessment.suggestedStatus}。你确认后才更新；这不代表已能实现。</p>}</div>}<p className="soft-copy">根据本次复述留下证据。看过解释不会自动升级；实现能力需要真实任务结果。</p><div className="inline-actions"><button className="btn" disabled={busy||!answer.trim()} onClick={()=>void post({action:"review",id:term.id,answer,rating:"again"}).then(ok=>{if(ok){setAnswer("");setRevealed(false);setAssessment(null);}})}>还卡住 · 明天再看</button><button className="btn btn--primary" disabled={busy||!assessment||assessment.verdict!=="supported"||assessment.answer!==answer.trim()} onClick={()=>void post({action:"review",id:term.id,answer,rating:"good",assessmentId:assessment?.id}).then(ok=>{if(ok){setAnswer("");setRevealed(false);setAssessment(null);}})}>确认这次理解，安排回顾</button></div></div></div>}
-        <details className="quiet-details"><summary>论文出处与理解记录</summary>{term.papers?.map(p=><p key={p.slug}><Link href={`/read/${p.slug}`}>{p.title} →</Link></p>)}{term.contexts?.map(c=><div key={c.slug}><strong>{c.title}</strong><p>{c.meaning}</p>{c.quote&&<blockquote>{c.quote}</blockquote>}</div>)}<p>{term.source}</p>{term.legacyCards?.length ? <details><summary>合并前的历史卡片 · {term.legacyCards.length} 张</summary>{term.legacyCards.map(t=><blockquote key={t.id}>{t.name} · {t.status}<p>{t.note}</p><small>{t.source}</small></blockquote>)}</details>:null}{term.links&&<p>关联：{term.links}</p>}{term.reviews?.slice().reverse().map((r,i)=><blockquote key={i}>{r.answer}<small>{new Date(r.at).toLocaleDateString("zh-CN")} · {r.assessmentId?"复述检查已确认":"卡点记录"} {r.status}</small></blockquote>)}{term.dueAt&&<p>下次回顾：{new Date(term.dueAt).toLocaleDateString("zh-CN")}</p>}<button className="text-button danger-text" disabled={busy} onClick={()=>{if(confirm(`删除“${term.name}”的笔记与复述记录？`))void post({deleteId:term.id}).then(ok=>{if(ok)setSelected(null);});}}>删除这张笔记</button></details>
-      </>:<p className="empty-study">从左侧选一个概念，或新建笔记。</p>}
-    </main></div>
+    <header className="companion-heading"><h1>术语卡片</h1><p>留下你主动选择的科研概念、理解与出处。普通英文词语放进生词本。</p></header>
+    {error&&<p className="v1-error" role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
+    <div className="study-filter">
+      <input disabled={busy} className="field" aria-label="搜索术语" placeholder="搜索我收藏的术语…" value={search} onChange={e=>setSearch(e.target.value)}/>
+      <select disabled={busy} className="field" aria-label="术语论文范围" value={paper} onChange={e=>{setPaper(e.target.value);setSelected(null);setForm(null);}}><option value="">全部论文</option>{papers.map(p=><option key={p.slug} value={p.slug}>{p.title}</option>)}</select>
+      <button disabled={busy} className="btn btn--primary" onClick={()=>setForm({name:'',note:'',source:'手动建卡'})}>新建卡片</button>
+      <button disabled={busy} className="text-button" onClick={()=>{setLegacy(v=>!v);setSelected(null);setForm(null);}}>{legacy?'返回我的收藏':`历史卡片 · ${scoped.filter(t=>!manual(t)).length}`}</button>
+    </div>
+    {legacy&&<p className="soft-copy">改版前的卡片保留在这里，不再自动新增。选择有价值的卡片加入我的收藏。</p>}
+    <div className="concept-layout"><aside className="concept-list" aria-label="术语列表"><p className="soft-copy">{filtered.length} 张{legacy?'历史卡片':'手动收藏'}</p>{filtered.map(t=><button disabled={busy} className={`concept-item${term?.id===t.id?' is-active':''}`} key={t.id} onClick={()=>{setSelected(t.id);setForm(null);}}><strong>{t.name}</strong><small>{t.meaning||t.note||t.excerpts?.[0]?.label||'还没有写下自己的理解'}</small></button>)}{!filtered.length&&<p className="empty-study">在论文、译文或 AI 回答里划选科研术语并翻译，再选择“加入术语卡片”。也可以直接新建。</p>}</aside>
+    <main className="surface-card concept-detail">{form?<><h2>{form.id?'编辑卡片':'新建术语卡片'}</h2>{[['name','术语名称'],['meaning','释义'],['note','我的理解'],['mechanism','原理与机制（可选）'],['example','例子（可选）'],['source','来源']].map(([key,label])=><label className="field-label" key={key}>{label}<textarea disabled={busy} className="field" rows={key==='name'?1:3} value={String(form[key as keyof Term]??'')} onChange={e=>setForm({...form,[key]:e.target.value})}/></label>)}<div className="inline-actions"><button className="btn btn--primary" disabled={busy||!form.name?.trim()} onClick={()=>void post({term:form})}>保存卡片</button><button disabled={busy} className="btn" onClick={()=>setForm(null)}>取消</button></div></>:term?<>
+      <div className="section-top"><span className="pill">{manual(term)?'我的收藏':'历史卡片'}</span><button disabled={busy} className="text-button" onClick={()=>setForm({...term})}>编辑卡片</button></div><h2 className="concept-title">{term.name}</h2>
+      {legacy&&<button className="btn btn--primary" disabled={busy} onClick={()=>void post({term:{id:term.id,name:term.name}})}>加入我的收藏</button>}
+      <h3>释义</h3><Markdown sourceUrl={sourceUrl} sourceKey={`term-meaning:${term.id}`} label={`术语释义 · ${term.name}`}>{term.meaning||term.contexts?.find(c=>c.meaning)?.meaning||term.excerpts?.find(a=>a.meaning)?.meaning||'这张历史卡片还没有释义，可以编辑补充。'}</Markdown>
+      <h3>我的理解</h3>
+      <Markdown sourceUrl={sourceUrl} sourceKey={`term:${term.id}`} label={`术语卡片 · ${term.name}`}>{term.note||'尚未添加理解笔记。'}</Markdown>
+      {term.mechanism&&<><h3>原理与机制</h3><Markdown sourceUrl={sourceUrl}>{term.mechanism}</Markdown></>}{term.example&&<><h3>例子</h3><Markdown sourceUrl={sourceUrl}>{term.example}</Markdown></>}
+      <h3>收藏时的上下文</h3>{term.excerpts?.map((a,i)=><div className="term-excerpt" key={i}><small>{a.label}</small><blockquote>{a.context}</blockquote>{a.meaning&&<Markdown sourceUrl={sourceUrl}>{a.meaning}</Markdown>}{a.scope.startsWith('/')&&!a.scope.startsWith('//')&&<Link className="text-button" href={a.scope}>回到来源 →</Link>}</div>)}
+      {term.contexts?.map((c,i)=><div className="term-excerpt" key={i}><strong>{c.title}{c.page?` · 第 ${c.page} 页`:''}</strong>{c.meaning&&<Markdown sourceUrl={sourceUrl}>{c.meaning}</Markdown>}{c.quote&&<blockquote>{c.quote}</blockquote>}<Link className="text-button" href={`/read/${c.slug}`}>打开论文 →</Link></div>)}
+      {!term.excerpts?.length&&!term.contexts?.length&&<p className="soft-copy">{term.source||'手动建卡'}</p>}
+      {(term.reviews?.length||term.legacyCards?.length)?<details className="quiet-details"><summary>旧版学习记录</summary>{term.reviews?.map((r,i)=><blockquote key={i}>{r.answer}<small>{r.at} · {r.status}</small></blockquote>)}{term.legacyCards?.map((t,i)=><p key={i}>{t.name}：{t.note}</p>)}</details>:null}
+      <button className="text-button danger-text" disabled={busy} onClick={()=>{if(confirm(`删除“${term.name}”这张卡片？`))void post({deleteId:term.id});}}>删除卡片</button>
+    </>:<p className="empty-study">只留下你觉得有价值的概念。</p>}</main></div>
   </section>;
 }

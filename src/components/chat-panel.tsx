@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { TOOLS } from "@/lib/data";
 import Markdown from "@/components/markdown";
 import LearningResponse, { type ResponseLearning } from "./learning-response";
+import { MATH_INSTRUCTION, type ReadingAnchor } from '@/lib/reading-memory';
+import {readAnswer} from '@/lib/answer-stream';
+import {useAnswerScroll} from './use-answer-scroll';
 
 export interface CodeSessionEnd {
   explained: string[];
@@ -30,6 +33,7 @@ export interface ChatPanelProps {
 }
 
 interface Msg {
+  id?: string;
   role: "user" | "assistant";
   content: string;
   time: string;
@@ -65,6 +69,9 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [partial,setPartial]=useState<string|null>(null);
+  const {bind:bindScroll,begin:beginScroll,onScroll,onWheel,onPointerDown,onKeyDown}=useAnswerScroll(`${msgs.length}:${partial??''}`,loading);
+  const [deleting,setDeleting]=useState<string|null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
   const [saved, setSaved] = useState("");
   const [ctxNote, setCtxNote] = useState("");
@@ -73,6 +80,7 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
+  const sessionGeneration=useRef(0),deletedSessions=useRef(new Set<string>());
   const historyErr = useRef(false);
   // 提示词编辑：activePrompt=当前生效（默认或自定义）；promptDraft=编辑框草稿；promptMeta=默认/自定义元信息
   const [promptDraft, setPromptDraft] = useState("");
@@ -102,16 +110,32 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
     }
   }, [seed]);
 
+  useEffect(()=>{
+    let cancelled=false;let pending=false;
+    const locate=async(event:Event)=>{
+      const anchor=(event as CustomEvent<ReadingAnchor>).detail,origin=anchor.origin;
+      if(origin?.kind!=='chat'||origin.historyKey!==historyKey||pending||loading)return;
+      if(origin.messageId&&msgs.some(m=>m.id===origin.messageId))return;
+      const query=origin.sessionId?'id='+encodeURIComponent(origin.sessionId):origin.messageId?'messageId='+encodeURIComponent(origin.messageId):'';
+      if(!query)return;pending=true;const generation=++sessionGeneration.current;
+      try{const r=await fetch('/api/session-history?tool='+encodeURIComponent(historyKey!)+'&'+query);const d=await r.json();if(!cancelled&&generation===sessionGeneration.current&&r.ok&&d.session&&!deletedSessions.current.has(d.session.id)){sessionIdRef.current=d.session.id;setSessionId(d.session.id);setMsgs(d.session.msgs??[]);setShowHistory(false);}}catch{}finally{pending=false;}
+    };
+    window.addEventListener('reading-open-source',locate);
+    return()=>{cancelled=true;window.removeEventListener('reading-open-source',locate);};
+  },[historyKey,loading,msgs]);
+
   const tool = TOOLS[toolKey];
   if (!tool) return null;
 
   async function sendMsg() {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || deleting) return;
+    sessionGeneration.current++;
     const next: Msg[] = [...msgs, { role: "user", content: text, time: nowTime() }];
     setMsgs(next);
     setInput("");
     setLoading(true);
+    setPartial('');beginScroll();
     try {
       // 自动附加上下文（复现状态 / 环境卡 / 论文正文 + 指导者规则）
       let system = activePrompt || tool.prompt;
@@ -137,19 +161,20 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
       }
       if(toolKey==="code"&&profile?.background){system+=`\n\n【历史背景自述，仅作待核对事实；长期讲解规则以服务端已确认记忆为准】\n${profile.background}`;notes.push("历史背景自述");}
       if (notes.length) setCtxNote(`已附带：${notes.join("、")}（自动）`);
-      system += GUIDE_RULES;
+      system += GUIDE_RULES + '\n' + MATH_INSTRUCTION;
 
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scene: toolKey === "code" ? "code" : toolKey === "p3" ? "paper" : ["env","handoff","checklist"].includes(toolKey)?"repro":"general", resourceId, projectId, messages: [{ role: "system", content: system }, ...next], ...(enableToolcall ? { enableToolcall: true } : {}) }),
+        headers: { "Content-Type": "application/json",Accept:'application/x-ndjson' },
+        body: JSON.stringify({ scene: toolKey === "code" ? "code" : toolKey === "p3" ? "paper" : ["env","handoff","checklist"].includes(toolKey)?"repro":"general", resourceId:resourceId??historyKey??`chat:${toolKey}`, projectId, messages: [{ role: "system", content: system }, ...next], ...(enableToolcall ? { enableToolcall: true } : {}) }),
       });
-      const data = await res.json();
+      const data = await readAnswer<{choices?:{message?:{content?:string}}[];error?:string;hint?:string;learning?:ResponseLearning}>(res,setPartial);
       const content = data?.choices?.[0]?.message?.content;
       const errText = data?.error ? `错误：${data.error}` + (data?.hint ? `\n\n${data.hint}` : "") : null;
-      const finalMsgs: Msg[] = [...next, { role: "assistant", content: content ?? (errText ?? "无响应"), time: nowTime(), learning: data.learning }];
+      const finalMsgs: Msg[] = [...next, { id: crypto.randomUUID(), role: "assistant", content: content ?? (errText ?? "无响应"), time: nowTime(), learning: data.learning }];
       setMsgs(finalMsgs);
-      void persistSession(finalMsgs); // 自动写入会话历史
+      setPartial(null);
+      await persistSession(finalMsgs); // 自动写入会话历史
       // 代码导读：读完后写回一次画像（会的不重讲、卡点提前解释）
       if (toolKey === "code" && onCodeSessionEnd && content && !endLogged.current) {
         endLogged.current = true;
@@ -162,9 +187,10 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
         });
       }
     } catch (e) {
+      setInput(text);
       const finalMsgs: Msg[] = [...next, { role: "assistant", content: `请求失败：${e instanceof Error ? e.message : String(e)}`, time: nowTime() }];
       setMsgs(finalMsgs);
-      void persistSession(finalMsgs); // 失败也留档，方便回看
+      await persistSession(finalMsgs); // 失败也留档，方便回看
     } finally {
       setLoading(false);
     }
@@ -189,11 +215,13 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
   }
 
   async function openSession(id: string) {
-    if (!historyKey) return;
+    if (!historyKey||loading||deleting||deletedSessions.current.has(id)) return;
+    const generation=++sessionGeneration.current;
     try {
       const res = await fetch(`/api/session-history?tool=${encodeURIComponent(historyKey)}&id=${encodeURIComponent(id)}`);
       const d = await res.json();
-      if (d?.session) {
+      if (res.ok&&d?.session&&generation===sessionGeneration.current&&!deletedSessions.current.has(d.session.id)) {
+        setPartial(null);
         sessionIdRef.current = d.session.id;
         setSessionId(d.session.id);
         setMsgs(Array.isArray(d.session.msgs) ? d.session.msgs : []);
@@ -203,6 +231,8 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
   }
 
   function newSession() {
+    setPartial(null);
+    sessionGeneration.current++;
     sessionIdRef.current = null;
     setSessionId(null);
     setMsgs([]);
@@ -210,7 +240,10 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
   }
 
   async function deleteSession(id: string) {
-    if (!historyKey) return;
+    if (!historyKey||loading||deleting) return;
+    if(!window.confirm('删除这段对话记录？独立追问和随心笔记会保留。'))return;
+    sessionGeneration.current++;
+    setDeleting(id);
     try {
       const res = await fetch("/api/session-history", {
         method: "POST",
@@ -218,9 +251,12 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
         body: JSON.stringify({ tool: historyKey, action: "delete", id }),
       });
       const d = await res.json();
+      if(!res.ok)throw Error(d.error||'删除失败，请重试');
+      deletedSessions.current.add(id);sessionGeneration.current++;
       if (Array.isArray(d?.sessions)) setSessions(d.sessions);
       if (sessionIdRef.current === id) newSession();
-    } catch { /* */ }
+    } catch(e) {setSaved(e instanceof Error?e.message:'删除失败，请重试');}
+    finally{setDeleting(null);}
   }
 
   async function saveResult() {
@@ -289,7 +325,7 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
   }
 
   return (
-    <section>
+    <section className="chat-panel">
       <div className="chat-toolbar">
         <button className="btn btn--ghost btn--quiet" onClick={() => void loadPrompt()}>
           {showPrompt ? "收起提示词" : promptMeta.custom ? "提示词（已自定义）" : "查看底层提示词"}
@@ -299,6 +335,7 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
             {showHistory ? "收起历史" : `历史记录${sessions.length ? `（${sessions.length}）` : ""}`}
           </button>
         )}
+        {historyKey&&sessionId&&<button className="btn btn--ghost btn--quiet" disabled={loading||!!deleting} onClick={()=>void deleteSession(sessionId)}>{deleting===sessionId?'删除中…':'删除当前对话'}</button>}
         {saved && <span className="chat-saved">{saved}</span>}
         {ctxNote && <span className="chat-ctx-note">{ctxNote}</span>}
       </div>
@@ -307,7 +344,7 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
         <div className="history-panel">
           <div className="history-panel-head">
             <span>历史会话 · 点开可回看/继续</span>
-            <button className="btn btn--primary btn--sm" onClick={newSession}>新建对话</button>
+            <button className="btn btn--primary btn--sm" disabled={loading||!!deleting} onClick={newSession}>新建对话</button>
           </div>
           {sessions.length === 0 ? (
             <p className="history-empty">还没有历史记录——从第一条对话开始，消息会自动保存到这里。</p>
@@ -315,11 +352,11 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
             <ul className="history-list">
               {sessions.map((s) => (
                 <li key={s.id} className={`history-item${sessionId === s.id ? " is-current" : ""}`}>
-                  <button className="history-item-main" onClick={() => void openSession(s.id)}>
+                  <button className="history-item-main" disabled={loading||!!deleting} onClick={() => void openSession(s.id)}>
                     <span className="history-title">{s.title}</span>
                     <span className="history-meta">{s.count} 条 · {fmtTime(s.updatedAt)}</span>
                   </button>
-                  <button className="history-del" onClick={() => void deleteSession(s.id)} aria-label="删除这个会话">×</button>
+                  <button className="history-del" disabled={loading||!!deleting} onClick={() => void deleteSession(s.id)} aria-label="删除这个会话">删除</button>
                 </li>
               ))}
             </ul>
@@ -349,7 +386,7 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
       )}
 
       {/* 消息区：注记式。AI 回复走 Markdown 渲染 */}
-      <div className="msg-stream" aria-live="polite">
+      <div className="msg-stream" ref={bindScroll} onScroll={onScroll} onWheel={onWheel} onPointerDown={onPointerDown} onKeyDown={onKeyDown} style={{overflowAnchor:'none'}}>
         {msgs.length === 0 && (
           <p className="chat-hint">{hint}</p>
         )}
@@ -365,15 +402,14 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
               <p className="msg-user-text">{m.content}</p>
             ) : (
               <div className="msg-body-ai">
-                <Markdown>{m.content}</Markdown>
+                <Markdown origin={historyKey?{kind:"chat",historyKey,sessionId:sessionId??undefined,messageId:m.id}:undefined} sourceKey={`chat:${m.id??`${historyKey??toolKey}:${sessionId??'draft'}:${i}`}`} slug={toolKey==='p3'?resourceId:undefined} context={[systemExtra?.slice(0,4500),...msgs.slice(Math.max(0,i-4),i).map(m=>m.content)].filter(Boolean).join('\n\n').slice(-10000)}>{m.content}</Markdown>
                 {m.learning && <LearningResponse learning={m.learning} />}
               </div>
             )}
           </div>
         ))}
-        {loading && (
-          <p className="thinking"><span className="thinking-dot" aria-hidden="true" />思考中…（联网检索 / 生成回复有时较慢，若超过 2 分钟仍无响应可重发）</p>
-        )}
+        {partial!==null&&<div data-answer-start className="msg msg-streaming"><div className="msg-meta">{loading?'研究伙伴 · 正在生成':'未完成的回答 · 可重新发送问题'}</div><Markdown interactive={false}>{partial}</Markdown></div>}
+        {loading&&<p className="thinking" role="status"><span className="thinking-dot" aria-hidden="true" />{partial?'正在生成…':'正在思考 / 检索…'}</p>}
       </div>
 
       {/* 输入区 */}
@@ -381,7 +417,7 @@ export default function ChatPanel({ resourceId, projectId, toolKey, hint, saveLa
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMsg(); } }}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void sendMsg(); } }}
           placeholder="回复它的问题，或直接开始…"
           rows={2}
           className="field"

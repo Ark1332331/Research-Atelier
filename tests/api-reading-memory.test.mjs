@@ -1,0 +1,98 @@
+import test, {after} from 'node:test';
+import assert from 'node:assert/strict';
+import {promises as fs} from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import {createHash} from 'node:crypto';
+const directory=await fs.mkdtemp(path.join(os.tmpdir(),'ra-reading-memory-'));
+process.env.RA_DATA_DIR=directory;process.env.DEEPSEEK_API_KEY='test-only-key';
+const originalFetch=globalThis.fetch;
+after(async()=>{globalThis.fetch=originalFetch;await fs.rm(directory,{recursive:true,force:true});});
+const {GET,POST}=await import('../src/app/api/reading-memory/route.ts');
+const {POST:collect,GET:words}=await import('../src/app/api/reading-collection/route.ts');
+const request=body=>new Request('http://localhost/api/test',{method:'POST',body:JSON.stringify(body)});
+const anchor={scope:'/read/test',sourceKey:'answer-one',label:'AI 回答',text:'entropy',context:'Entropy measures uncertainty.',start:0,end:7};
+const read=async()=> (await (await GET()).json()).threads;
+test('memory persists, deduplicates exact anchors, separates same words by message and scope',async()=>{
+  globalThis.fetch=()=>{throw Error('must not call a model on selection');};
+  const a=await (await POST(request({action:'create',anchor}))).json();
+  const b=await (await POST(request({action:'create',anchor}))).json();assert.equal(a.thread.id,b.thread.id);
+  await POST(request({action:'create',anchor:{...anchor,sourceKey:'answer-two'}}));
+  await POST(request({action:'create',anchor:{...anchor,scope:'/read/other'}}));
+  assert.equal((await read()).length,3);
+});
+test('followups persist complete turns; failed and stale calls never overwrite them',async()=>{
+  const thread=(await read())[0];let sent;
+  globalThis.fetch=async(_url,init)=>{sent=JSON.parse(init.body);return Response.json({choices:[{message:{content:'熵描述不确定性。'},finish_reason:'stop'}]});};
+  let r=await POST(request({action:'ask',id:thread.id,revision:0,question:'解释一下'}));assert.equal(r.status,200);
+  assert.match(sent.messages[1].content,/Entropy measures/);
+  r=await POST(request({action:'ask',id:thread.id,revision:2,question:'举例？'}));assert.equal(r.status,200);
+  assert.deepEqual(sent.messages.slice(-3).map(m=>m.content),['解释一下','熵描述不确定性。','举例？']);
+  r=await POST(request({action:'ask',id:thread.id,revision:0,question:'stale'}));assert.equal(r.status,409);
+  globalThis.fetch=async()=>{throw Error('offline');};
+  r=await POST(request({action:'ask',id:thread.id,revision:4,question:'再举例'}));assert.equal(r.status,400);
+  assert.equal((await read())[0].messages.length,4);
+});
+test('concurrent replies cannot replace one another and deleted memories cannot reappear',async()=>{
+  const t=(await read())[0];let resolve;const gate=new Promise(r=>resolve=r);let calls=0;
+  globalThis.fetch=async()=>{calls++;if(calls===2)resolve();await gate;return Response.json({choices:[{message:{content:'回答'},finish_reason:'stop'}]});};
+  const responses=await Promise.all([POST(request({action:'ask',id:t.id,revision:4,question:'one'})),POST(request({action:'ask',id:t.id,revision:4,question:'two'}))]);
+  assert.equal(responses.filter(r=>r.status===200).length,1);assert.equal((await read())[0].messages.length,6);
+  await POST(request({action:'delete',id:t.id}));assert.ok(!(await read()).some(x=>x.id===t.id));
+});
+test('manual terms and vocabulary go to different stores with provenance and deduplication',async()=>{
+  globalThis.fetch=()=>{throw Error('term capture needs no model');};
+  let r=await collect(request({kind:'term',anchor,meaning:'熵：用于衡量不确定性。'}));assert.equal(r.status,200);
+  r=await collect(request({kind:'term',anchor,meaning:'熵：用于衡量不确定性。'}));assert.equal(r.status,200);
+  const terms=JSON.parse(await fs.readFile(path.join(directory,'glossary.json'),'utf8'));assert.equal(terms.length,1);assert.equal(terms[0].collection,'manual');assert.equal(terms[0].excerpts.length,1);assert.equal(terms[0].meaning,'熵：用于衡量不确定性。');assert.equal(terms[0].excerpts[0].meaning,terms[0].meaning);assert.equal(terms[0].note,'');
+  assert.equal((await (await words()).json()).entries.length,0);
+  globalThis.fetch=()=>{throw Error('saving displayed translation must not call another model');};
+  r=await collect(request({kind:'word',anchor,meaning:'熵：用于衡量不确定性。'}));assert.equal(r.status,200);
+  await collect(request({kind:'word',anchor,meaning:'熵：用于衡量不确定性。'}));const entries=(await (await words()).json()).entries;assert.equal(entries.length,1);assert.equal(entries[0].sourceAnchor.context,anchor.context);assert.equal(entries[0].meaning,'熵：用于衡量不确定性。');
+  assert.equal((await collect(request({kind:'term',anchor}))).status,400);assert.equal((await collect(request({kind:'word',anchor,meaning:' '}))).status,400);
+  terms[0].note='我自己的理解';await fs.writeFile(path.join(directory,'glossary.json'),JSON.stringify(terms));
+  await collect(request({kind:'term',anchor:{...anchor,sourceKey:'another-source'},meaning:'另一段语境中的熵释义。'}));
+  const updated=JSON.parse(await fs.readFile(path.join(directory,'glossary.json'),'utf8'))[0];
+  assert.equal(updated.note,'我自己的理解');assert.equal(updated.meaning,terms[0].meaning);
+  assert.equal(updated.excerpts.length,2);assert.equal(updated.excerpts[1].meaning,'另一段语境中的熵释义。');
+});
+
+test('paper vocabulary lists and removes words saved from its translated text',async()=>{
+  const dir=path.join(directory,'papers','vocab-paper');await fs.mkdir(dir,{recursive:true});await fs.writeFile(path.join(dir,'original.pdf'),'paper-content');
+  const source={...anchor,scope:'/read/vocab-paper?view=zh',slug:'vocab-paper'};
+  const saved=await (await collect(request({kind:'word',anchor:source,meaning:'熵的译文释义。'}))).json();
+  const {GET:paperWords,POST:editWord}=await import('../src/app/api/vocabulary/route.ts');
+  const result=await (await paperWords(new Request('http://localhost/api/vocabulary?slug=vocab-paper'))).json();
+  assert.equal(result.entries.length,1);assert.equal(result.entries[0].sourceAnchor.scope,source.scope);
+  const response=await editWord(request({action:'delete',id:saved.saved.id,slug:'vocab-paper',docId:result.docId}));
+  assert.equal(response.status,200);assert.deepEqual((await response.json()).entries,[]);
+  assert.ok(!(await (await words()).json()).entries.some(e=>e.id===saved.saved.id));
+});
+test('PDF memories verify document identity and reject changed files without writing',async()=>{
+  const dir=path.join(directory,'papers','paper');await fs.mkdir(dir,{recursive:true});await fs.writeFile(path.join(dir,'original.pdf'),'first');
+  const pdfAnchor={...anchor,slug:'paper',page:1,docId:createHash('sha256').update('first').digest('hex'),rects:Array.from({length:60},(_,i)=>({x:0.1,y:i*.01,w:.2,h:.005}))};
+  let r=await POST(request({action:'create',anchor:pdfAnchor}));assert.equal(r.status,200);
+  const thread=(await r.json()).thread;
+  await fs.writeFile(path.join(dir,'original.pdf'),'replaced');
+  globalThis.fetch=()=>{throw Error('changed document must reject before a model request');};
+  r=await POST(request({action:'ask',id:thread.id,revision:0,question:'解释'}));assert.equal(r.status,400);
+  assert.match((await r.json()).error,/文件已变化/);assert.equal((await read()).find(t=>t.id===thread.id).messages.length,0);
+  assert.equal((await POST(request({action:'create',anchor:pdfAnchor}))).status,400);
+});
+test('reading followups apply confirmed profiles and enqueue only actual user speech for an independent observer',async()=>{
+  const {manageLearning,readLearning}=await import('../src/lib/learning/store.ts');
+  const state=await manageLearning({action:'profile-add',dimension:'background',topic:'数学经历',text:'我有线性代数基础',scene:'general'});
+  const created=await (await POST(request({action:'create',anchor:{...anchor,sourceKey:'observer-proof',context:'引用论文：我没学过任何数学。'}}))).json();
+  let calls=0,sent;globalThis.fetch=async(_url,init)=>{calls++;sent=JSON.parse(init.body);return Response.json({choices:[{message:{content:'先说明符号含义。'},finish_reason:'stop'}]});};
+  const response=await POST(request({action:'ask',id:created.thread.id,revision:0,question:'我学过矩阵乘法，但没接触过特征分解，请解释这个符号。'}));
+  assert.equal(response.status,200);assert.equal(calls,1,'observer must be queued, not run inside foreground answer');
+  const result=await response.json(),last=result.thread.messages.at(-1);assert.equal(last.learning.profile[0].id,state.profiles[0].id);
+  assert.match(sent.messages[0].content,/我有线性代数基础/);assert.match(sent.messages[1].content,/引用论文/);
+  const s=await readLearning(),observation=s.observations.find(o=>o.id===last.learning.observationId);
+  assert.equal(observation.status,'queued');assert.equal(observation.source,'划线追问');assert.match(observation.userText,/我学过矩阵乘法/);
+  assert.ok(!JSON.stringify(observation).includes('我没学过任何数学'));
+  assert.equal((await read()).find(t=>t.id===created.thread.id).messages.at(-1).learning.profile[0].id,state.profiles[0].id);
+  const {POST:feedback}=await import('../src/app/api/learning/route.ts');
+  const feedbackResult=await feedback(request({action:'feedback',runId:last.learning.runId,helpful:false,note:'这篇论文里的特征分解我还没有理解'}));assert.equal(feedbackResult.status,200);
+  const after=await readLearning();assert.equal(after.runs.find(r=>r.id===last.learning.runId).resourceId,created.thread.id);assert.equal(after.observations.at(-1).resourceId,created.thread.id);
+});
